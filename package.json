@@ -1,0 +1,26 @@
+{
+  "name": "sandcastle-pipeline",
+  "version": "0.1.0",
+  "private": true,
+  "description": "在 @ai-hero/sandcastle 之上的 issue → PR → 合并流水线：prep 拆票、确定性排期、implement + review、测试门槛、自动合并。项目差异在目标项目的 .sandcastle/sandcastle.config.ts。",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "bin": {
+    "sandcastle-pipeline": "./src/main.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ai-hero/sandcastle": "^0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

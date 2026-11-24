@@ -45,25 +45,20 @@ const demoteHeadings = (md: string): string =>
 /**
  * PR 正文 `## 验收说明` 一节的内容（标题由 main.ts 的 pushAndOpenPr 加）：固定准备段落 + 文件内容，
  * 让验收的人能在宿主机上照做。不合格时给警告（文件不存在）或「格式不对」+ 问题列表 + 原文（二级标题降成 `###`），照样进正文让人看见。
- * pageChanged：有 `.browser-check/`（改了页面）的票给完整四步准备；其余只要 checkout，不用起 dev server。
+ * pageChanged：有 `.browser-check/`（改了页面）的票给项目配置的准备步骤（acceptancePrep）；其余只要 checkout，不用起 dev server。
  */
-export const acceptanceSection = (branch: string, md: string | undefined, opts: { pageChanged: boolean }): string => {
+export const acceptanceSection = (branch: string, md: string | undefined, opts: { pageChanged: boolean; pagePrep?: (branch: string) => string }): string => {
   const problems = checkAcceptanceNotes(md);
   if (problems.length > 0) {
     return md === undefined
       ? "⚠️ implementer 没有写验收说明"
       : `⚠️ 验收说明格式不对：${problems.join("；")}\n\n${demoteHeadings(md)}`;
   }
-  const prep = opts.pageChanged
-    ? [
-        "### 准备（在宿主机上，连开发库 `crm_platform`）",
-        "",
-        `1. \`git checkout ${branch}\``,
-        "2. 起 dev server：`MAILER=console npm run dev`（Magic Link 登录链接会打印在它的终端里）",
-        "3. 建验收数据：`PLATFORM_DATABASE_URL` 指向开发库 `crm_platform` 跑 `node --import tsx scripts/browser-lab.ts`——对 `crm_platform` 跑迁移，建租户 `crmlab-smoke` 和成员 `admin@` / `eng@` / `an@crmlab-smoke.test`（可重复跑）",
-        "4. 打开 `http://localhost:5173/login`，填上面的邮箱点「发送登录链接」，从 dev server 的终端里取链接登录",
-      ].join("\n")
-    : `### 准备\n\n\`git checkout ${branch}\`（本票没改页面，不用起 dev server）`;
+  const prep = opts.pageChanged && opts.pagePrep
+    ? opts.pagePrep(branch)
+    : opts.pageChanged
+      ? `### 准备\n\n\`git checkout ${branch}\`，按项目说明起 dev server`
+      : `### 准备\n\n\`git checkout ${branch}\`（本票没改页面，不用起 dev server）`;
   return `${prep}\n\n${md}`;
 };
 

@@ -21,7 +21,7 @@
 //                    最多 MAX_PARALLEL 张并行，每个沙箱用独立的测试库与前缀。
 //   Phase 3 (Land):  在宿主机上 push、开 PR（`Closes #n`）。reviewer 说 merge 且门槛通过
 //                    → `gh pr merge --rebase`，issue 自动关闭；否则打 sandcastle:pr-open 等人审。
-//                    合并不了（先合并的票造成冲突，或 drizzle 迁移链分叉）时，rebase 到
+//                    合并不了（先合并的票造成冲突，或项目配置的一致性检查没过，如迁移链分叉）时，rebase 到
 //                    最新的 origin/main（冲突与迁移交给 agent，rebase-prompt.md），重跑门槛后再合并一次。
 //   每次调度开头：等人审的 PR 上有晚于分支最新提交的打回信号（`/sandcastle` 开头的评论或 review，
 //                    或别人点的 Request changes）→ 去掉 issue 的 sandcastle:pr-open，这张票这次
@@ -30,36 +30,41 @@
 //                    接着改：只做普通 push，不 rebase、不合并、不删分支，结果评论在 PR 上留给人合并。
 //
 // 每个阶段用哪个模型（Claude 订阅或别家的 Anthropic 兼容接口）、撞限额时换哪个：.sandcastle/models.json（models.ts）。
-// 标签状态机见 docs/agents/sandcastle.md。
+// 标签状态机见 docs/sandcastle.md。
 //
-// Usage: npm run run:sandcastle
-//        SANDCASTLE_ONLY=328,329 npm run run:sandcastle   只处理这几张票（试跑、单独补跑）
+// 随项目变的部分（托管平台、测试隔离、门槛、合并前检查、自动开票的文案）都在目标项目的
+// .sandcastle/sandcastle.config.ts（profile.ts 的 ProjectProfile）；托管平台的操作都走 Forge（forge.ts）。
+//
+// Usage（在目标项目根目录）: npx tsx <本仓库>/src/main.ts
+//        SANDCASTLE_ONLY=328,329 npx tsx <本仓库>/src/main.ts   只处理这几张票（试跑、单独补跑）
 
-import { execFile, execFileSync } from "node:child_process";
 import { cpSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, loadavg, tmpdir } from "node:os";
-import { basename, join } from "node:path";
-import { parseEnv, promisify } from "node:util";
+import { join } from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
-import { podman } from "@ai-hero/sandcastle/sandboxes/podman";
 import {
   AllProfilesLimited, CLAUDE_LIMIT_PATTERN, agentFor, limitResetAt, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
   type AgentRun, type Phase, type UsageRecord,
 } from "./models.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, splitChildren } from "./guide.ts";
 import { acceptanceSection, checkAcceptanceNotes, replaceSection, restSections } from "./pr-body.ts";
+import type { ForgeIssue, ForgePr } from "./forge.ts";
+import { loadProject } from "./profile.ts";
+import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
 
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
-// agent 多久没输出算卡死：库默认 600 秒。门槛失败后的 fix 会话要在后台重跑一批慢测试（单个文件就要 5 分钟以上，
-// 两个沙箱同时跑时更慢），等通知期间没有输出，10 分钟就被判卡死、票打 stuck（2026-11-23 #1141、#1160）。
-const AGENT_IDLE_TIMEOUT_S = 40 * 60;
-const POLL_INTERVAL_MS = 10 * 60_000; // 有空位时隔多久重新调度一次（整理 → prep → plan），看有没有新开得了工的票
-const MAX_ITERATIONS = 12; // 连续空转（没有票在做、也开不出新票）多少次就结束运行：12 × 10 分钟，等人审 PR 最多等约 2 小时
-const MAX_PARALLEL = 2; // 同时实现的票数：受 PG max_connections 与机器负载限制；完整测试另外排队、同一时间只跑一个（runGate）；3 个门槛同时跑完整测试会大面积超时（2026-11-07）
-const IMPLEMENT_MAX_ITERATIONS = 3; // 一张票最多开几次全新会话；超过说明票太大，交给人
+const project = await loadProject();
+const forge = project.forge;
+
+// agent 多久没输出算卡死：库默认 600 秒，太短（门槛失败后的 fix 会话要在后台重跑慢测试，等通知期间没有输出）。
+const AGENT_IDLE_TIMEOUT_S = project.agentIdleTimeoutS;
+const POLL_INTERVAL_MS = project.pollIntervalMs; // 有空位时隔多久重新调度一次（整理 → prep → plan），看有没有新开得了工的票
+const MAX_ITERATIONS = project.maxIdlePolls; // 连续空转（没有票在做、也开不出新票）多少次就结束运行
+const MAX_PARALLEL = project.maxParallel; // 同时实现的票数：受测试依赖的服务与机器负载限制；门槛另外排队、同一时间只跑一个（runGate）
+const IMPLEMENT_MAX_ITERATIONS = project.implementMaxSessions; // 一张票最多开几次全新会话；超过说明票太大，交给人
 /** 第一次没做完时脚本留在 issue 上的标记；prep 看到它就按「实现没做完」重新准备，再没做完才打 stuck。 */
 const REPREP_MARK = "<!-- sandcastle:reprep -->";
 /** implementer 的两个完成信号：做完了；遇到必须由人拍板的设计决定（.sandcastle/DECISIONS.md），票直接交给人，不再开新会话。 */
@@ -67,29 +72,22 @@ const COMPLETE = "<promise>COMPLETE</promise>";
 const NEEDS_DECISION = "<promise>NEEDS_DECISION</promise>";
 /** agent 代拍板时 issue 评论的第一行（.sandcastle/DECISIONS.md）；落地时脚本据此打 sandcastle:decided 并把评论贴到 PR 上。 */
 const DECIDED_MARK = "<!-- sandcastle:decided -->";
-const REVISE_MAX = 2; // reviewer 给 revise 时最多打回几次；之后仍不行就留 PR 给人
-const CONTEXT_BUDGET = 150_000; // 单个会话的上下文预算（CLAUDE.md「Context budget」）
-const REMOTE = "origin";
-const BASE_BRANCH = "main";
+const REVISE_MAX = project.reviseMax; // reviewer 给 revise 时最多打回几次；之后仍不行就留 PR 给人
+const CONTEXT_BUDGET = project.contextBudget; // 单个会话的上下文预算
+const REMOTE = project.remote;
+const BASE_BRANCH = project.baseBranch;
 // 从远端 main 建分支：已合并的代码在远端，不动宿主机本地 main 的工作区。
 const BASE_REF = `${REMOTE}/${BASE_BRANCH}`;
 // 只处理这几张票（逗号分隔）；不设则处理全部带 Sandcastle 标签的票。拆出来的子票不在名单里，要另外加。
 const ONLY = new Set((process.env.SANDCASTLE_ONLY ?? "").split(",").map((s) => s.trim()).filter(Boolean));
 const allowed = (id: string | number) => ONLY.size === 0 || ONLY.has(String(id).replace(/^#/, ""));
 
-const LABEL = {
-  picked: "Sandcastle", // 人工选中
-  prepped: "sandcastle:prepped", // prep 已确认可实现
-  prOpen: "sandcastle:pr-open", // 已开 PR，等人审
-  stuck: "sandcastle:stuck", // 需要人介入（见 issue 评论）
-  decided: "sandcastle:decided", // agent 代拍板过设计决定，等人事后确认（人看过后去掉）
-  flaky: "flaky", // 门槛里重跑才通过的测试文件，脚本自动开票
-  mainBroken: "sandcastle:main-broken", // main 上的兜底完整测试失败，脚本自动开票；调度和 prep 时排最前（runMainFullCheck）
-} as const;
+const LABEL = project.labels;
+const APPEND_ONLY: ReadonlySet<string> = new Set(project.appendOnlyFiles);
 
 /** 调度顺序：main 坏了的修复票排最前，其余按编号从小到大（早建的票通常是后面票的 blocker）。 */
-const byUrgency = (a: { number: number; labels: { name: string }[] }, b: { number: number; labels: { name: string }[] }) => {
-  const urgent = (i: typeof a) => (i.labels.some((l) => l.name === LABEL.mainBroken) ? 0 : 1);
+const byUrgency = (a: { number: number; labels: string[] }, b: { number: number; labels: string[] }) => {
+  const urgent = (i: typeof a) => (i.labels.includes(LABEL.mainBroken) ? 0 : 1);
   return urgent(a) - urgent(b) || a.number - b.number;
 };
 
@@ -114,81 +112,16 @@ async function runAgent<T extends AgentRun>(
 }
 
 // ---------------------------------------------------------------------------
-// 测试依赖的服务：宿主机 apple container 里的 PG / MySQL / MongoDB / SeaweedFS，
-// 端口发布在宿主机上，podman 容器经 host.containers.internal 访问。
-// 连接信息取自宿主机的 .env（S3_*）与 .env.test（TEST_*），把 localhost 换成宿主机地址；
-// 每张票的库名 / 前缀再加 `_i<n>`，并行的沙箱互不清表（worker 后缀 `_w<i>` 加在它后面）。
+// 每张票的测试环境：项目配置的 isolation（独立的测试库、前缀……），关沙箱后回收。
 // ---------------------------------------------------------------------------
 
-const HOST_FROM_CONTAINER = "host.containers.internal";
-const readEnvFile = (file: string): Record<string, string | undefined> =>
-  existsSync(file) ? parseEnv(readFileSync(file, "utf8")) : {};
-const hostEnv = { ...readEnvFile(".env"), ...readEnvFile(".env.test") };
-const toContainer = (value: string) =>
-  value.replace(/\b(localhost|127\.0\.0\.1)\b/g, HOST_FROM_CONTAINER);
-const withDbSuffix = (url: string, suffix: string) => {
-  const u = new URL(url);
-  u.pathname = `${u.pathname}${suffix}`;
-  return u.toString();
-};
-
-const SERVICE_KEYS = ["S3_ENDPOINT", "S3_REGION", "S3_ACCESS_KEY", "S3_SECRET_KEY", "S3_URL_STYLE", "S3_USE_SSL"];
-const serviceEnv = Object.fromEntries(
-  SERVICE_KEYS.flatMap((k) => (hostEnv[k] ? [[k, toContainer(hostEnv[k])]] : [])),
-);
-
-function testEnv(issueId: string): Record<string, string> {
-  const suffix = `_i${issueId}`;
-  const env: Record<string, string> = {
-    ...serviceEnv,
-    TEST_PLATFORM_DATABASE_URL: withDbSuffix(toContainer("postgres://crm:crm@localhost:5432/crm_platform_test"), suffix),
-    TEST_SOURCE_DATABASE_URL: withDbSuffix(toContainer("postgres://crm:crm@localhost:5432/crm_source_test"), suffix),
-    // 宿主机 PG 是 pgvector/pgvector:pg17-trixie（db_script/pg_setup.sh），pgvector 契约用例在沙箱里也跑（#850）
-    TEST_PGVECTOR_URL: withDbSuffix(toContainer("postgres://crm:crm@localhost:5432/crm_vector_test"), suffix),
-    // 源端测试账号名按票区分（scripts/test-resource-names.ts 的 CRM_TEST_RUN_SUFFIX），并行的沙箱不共用账号
-    CRM_TEST_RUN_SUFFIX: suffix,
-    CRM_TEST_WORKERS: "4",
-    // 沙箱负载比本地约慢一倍（#439），vitest.config.ts 把 testTimeout / hookTimeout 乘成 180 s / 120 s，超时类偶发失败不再逐文件放宽（#461）
-    CRM_TEST_TIMEOUT_SCALE: "2",
-  };
-  const { TEST_MONGO_URL, TEST_MYSQL_URL, TEST_S3_LAKE_URI } = hostEnv;
-  if (TEST_MONGO_URL) env.TEST_MONGO_URL = withDbSuffix(toContainer(TEST_MONGO_URL), suffix);
-  if (TEST_MYSQL_URL) env.TEST_MYSQL_URL = withDbSuffix(toContainer(TEST_MYSQL_URL), suffix);
-  if (TEST_S3_LAKE_URI) env.TEST_S3_LAKE_URI = TEST_S3_LAKE_URI + suffix;
-  return { ...env, ...browserEnv(suffix) };
-}
-
-// 关沙箱后回收这张票的测试资源（scripts/drop-test-resources.ts：PG 库与租户角色、PG / MySQL 源端测试账号、MySQL / MongoDB 库、对象存储前缀与账号）。
-// 每次关沙箱都收，不等票合并：再跑这张票（revise、rebase）时 global-setup 与夹具会重新建库。
-// 在宿主机上跑，连接取自宿主机的 .env / .env.test（不做 host.containers.internal 替换）；异步执行，不卡住并行的另一张票。
-// 回收失败只打日志，不影响票的结果；留下的可以之后 `pnpm sandcastle:cleanup --all` 补收。
-async function dropTestResources(issueId: string) {
-  const args = ["--env-file-if-exists=.env", "--env-file-if-exists=.env.test", "--import", "tsx", "scripts/drop-test-resources.ts", `_i${issueId}`];
+const testEnv = (runId: string) => project.isolation.env(runId);
+async function dropTestResources(runId: string) {
   try {
-    const { stdout } = await promisify(execFile)("node", args, { encoding: "utf8" });
-    console.log(`  🧹 #${issueId} ${stdout.trim().split("\n").slice(1).join("；")}`);
+    await project.isolation.cleanup?.(runId);
   } catch (e) {
-    const { stdout, stderr } = e as { stdout?: string; stderr?: string };
-    console.warn(`  ⚠ #${issueId} 测试资源回收失败（之后可用 pnpm sandcastle:cleanup _i${issueId} 补收）：${(stderr || stdout || String(e)).trim().slice(0, 500)}`);
+    console.warn(`  ⚠ #${runId} 测试资源回收出错：${String(e).slice(0, 500)}`);
   }
-}
-
-// 本机 seaweedfs 的 filer 元数据日志会一直占卷，卷数到上限后门槛里对象存储全部超时（见 docs/agents/sandcastle.md）。
-// 每次调度开头删两天前的日志目录和已清空的整卷；失败只打日志。
-function pruneSeaweedMetalog() {
-  const r = trySh("scripts/prune-seaweed-metalog.sh", []);
-  console.log(r.ok ? `  🧹 ${r.out}` : `  ⚠ 元数据日志清理失败：${r.out.slice(0, 300)}`);
-}
-
-// 浏览器验收用的 dev server 与 scripts/browser-lab.ts：独立的平台库（不碰开发库 crm_platform，也不被测试清表）、
-// 本地湖目录、固定的测试主密钥、发信打到日志。vitest.config.ts 会为测试覆盖这几个变量，门槛不受影响。
-function browserEnv(suffix: string): Record<string, string> {
-  return {
-    PLATFORM_DATABASE_URL: withDbSuffix(toContainer("postgres://crm:crm@localhost:5432/crm_platform_browser"), suffix),
-    PLATFORM_LAKE_URI: "/tmp/crm_browser_lake",
-    PLATFORM_MASTER_KEY: Buffer.alloc(32, 7).toString("base64"),
-    MAILER: "console",
-  };
 }
 
 // 浏览器验收的产物：implementer 写在 worktree 的 .browser-check/（.gitignore 忽略），
@@ -216,97 +149,16 @@ function readAcceptanceNotes(worktreePath: string): string | undefined {
   return existsSync(file) ? readFileSync(file, "utf8").trim() : undefined;
 }
 
-const shellQuote = (v: string) => `'${v.replace(/'/g, `'\\''`)}'`;
-const envPrefix = (env: Record<string, string>) =>
-  `env ${Object.entries(env).map(([k, v]) => `${k}=${shellQuote(v)}`).join(" ")}`;
-
-// 合并门槛：脚本自己跑，不信 agent 的口头结论。retrieval-golden 的 KNOWN_GAPS 是 it.fails，不影响退出码。
-// 完整测试在沙箱里要跑 ~40 分钟，负载下个别用例会偶发失败（hook 超时、随机数据撞上断言）：
-// 失败的文件不超过 GATE_RERUN_MAX 个时单独重跑一次，重跑通过算通过，但输出 GATE_FLAKY 让 PR 上标出来。
-// 失败摘要只取 vitest 的 Failed Tests / Failed Suites 一节（去掉颜色、每行截断），不 grep 日志里的 Error。
-//
-// 按依赖选测试（2026-11-24，规则见 docs/agents/sandcastle.md「合并门槛怎么选测试」）：
-// - 每次都跑 test/http 全部与 test/ 根目录的单元测试。test/http 的 harness 另起 vite、用 ssrLoadModule 加载整个应用，
-//   vitest 的依赖图看不到它和 app/ 的关系（改 workbench-ai.ts 选不到 test/http/workbench.test.ts），所以不能靠依赖图选。
-// - test/pipeline 只跑 `vitest related <分支改到的文件>` 选中的，加上分支改到的 pipeline 测试文件本身。
-// - 退回完整测试：改到 FULL_PATHS（依赖图看不到的测试基础设施：配置、全局 setup、HTTP harness、迁移、依赖、镜像）；
-//   选中的 pipeline 文件超过总数一半（改核心模块时几乎全选，挑着跑省不了多少）；vitest related 失败或超时；GATE_FULL=1。
-// - rebase 后重跑也走同一套规则（分支相对新 main 的改动已含冲突文件）；两张票合在一起才出的问题由
-//   main 上定期的兜底完整测试发现（见 runMainFullCheck）。
-// 输出里有一行 GATE_TIER: full|selected，脚本据此计数、写进 PR。
-const GATE_RERUN_MAX = 3;
-const FULL_PATHS = String.raw`^(vitest\.config\.ts|vite\.config\.ts|test/global-setup\.ts|test/setup-env\.ts|test/http/harness\.ts|drizzle/|package\.json$|pnpm-lock\.yaml$|\.sandcastle/Containerfile$)`;
+// 合并门槛：脚本自己跑，不信 agent 的口头结论。脚本内容与输出约定见项目配置的 gate（profile.ts 的 GateConfig）。
+// 输出里有一行 GATE_TIER: full|selected，脚本据此计数、写进 PR；重跑才通过时有 GATE_FLAKY。
+const GATE_RERUN_MAX = project.gate.rerunMax;
 type GateTier = "selected" | "full";
 const gateTier = (stdout: string): GateTier => (stdout.includes("GATE_TIER: selected") ? "selected" : "full");
 const gateTierName = (tier: GateTier) => (tier === "selected" ? "按依赖选" : "完整");
-const GATE_SELECT = String.raw`
-changed=$(git diff --name-only "$(git merge-base HEAD ${BASE_REF})" HEAD)
-existing=$(printf '%s\n' "$changed" | while read -r f; do [ -n "$f" ] && [ -f "$f" ] && printf '%s ' "$f"; done)
-infra=$(printf '%s\n' "$changed" | grep -E '${FULL_PATHS}' | head -5)
-total=$(ls test/pipeline/*.test.ts | wc -l | tr -d ' '); limit=$((total / 2))
-tier=full; reason=""
-if [ "$GATE_FULL" = "1" ]; then reason="GATE_FULL=1"
-elif [ -n "$infra" ]; then reason="改到依赖图看不到的测试基础设施：$(echo $infra)"
-else
-  picked=""
-  if [ -n "$existing" ]; then
-    if timeout 300 npx vitest related $existing --run --passWithNoTests --reporter=verbose --testNamePattern=__gate_select_none__ > /tmp/gate-related.log 2>&1; then
-      picked=$(plain /tmp/gate-related.log | grep -oE 'test/pipeline/[^ ]+\.test\.ts' | sort -u)
-    else reason="vitest related 失败或超时（见 /tmp/gate-related.log）"
-    fi
-  fi
-  if [ -z "$reason" ]; then
-    picked=$(printf '%s\n%s\n' "$picked" "$(printf '%s\n' "$changed" | grep -E '^test/pipeline/.+\.test\.ts$' | while read -r f; do [ -f "$f" ] && echo "$f"; done)" | grep . | sort -u)
-    n=$(printf '%s\n' "$picked" | grep -c .)
-    if [ "$n" -gt "$limit" ]; then reason="依赖图选中 $n 个 pipeline 测试文件，超过总数 $total 的一半"
-    else tier=selected
-    fi
-  fi
-fi
-`;
-const GATE_SCRIPT = String.raw`
-plain() { sed 's/\[[0-9;]*m//g' "$1"; }
-failures() { plain "$1" | sed -n '/Failed \(Tests\|Suites\)/,/Test Files/p' | grep -v 'Test Files' | cut -c1-300 | head -80; }
-totals() { plain "$1" | grep -E "Test Files|Tests " | tail -2; }
-${GATE_SELECT}
-unit=$(ls test/*.test.ts test/*.test.tsx 2>/dev/null | tr '\n' ' ')
-if [ "$tier" = selected ]; then
-  echo "GATE_TIER: selected（test/http 全部、test/ 根目录单元测试，加 test/pipeline 里依赖图选中的 $n / $total 个）"
-  [ -n "$picked" ] && printf '%s\n' "$picked" | sed 's/^/  /'
-  testcmd="npx vitest run test/http $(echo $picked)"
-else
-  echo "GATE_TIER: full（$reason）"
-  testcmd="npx vitest run test/http test/pipeline"
-fi
-# 跑一段测试：通过返回 0；失败文件不超过 GATE_RERUN_MAX 个时单独重跑一次，重跑通过记 GATE_FLAKY
-stage() {
-  log=$1; shift
-  "$@" > $log 2>&1 && { totals $log; return 0; }
-  files=$(plain $log | grep -oE "FAIL +test/[^ ]+\.test\.tsx?" | awk '{print $2}' | sort -u)
-  count=$(printf '%s
-' "$files" | grep -c .)
-  if [ "$count" -eq 0 ] || [ "$count" -gt ${GATE_RERUN_MAX} ]; then
-    echo "测试失败（失败文件 $count 个，不重跑）："; failures $log; totals $log; return 1
-  fi
-  echo "测试有 $count 个文件失败，单独重跑一次："; echo "$files"
-  npx vitest run $files > $log.rerun 2>&1 || { echo "重跑仍失败："; failures $log.rerun; totals $log.rerun; return 1; }
-  echo "GATE_FLAKY: 重跑通过。第一次的失败："; failures $log; totals $log
-}
-npm run typecheck > /tmp/gate-typecheck.log 2>&1 || { plain /tmp/gate-typecheck.log | tail -40; exit 1; }
-# 先跑 test/ 根目录的单元测试（约 1–2 分钟）：i18n 棘轮这类几秒就能报的失败不用等 40 分钟的完整测试
-if [ -n "$unit" ]; then
-  echo "单元测试（test/ 根目录）："
-  stage /tmp/gate-unit.log npx vitest run $unit || exit 1
-fi
-stage /tmp/gate-test.log $testcmd || exit 1
-`;
+const GATE_SCRIPT = project.gate.script({ baseRef: BASE_REF });
 
-// 门槛同一时间只跑一个（不分档位）：两个沙箱同时跑时 CPU 和 PG 都被挤满，单个用例常要 30 多秒，各跑 75–90 分钟，
-// 还容易超时失败（2026-11-23 #1141、#1160、#1166/#1167）。2026-11-24 起精简门槛也排队：和完整测试同时跑时
-// 完整 76.6 分钟（失败）、精简 37.7 分钟，比先后跑（约 33 + 21 分钟）还慢。
-// 排上队的门槛独占一份连接预算，用 8 个 worker（约 300 个连接）；agent 自己在另一个沙箱跑测试仍是 4 个
-// worker（约 150 个），所以宿主机 PG 要 max_connections ≥ 600（db_script/pg_setup.sh）。
-const GATE_WORKERS = "8";
+// 门槛同一时间只跑一个（不分档位）：并行跑时 CPU 与测试依赖的服务都被挤满，反而比先后跑更慢、更容易超时。
+// 门槛独占时可以给更多资源（项目配置 gate.env，比如更多 worker）。
 let gateQueue: Promise<unknown> = Promise.resolve();
 type ExecResult = { stdout: string; exitCode: number };
 const minutes = (ms: number) => (ms / 60_000).toFixed(1);
@@ -322,7 +174,7 @@ async function runGate<R extends ExecResult>(
     const waited = Date.now() - queued;
     if (waited > 5_000) console.log(`  ⏳ #${issueId} 排队 ${minutes(waited)} 分钟后开始跑门槛`);
     const started = Date.now();
-    const r = await exec(`${envPrefix({ ...env, CRM_TEST_WORKERS: GATE_WORKERS })} sh -c ${shellQuote(GATE_SCRIPT)}`);
+    const r = await exec(`${envPrefix({ ...env, ...project.gate.env })} sh -c ${shellQuote(GATE_SCRIPT)}`);
     const took = `${gateTierName(gateTier(r.stdout))}门槛用时 ${minutes(Date.now() - started)} 分钟${waited > 5_000 ? `（之前排队 ${minutes(waited)} 分钟）` : ""}`;
     console.log(`  ⏱ #${issueId} ${took}，${r.exitCode === 0 ? "通过" : "失败"}`);
     return { ...r, stdout: `${r.stdout}\nGATE_TIME: ${took}` };
@@ -332,76 +184,21 @@ async function runGate<R extends ExecResult>(
   return run;
 }
 
-// 仓库用 pnpm（package.json 的 packageManager）。拷进来的 node_modules 是宿主机 darwin 的，
-// 缺 linux 原生包（rolldown、typescript-go），npm install 补不上，要用 pnpm 按锁文件重装。
-const PNPM = JSON.parse(readFileSync("package.json", "utf8")).packageManager as string;
+// 沙箱建好后装依赖（项目配置 install）：拷进来的 node_modules 等是宿主机的，可能缺容器平台的原生包。
 const hooks = {
-  sandbox: { onSandboxReady: [{ command: `npx -y ${PNPM} install --frozen-lockfile` }] },
+  sandbox: { onSandboxReady: [{ command: project.install.onSandboxReady }] },
 };
-const copyToWorktree = ["node_modules"];
+const copyToWorktree = project.install.copyToWorktree;
 
 // createSandbox 里的 sandbox.run 不使用 agent provider 的 env，只有容器启动时 podman({env}) 的 env
 // 才进得了 agent 的 shell，所以测试库连接与上下文预算都在这里注入。
-const sandboxFor = (env: Record<string, string>) => podman({ env: { ...claudeEnv, ...env } });
+const sandboxFor = (env: Record<string, string>) => project.sandbox({ ...claudeEnv, ...env });
 
 // ---------------------------------------------------------------------------
 // Host helpers
 // ---------------------------------------------------------------------------
 
-// 宿主机命令一律带超时：2026-11-07 机器睡眠醒来后一个 git fetch 挂了一个多小时不返回，整个运行停在那里。
-// 超时抛的错带 TIMEOUT_TEXT，被 TRANSIENT 认作临时错误。
-const SH_TIMEOUT_MS = 10 * 60_000;
-const GIT_REMOTE_TIMEOUT_MS = 5 * 60_000;
-const TIMEOUT_TEXT = "命令超时";
-const sh = (cmd: string, args: string[], timeout = SH_TIMEOUT_MS) => {
-  try {
-    // stderr 不透传到终端：trySh 探测时的预期失败（如 `gh pr view` 的 no pull requests found）每轮会刷屏；
-    // 失败时 stderr 仍在抛出的错误里（e.stderr / message），调用方照常拿得到。
-    return execFileSync(cmd, args, { encoding: "utf8", timeout, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"] }).trim();
-  } catch (e) {
-    if ((e as { code?: unknown }).code === "ETIMEDOUT") throw new Error(`${TIMEOUT_TEXT}（${timeout / 1000} 秒）：${cmd} ${args.join(" ").slice(0, 200)}`);
-    throw e;
-  }
-};
-
-const trySh = (cmd: string, args: string[], timeout?: number) => {
-  try {
-    return { ok: true as const, out: sh(cmd, args, timeout) };
-  } catch (e) {
-    return { ok: false as const, out: String((e as { stderr?: unknown }).stderr || e) };
-  }
-};
-
-// 连远端的 git（fetch / push）偶尔撞上 SSH、DNS、网络抖动（2026-11-04 一次
-// `Permission denied (publickey)` 让 #390 落地失败、下次开头的 fetch 直接让进程崩了）。
-// 这类错误等一会儿重试，最多等约半小时；被拒（non-fast-forward、lease 过期）之类的照常立即失败。
-const REMOTE_TRANSIENT = new RegExp(
-  [
-    "Permission denied \\(publickey\\)", "Could not read from remote repository", "Could not resolve host",
-    "Connection (timed out|reset|refused|closed)", "Operation timed out", "Network is unreachable", "early EOF",
-    "unexpected disconnect", "kex_exchange_identification", "ssh_exchange_identification", "unable to access",
-    "RPC failed", "HTTP 5\\d\\d", "ETIMEDOUT", "ECONNRESET", "EAI_AGAIN", "TLS handshake timeout", TIMEOUT_TEXT,
-  ].join("|"),
-  "i",
-);
-const REMOTE_RETRY_WAITS_MS = [30_000, 60_000, 120_000, 300_000, 600_000, 900_000];
-
-async function gitRemote(args: string[]) {
-  for (let attempt = 0; ; attempt++) {
-    const result = trySh("git", args, GIT_REMOTE_TIMEOUT_MS);
-    const wait = REMOTE_RETRY_WAITS_MS[attempt];
-    if (result.ok || wait === undefined || !REMOTE_TRANSIENT.test(result.out)) return result;
-    console.warn(`  ⚠ git ${args.join(" ")} 连不上远端（${result.out.split("\n")[0].slice(0, 160)}），${wait / 1000} 秒后重试（第 ${attempt + 1}/${REMOTE_RETRY_WAITS_MS.length} 次）`);
-    await new Promise((resolve) => setTimeout(resolve, wait));
-  }
-}
-
-/** 同 gitRemote，重试用完仍失败就抛错（原来直接用 sh 的地方）。 */
-async function gitRemoteOrThrow(args: string[]) {
-  const result = await gitRemote(args);
-  if (!result.ok) throw new Error(`git ${args.join(" ")} 失败：${result.out.slice(0, 500)}`);
-  return result.out;
-}
+// sh / trySh / gitRemote 在 shell.ts。
 
 // 沙箱和落地里的临时错误（2026-11-07 机器睡眠醒来后：复制 node_modules 到工作区超过 60 秒、
 // GitHub API 读超时）不直接打 stuck：等一会儿整步重跑。build 在原分支上重跑，implementer 会接着已有提交做；
@@ -442,24 +239,10 @@ function syncHostBase() {
   }
 }
 
-/**
- * 带全部 `include` 标签、不带任何 `exclude` 标签的 open 票。
- * 用 `--label`（issues 列表接口，实时）而不是 `--search`（搜索索引）：索引有延迟，刚打上的标签要过一阵
- * 才查得到。2026-11-05 #393 刚打上 prepped，plan 用 --search 没查到，脚本以为没票可做就退出了。
- * 排除的标签在本地过滤。
- */
-type ListedIssue = { number: number; title: string; body: string; labels: { name: string }[]; updatedAt: string };
+/** 带全部 `include` 标签、不带任何 `exclude` 标签的 open 票（排除的标签在本地过滤）。 */
+type ListedIssue = ForgeIssue;
 const listIssues = (include: string[], exclude: string[] = []): ListedIssue[] =>
-  (JSON.parse(
-    sh("gh", [
-      "issue", "list", "--state", "open", "--limit", "200",
-      ...include.flatMap((label) => ["--label", label]), "--json", "number,title,body,labels,updatedAt",
-    ]),
-  ) as ListedIssue[])
-    .filter((issue) => !issue.labels.some((label) => exclude.includes(label.name)));
-
-const q = (label: string) => `label:"${label}"`;
-const notIn = (...labels: string[]) => labels.map((l) => `-${q(l)}`).join(" ");
+  forge.listOpenIssues(include).filter((issue) => !issue.labels.some((label) => exclude.includes(label)));
 
 // ---------------------------------------------------------------------------
 // Plan：确定性计算，不交给 agent（planner agent 曾把「同文件只留编号小的」比反）
@@ -469,8 +252,8 @@ const notIn = (...labels: string[]) => labels.map((l) => `-${q(l)}`).join(" ");
 const openStates = new Map<number, boolean>();
 function isOpen(n: number): boolean {
   if (!openStates.has(n)) {
-    const r = trySh("gh", ["issue", "view", String(n), "--json", "state", "--jq", ".state"]);
-    openStates.set(n, !r.ok || r.out === "OPEN"); // 查不到时当作 open，宁可少做
+    const r = attempt(() => forge.issueState(String(n)));
+    openStates.set(n, !r.ok || r.value === "open"); // 查不到时当作 open，宁可少做
   }
   return openStates.get(n)!;
 }
@@ -482,24 +265,21 @@ const openBlockers = (body: string) => blockersOf(body).filter(isOpen);
  * 拆过的父票：prep 拆票时去掉父票的 Sandcastle，正文加 `## Split into`，之后没人管它，
  * 被它 block 的票就一直排不上（2026-11-04 #381 的子票 #389、#390 都合并了，#382 仍在等 #381）。
  * 每次调度开头查不带 Sandcastle、有 `## Split into` 的 open 票，子票全关了就勾上清单、关掉父票。
- * 「上下文不够」那种父票保留 Sandcastle、由自己的 PR 关，不在这里处理。gh 出错只打警告。
+ * 「上下文不够」那种父票保留 Sandcastle、由自己的 PR 关，不在这里处理。平台出错只打警告。
  */
 function closeFinishedParents() {
-  const parents = trySh("gh", [
-    "issue", "list", "--state", "open", "--limit", "100",
-    "--search", `"Split into" in:body ${notIn(LABEL.picked)}`, "--json", "number,body",
-  ]);
+  const parents = attempt(() => forge.listSplitParents(LABEL.picked));
   if (!parents.ok) {
     console.warn(`  ⚠ 查拆过的父票失败：${parents.out.slice(0, 200)}`);
     return;
   }
-  for (const parent of JSON.parse(parents.out) as { number: number; body: string }[]) {
+  for (const parent of parents.value) {
     const children = splitChildren(parent.body);
     if (children.length === 0 || children.some(isOpen)) continue;
     const body = parent.body.replace(/^(\s*[-*]\s*)\[ \](?=\s*#\d+)/gm, "$1[x]");
     const list = children.map((n) => `#${n}`).join("、");
-    if (body !== parent.body) trySh("gh", ["issue", "edit", String(parent.number), "--body", body]);
-    const closed = trySh("gh", ["issue", "close", String(parent.number), "--comment", `子票 ${list} 都已关闭，Sandcastle 关闭父票。`]);
+    if (body !== parent.body) attempt(() => forge.editIssueBody(String(parent.number), body));
+    const closed = attempt(() => forge.closeIssue(String(parent.number), `子票 ${list} 都已关闭，Sandcastle 关闭父票。`));
     if (closed.ok) {
       openStates.set(parent.number, false);
       console.log(`  ✓ 父票 #${parent.number} 的子票 ${list} 都已关闭，已关闭父票`);
@@ -520,16 +300,14 @@ function closeFinishedParents() {
  */
 async function cleanupClosedIssues() {
   for (const label of [LABEL.prepped, LABEL.prOpen, LABEL.stuck]) {
-    const closed = trySh("gh", [
-      "issue", "list", "--state", "closed", "--label", label, "--limit", "100", "--json", "number", "--jq", ".[].number",
-    ]);
+    const closed = attempt(() => forge.listClosedIssueNumbers(label));
     if (!closed.ok) {
       console.warn(`  ⚠ 查带 ${label} 的已关闭票失败：${closed.out.slice(0, 200)}`);
       continue;
     }
     const cleared: string[] = [];
-    for (const n of closed.out.split("\n").filter(Boolean)) {
-      const edited = trySh("gh", ["issue", "edit", n, "--remove-label", label]);
+    for (const n of closed.value.map(String)) {
+      const edited = attempt(() => forge.removeLabel(n, label));
       if (edited.ok) cleared.push(`#${n}`);
       else console.warn(`  ⚠ 去掉 #${n} 的 ${label} 失败：${edited.out.slice(0, 200)}`);
     }
@@ -555,8 +333,8 @@ async function cleanupClosedIssues() {
   for (const branch of new Set([...remoteBranches, ...localBranches])) {
     const id = branch.match(branchOf)![1]!;
     if (!issueClosed(id)) continue;
-    const pr = trySh("gh", ["pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--jq", ".[0].number"]);
-    if (!pr.ok || !pr.out) continue;
+    const pr = attempt(() => forge.findPr(branch, "merged"));
+    if (!pr.ok || !pr.value) continue;
     const removed: string[] = [];
     if (remoteBranches.includes(branch)) {
       const deleted = await gitRemote(["push", REMOTE, "--delete", branch]);
@@ -573,7 +351,7 @@ async function cleanupClosedIssues() {
       removed.push("worktree");
     }
     if (localBranches.includes(branch) && trySh("git", ["branch", "-D", branch]).ok) removed.push("本地分支");
-    if (removed.length > 0) console.log(`  🧹 #${id} 已关闭、PR #${pr.out} 已合并，删除${removed.join("、")}`);
+    if (removed.length > 0) console.log(`  🧹 #${id} 已关闭、PR #${pr.value} 已合并，删除${removed.join("、")}`);
   }
 }
 
@@ -594,10 +372,10 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
   const awaitingReview = new Set<number>();
   for (const w of waiting.sort((a, b) => a.number - b.number)) {
     awaitingReview.add(w.number);
-    for (const f of changedFiles(w.body).files) if (!taken.has(f)) taken.set(f, w.number);
+    for (const f of changedFiles(w.body, APPEND_ONLY).files) if (!taken.has(f)) taken.set(f, w.number);
   }
   for (const r of candidates.filter((c) => running.has(String(c.number)))) {
-    for (const f of changedFiles(r.body).files) if (!taken.has(f)) taken.set(f, r.number);
+    for (const f of changedFiles(r.body, APPEND_ONLY).files) if (!taken.has(f)) taken.set(f, r.number);
   }
   const picked: Issue[] = [];
   for (const issue of candidates.filter((c) => allowed(c.number) && !running.has(String(c.number))).sort(byUrgency)) {
@@ -606,7 +384,7 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
       log(`  跳过 #${issue.number}：blocker ${open.map((n) => `#${n}`).join("、")} 还没关`);
       continue;
     }
-    const { files, fallback } = changedFiles(issue.body);
+    const { files, fallback } = changedFiles(issue.body, APPEND_ONLY);
     if (fallback) warn(`  ⚠ #${issue.number} 的指引里没认出 Change 行，按指引引用的文件处理：${files.join("、")}`);
     else if (files.length === 0) warn(`  ⚠ #${issue.number} 的指引里没认出要改的文件，按不改已有文件处理`);
     const clash = files.find((f) => taken.has(f));
@@ -622,7 +400,7 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
     for (const f of files) taken.set(f, issue.number);
     // 已有外部 PR（`Closes` 了这张票）时在它的分支上接着改；否则照旧用自己的分支。
     const pr = prFor(issue.number);
-    const branch = pr && !pr.headRefName.startsWith("sandcastle/") ? pr.headRefName : ownBranch(issue.number);
+    const branch = pr && !pr.branch.startsWith("sandcastle/") ? pr.branch : ownBranch(issue.number);
     picked.push({ id: String(issue.number), title: issue.title, branch });
   }
   return picked;
@@ -656,38 +434,25 @@ function pushBranch(issue: Issue) {
     : ["push", "--force-with-lease", "-u", REMOTE, issue.branch]);
 }
 
-type LinkedPr = {
-  number: number;
-  state: string;
-  headRefName: string;
-  isCrossRepository: boolean;
-  reviews: { state: string; body: string; submittedAt: string }[];
-  comments: { body: string; createdAt: string }[];
-  commits: { committedDate: string }[];
-};
-const PR_FIELDS = "number,state,headRefName,isCrossRepository,reviews,comments,commits";
-
 /**
- * 这张票的 open PR：先按 issue 关联（PR 正文的 `Closes #n`），同时有自己的分支时用自己的；
+ * 这张票的 open PR：先按 issue 关联（PR 正文的关闭写法），同时有自己的分支时用自己的；
  * 关联里只有一个本仓库的外部 PR 时用它；有多个外部 PR 时不猜，返回 null 并打日志。
- * 关联查不到（接口出错、没有关联）时退回按分支名 `sandcastle/issue-n` 查，和改之前一样。
+ * 关联查不到（接口出错、没有关联）时退回按分支名 `sandcastle/issue-n` 查。
  */
-function prFor(issueId: string | number): LinkedPr | null {
-  const view = (ref: string): LinkedPr | null => {
-    const r = trySh("gh", ["pr", "view", ref, "--json", PR_FIELDS]);
-    if (!r.ok) return null;
-    const pr = JSON.parse(r.out) as LinkedPr;
-    return pr.state === "OPEN" ? pr : null;
+function prFor(issueId: string | number): ForgePr | null {
+  const view = (ref: string): ForgePr | null => {
+    const pr = forge.viewPr(ref);
+    return pr?.open ? pr : null;
   };
-  const linked = trySh("gh", ["issue", "view", String(issueId), "--json", "closedByPullRequestsReferences", "--jq", ".closedByPullRequestsReferences[].number"]);
+  const linked = attempt(() => forge.linkedPrIds(String(issueId)));
   const prs = linked.ok
-    ? linked.out.split("\n").filter(Boolean).map(view).filter((pr): pr is LinkedPr => pr !== null && !pr.isCrossRepository)
+    ? linked.value.map(view).filter((pr): pr is ForgePr => pr !== null && !pr.fromFork)
     : [];
-  const own = prs.find((pr) => pr.headRefName === ownBranch(issueId));
+  const own = prs.find((pr) => pr.branch === ownBranch(issueId));
   if (own) return own;
-  const external = prs.filter((pr) => !pr.headRefName.startsWith("sandcastle/"));
+  const external = prs.filter((pr) => !pr.branch.startsWith("sandcastle/"));
   if (external.length > 1) {
-    console.warn(`  ⚠ #${issueId} 关联了多个外部 PR（${external.map((pr) => `#${pr.number}`).join("、")}），不知道在哪个上改，跳过`);
+    console.warn(`  ⚠ #${issueId} 关联了多个外部 PR（${external.map((pr) => `#${pr.id}`).join("、")}），不知道在哪个上改，跳过`);
     return null;
   }
   return external[0] ?? view(ownBranch(issueId));
@@ -709,62 +474,52 @@ async function syncExternalBranch(issue: Issue) {
   }
 }
 
-/** 截图附件：gh 2.99+ 的 --attach 上传图片，没在正文里引用的附在末尾 */
-const attachArgs = (shots: string[]) =>
-  shots.flatMap((file) => ["--attach", `${file}#${basename(file)}`]);
-
 /** PR 正文的两大块：验收说明（最前面的一节，准备段落 + `.pr-notes/验收说明.md`）与其余各节（restSections 的结果）。 */
 type PrNotes = { acceptance: string; rest: string };
 
 async function pushAndOpenPr(issue: Issue, notes: PrNotes, shots: string[]): Promise<string> {
   const pushed = await pushBranch(issue);
   if (!pushed.ok) throw new Error(`push ${issue.branch} 失败：${pushed.out.slice(0, 500)}`);
-  const existing = sh("gh", [
-    "pr", "list", "--head", issue.branch, "--state", "open", "--json", "number", "--jq", ".[0].number",
-  ]);
+  const existing = forge.findPr(issue.branch, "open");
   if (existing) {
     // 已有 PR：自己的分支只替换正文里的「验收说明」一节，其余（上次的 Review / Gate 记录）逐字保留；
     // 外部 PR 不动别人写的正文，验收说明贴在评论里。
     if (isExternal(issue)) {
-      sh("gh", ["pr", "comment", existing, "--body", `Sandcastle 更新了这个分支。\n\n## 验收说明\n\n${notes.acceptance}\n\n${notes.rest}`, ...attachArgs(shots)]);
+      forge.commentPr(existing, `Sandcastle 更新了这个分支。\n\n## 验收说明\n\n${notes.acceptance}\n\n${notes.rest}`, shots);
     } else {
-      const body = sh("gh", ["pr", "view", existing, "--json", "body", "--jq", ".body"]);
-      sh("gh", ["pr", "edit", existing, "--body", replaceSection(body, "验收说明", `## 验收说明\n\n${notes.acceptance}`)]);
-      sh("gh", ["pr", "comment", existing, "--body", `Sandcastle 更新了这个分支（验收说明已更新）。\n\n${notes.rest}`, ...attachArgs(shots)]);
+      const body = forge.prBody(existing);
+      forge.editPrBody(existing, replaceSection(body, "验收说明", `## 验收说明\n\n${notes.acceptance}`));
+      forge.commentPr(existing, `Sandcastle 更新了这个分支（验收说明已更新）。\n\n${notes.rest}`, shots);
     }
     return existing;
   }
   // 外部 PR 不在这里新开：它被关了就说明人不要了。
   if (isExternal(issue)) throw new Error(`分支 ${issue.branch} 上已经没有 open 的 PR，外部 PR 不由 Sandcastle 重开。`);
   const commits = sh("git", ["log", `${BASE_REF}..${issue.branch}`, "--format=- %B"]);
-  const body = `Closes #${issue.id}\n\n## 验收说明\n\n${notes.acceptance}\n\n${notes.rest}\n\n## Commits\n\n${commits}`;
-  const url = sh("gh", [
-    "pr", "create", "--base", BASE_BRANCH, "--head", issue.branch,
-    "--title", `${issue.title} (#${issue.id})`, "--body", body, ...attachArgs(shots),
-  ]);
-  return url.split("/").pop()!;
+  const body = `${forge.closingRef(issue.id)}\n\n## 验收说明\n\n${notes.acceptance}\n\n${notes.rest}\n\n## Commits\n\n${commits}`;
+  return forge.createPr({ base: BASE_BRANCH, head: issue.branch, title: `${issue.title} (#${issue.id})`, body, attachments: shots });
 }
 
 function leaveForHuman(issue: Issue, pr: string, reason: string) {
-  sh("gh", ["issue", "edit", issue.id, "--add-label", LABEL.prOpen]);
-  sh("gh", ["pr", "comment", pr, "--body", `没有自动合并：${reason}`]);
+  forge.addLabel(issue.id, LABEL.prOpen);
+  forge.commentPr(pr, `没有自动合并：${reason}`);
 }
 
-/** agent 代拍板过的票：打 sandcastle:decided，把那些评论贴到 PR 上，人事后确认。gh 出错只警告，不影响落地。 */
+/** agent 代拍板过的票：打 sandcastle:decided，把那些评论贴到 PR 上，人事后确认。平台出错只警告，不影响落地。 */
 function reportDecisions(issueId: string, pr: string) {
-  const r = trySh("gh", ["issue", "view", issueId, "--json", "comments", "--jq", ".comments[].body | select(startswith(\"" + DECIDED_MARK + "\")) | @json"]);
+  const r = attempt(() => forge.issueComments(issueId));
   if (!r.ok) return console.warn(`  ⚠ 读 #${issueId} 的代拍板评论失败：${r.out.slice(0, 200)}`);
-  const decisions = r.out.split("\n").filter(Boolean).map((line) => (JSON.parse(line) as string).slice(DECIDED_MARK.length).trim());
+  const decisions = r.value.filter((body) => body.startsWith(DECIDED_MARK)).map((body) => body.slice(DECIDED_MARK.length).trim());
   if (!decisions.length) return;
-  const label = trySh("gh", ["issue", "edit", issueId, "--add-label", LABEL.decided]);
-  const comment = trySh("gh", ["pr", "comment", pr, "--body", `## 代拍板\n\nagent 按 \`.sandcastle/DECISIONS.md\` 自己定了 ${decisions.length} 个设计决定，请事后确认（不同意就在 issue 上回复，确认后去掉 #${issueId} 的 \`${LABEL.decided}\`）：\n\n${decisions.map((d, n) => `<details><summary>第 ${n + 1} 个</summary>\n\n${d}\n\n</details>`).join("\n\n")}`]);
+  const label = attempt(() => forge.addLabel(issueId, LABEL.decided));
+  const comment = attempt(() => forge.commentPr(pr, `## 代拍板\n\nagent 按 \`.sandcastle/DECISIONS.md\` 自己定了 ${decisions.length} 个设计决定，请事后确认（不同意就在 issue 上回复，确认后去掉 #${issueId} 的 \`${LABEL.decided}\`）：\n\n${decisions.map((d, n) => `<details><summary>第 ${n + 1} 个</summary>\n\n${d}\n\n</details>`).join("\n\n")}`));
   for (const x of [label, comment]) if (!x.ok) console.warn(`  ⚠ #${issueId} 代拍板标记失败：${x.out.slice(0, 200)}`);
   console.log(`  📝 #${issueId} 有 ${decisions.length} 个代拍板，打 ${LABEL.decided}`);
 }
 
 function markStuck(issueId: string, reason: string) {
-  sh("gh", ["issue", "edit", issueId, "--add-label", LABEL.stuck]);
-  sh("gh", ["issue", "comment", issueId, "--body", `Sandcastle 停下了：${reason}`]);
+  forge.addLabel(issueId, LABEL.stuck);
+  forge.commentIssue(issueId, `Sandcastle 停下了：${reason}`);
 }
 
 /** PR 上以这个开头的评论或 review 正文表示「打回 Sandcastle」（作者不能对自己的 PR 点 Request changes）。 */
@@ -780,17 +535,15 @@ function reopenRequestedRevisions() {
     if (!allowed(issueId)) continue;
     const pr = prFor(issueId);
     if (!pr) continue;
-    const lastCommit = pr.commits.map((c) => c.committedDate).sort().at(-1) ?? "";
+    const lastCommit = pr.lastCommitAt;
     const signals = [
-      ...pr.reviews
-        .filter((r) => r.state === "CHANGES_REQUESTED" || r.body.trim().startsWith(REVISE_COMMAND))
-        .map((r) => r.submittedAt),
-      ...pr.comments.filter((c) => c.body.trim().startsWith(REVISE_COMMAND)).map((c) => c.createdAt),
+      ...pr.reviews.filter((r) => r.changesRequested || r.body.trim().startsWith(REVISE_COMMAND)).map((r) => r.at),
+      ...pr.comments.filter((c) => c.body.trim().startsWith(REVISE_COMMAND)).map((c) => c.at),
     ];
     if (!signals.some((at) => at > lastCommit)) continue;
-    sh("gh", ["issue", "edit", String(issueId), "--remove-label", LABEL.prOpen]);
-    sh("gh", ["pr", "comment", String(pr.number), "--body", "收到打回，这张票重新进入 Sandcastle：implementer 会先处理这个 PR 上的意见。"]);
-    console.log(`  ↺ #${issueId} 收到打回（PR #${pr.number}），重新排队`);
+    forge.removeLabel(String(issueId), LABEL.prOpen);
+    forge.commentPr(pr.id, "收到打回，这张票重新进入 Sandcastle：implementer 会先处理这个 PR 上的意见。");
+    console.log(`  ↺ #${issueId} 收到打回（PR #${pr.id}），重新排队`);
   }
 }
 
@@ -806,24 +559,22 @@ function reportFlaky(issue: Issue, pr: string, gateOutput: string): { tickets: s
   const parts = gateOutput.split("GATE_FLAKY");
   const before = parts.slice(0, -1).join("\n");
   const after = parts.slice(1).join("\n");
-  const files = [...new Set(before.match(/^test\/\S+\.test\.tsx?$/gm) ?? [])];
+  const files = [...new Set(before.match(new RegExp(`^${project.gate.testFile.source}$`, "gm")) ?? [])];
   if (files.length === 0) return { tickets: [], deferred: [] };
-  trySh("gh", ["label", "create", LABEL.flaky, "--color", "fbca04", "--description", "偶发失败的测试（Sandcastle 门槛自动开票）"]);
-  const open: { number: number; title: string; body: string }[] = JSON.parse(
-    sh("gh", ["issue", "list", "--state", "open", "--label", LABEL.flaky, "--limit", "100", "--json", "number,title,body"]),
-  );
+  attempt(() => forge.ensureLabel(LABEL.flaky, "fbca04", "偶发失败的测试（Sandcastle 门槛自动开票）"));
+  const open = forge.listOpenIssues([LABEL.flaky]);
   const seen = `#${issue.id} 的门槛（PR #${pr}）`;
   const summary = `\`\`\`\n${after.trim().slice(0, 3000)}\n\`\`\``;
   // 当时的环境：判断是不是负载 / 并发问题时先看这个
   const others = [...running.values()].filter((i) => i.id !== issue.id).map((i) => `#${i.id}`);
   const load = loadavg().map((n) => n.toFixed(1)).join(" / ");
   const env = `开票时：同时在做的票 ${others.length ? others.join("、") : "无"}；宿主机 1 / 5 / 15 分钟负载 ${load}（${cpus().length} 核）。`;
-  // 分组、签名标记、标题与已有票的匹配见 guide.ts 的 flakyTickets；开不开票见 flakyTriage；这里只拼正文 / 评论并调 gh。
+  // 分组、签名标记、标题与已有票的匹配见 guide.ts 的 flakyTickets；开不开票见 flakyTriage；正文见项目配置 texts.flakyIssueBody。
   let history: FlakySighting[] = [];
   try {
     history = JSON.parse(readFileSync(FLAKY_FILE, "utf8")) as FlakySighting[];
   } catch {}
-  const triage = flakyTriage(flakyTickets(files, after, open), history, issue.id, new Date());
+  const triage = flakyTriage(flakyTickets(files, after, open, project.gate.testFile), history, issue.id, new Date());
   writeFileSync(FLAKY_FILE, `${JSON.stringify(triage.history, null, 1)}\n`);
   const deferred = triage.deferred.flatMap((g) => g.files);
   if (deferred.length) console.log(`  ⚠ #${issue.id} 门槛偶发超时 / 连接失败，7 天内第一次，只记录不开票：${deferred.join("、")}`);
@@ -838,32 +589,14 @@ function reportFlaky(issue: Issue, pr: string, gateOutput: string): { tickets: s
       const again = marker
         ? `又出现一次：${seen}，这次失败的文件：${list}。`
         : `又出现一次：${seen}。`;
-      sh("gh", ["issue", "comment", String(existing), "--body", `${again}${env}第一次的失败：\n\n${summary}`]);
+      forge.commentIssue(String(existing), `${again}${env}第一次的失败：\n\n${summary}`);
       return `#${existing}`;
     }
-    const body = [
-      `${list} 在 ${seen}的完整测试里失败，单独重跑通过。沙箱里门槛的完整测试用 8 个 worker 并行（\`CRM_TEST_WORKERS=8\`，同一时间只跑一个），agent 自己跑测试用 4 个。`,
-      "", env, ...(prior(groupFiles) ? ["", prior(groupFiles)] : []),
-      "", "## 第一次的失败", "", summary, "",
-      "## 怎么修", "",
-      "按诊断难 bug 的做法：先有一条能让它稳定变红的命令，再改。",
-      "",
-      "- 先读失败摘要判断类型：超时（hook / 用例在负载下变慢）、随机数据撞上断言、用例之间共享状态或顺序依赖、外部服务连接。",
-      "- 先查同样的报错是不是已经修过：`gh issue list --label flaky --state closed --search \"<报错关键句>\"`，再 `git log --oneline -S` / `--grep` 找对应提交。已经修过（失败的分支早于那个提交）就不用复现，提交信息写明是哪个提交修的、依据是什么。",
-      "- 复现：要的是一条修复前变红、修复后变绿的命令。超时、随机数据类可以单跑这个文件，或和重夹具文件一起跑、在后台占满 CPU 再跑；跨进程 / 跨沙箱的竞争（共用的 PG 角色、库、对象等）单跑复现不了，照 #439 写一个并发用例让它稳定变红。重复单跑只作补充，总共不超过 20 分钟。复现不了就照摘要从代码推断原因，并在提交信息里写明推断依据。",
-      "- 沙箱里全局超时已是 180 s / 120 s（`CRM_TEST_TIMEOUT_SCALE=2`），再超时先查是否真卡住，不要只是继续放宽。",
-      "- 超时类：确认是负载下变慢才给单个 hook / 用例放宽超时（照 2bcb07a 的写法），不改全局配置。随机数据类：改断言或数据，让它不可能撞上。",
-      "",
-      "## Acceptance criteria", "",
-      "- [ ] 失败原因写进提交信息（复现命令，或推断的依据）",
-      `- [ ] 修复后复现命令变绿、${list} 单跑通过（重复单跑总共不超过 20 分钟）；根因已被别的提交修掉时只核实、不改代码`,
-      "- [ ] 不放宽全局超时，不删除或改弱断言",
-    ].join("\n");
-    const url = sh("gh", [
-      "issue", "create", "--title", title, "--body", marker ? `${body}\n${marker}` : body,
-      "--label", LABEL.flaky, "--label", LABEL.picked, "--label", "ready-for-agent",
-    ]);
-    return `#${url.split("/").pop()}`;
+    const body = project.texts.flakyIssueBody({ files: groupFiles, seen, env, prior: prior(groupFiles), summary });
+    const id = forge.createIssue({
+      title, body: marker ? `${body}\n${marker}` : body, labels: [LABEL.flaky, LABEL.picked, LABEL.readyForAgent],
+    });
+    return `#${id}`;
   });
   return { tickets, deferred };
 }
@@ -929,16 +662,9 @@ async function build(issue: Issue) {
         maxIterations: 1,
         idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
         agent,
-        prompt: [
-          `分支 ${issue.branch}（issue #${issue.id}：${issue.title}）的 review 打回了，修改意见如下。`,
-          "", items, "",
-          `先 \`gh issue view ${issue.id}\` 看验收标准，再逐条处理上面的意见。遵守 CLAUDE.md 的「Context budget」：从意见给的 file:line 出发，grep -n 定位，不要广泛探索。`,
-          "改行为的意见先写或改测试（跑红再跑绿）。只跑改到的测试文件（`npx vitest run <file>`）和 `npm run typecheck`，不要跑完整测试。",
-          `每条意见处理完提交一次，按仓库风格写中文提交信息、末尾 (#${issue.id})。`,
-          "某条意见你判断不该改（与票冲突、要人拍板），不要改，在输出里写明哪条、为什么。",
-          `除了本票（issue #${issue.id}）和本次会话里自己新开的 issue，不要改其他 issue 的标签或正文（评论除外）；本次会话之前开出的票（包括本票早先会话开的）也不能改。`,
-          "最后输出 <promise>COMPLETE</promise>。",
-        ].join("\n"),
+        prompt: project.texts.revisePrompt({
+          issueId: issue.id, branch: issue.branch, title: issue.title, viewIssue: forge.viewIssueCommand(issue.id), items,
+        }),
       }));
       revisions.push({ items, run: revise });
       reviews.push(await runReview(revisions.length));
@@ -955,14 +681,10 @@ async function build(issue: Issue) {
         maxIterations: 1,
         idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
         agent,
-        prompt: [
-          `分支 ${issue.branch}（issue #${issue.id}）在合并门槛上失败，摘要如下；完整日志在 /tmp/gate-typecheck.log、/tmp/gate-unit.log（test/ 根目录单元测试，先跑）、/tmp/gate-test.log，重跑的在同名加 .rerun（用 grep 看，不要整读）。测试失败的文件不超过 ${GATE_RERUN_MAX} 个时已经单独重跑过一次，仍失败才到你这里。`,
-          "```", gateResult.stdout.slice(-4000), "```",
-          "只修这些失败：用 `npx vitest run <file>` 跑失败的文件确认变绿，按仓库风格写中文提交信息、末尾 (#" + issue.id + ")。",
-          "如果失败与本票改动无关（偶发、环境问题）或不能确定怎么修，不要改代码，在输出里说明原因。",
-          `除了本票（issue #${issue.id}）和本次会话里自己新开的 issue，不要改其他 issue 的标签或正文（评论除外）；本次会话之前开出的票（包括本票早先会话开的）也不能改。`,
-          "最后输出 <promise>COMPLETE</promise>。",
-        ].join("\n"),
+        prompt: project.texts.fixPrompt({
+          issueId: issue.id, branch: issue.branch, title: issue.title, viewIssue: forge.viewIssueCommand(issue.id),
+          gateOutput: gateResult.stdout.slice(-4000), rerunMax: GATE_RERUN_MAX,
+        }),
       }));
       gateResult = await gate();
     }
@@ -992,16 +714,12 @@ async function build(issue: Issue) {
 const REBASE_STATE = "test -d \"$(git rev-parse --git-path rebase-merge)\" || test -d \"$(git rev-parse --git-path rebase-apply)\"";
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// drizzle 迁移按目录排序、靠 snapshot.json 的 prevIds 串成链。两张票各生成一个迁移时 rebase 没有文本冲突，
-// 但链分叉了：本票加的第一个迁移的 prevIds 必须含 origin/main 最新迁移的 id，否则要重新生成。
-const migrationChainOk = (head: string) => [
-  `MIG=$(git diff --name-only --diff-filter=A ${BASE_REF}...${head} -- 'drizzle/*/snapshot.json' | sort | head -1)`,
-  '[ -z "$MIG" ] && exit 0',
-  `LATEST=$(git ls-tree --name-only ${BASE_REF} drizzle/ | sort | tail -1)`,
-  `ID=$(git show ${BASE_REF}:$LATEST/snapshot.json | jq -r .id)`,
-  `git show ${head}:$MIG | jq -e --arg id "$ID" '.prevIds | index($id)' > /dev/null`,
-].join("; ");
-const MIGRATION_CHAIN_OK = migrationChainOk("HEAD");
+// 合并前的额外一致性检查（项目配置 integrity，比如数据库迁移链没分叉）：rebase 没有文本冲突也可能坏。
+// 没配置时恒为通过。
+const integrityOk = (head: string) => (project.integrity ? project.integrity.command(head, BASE_REF) : "true");
+const INTEGRITY_OK = integrityOk("HEAD");
+const integrityBroken = () => project.integrity?.broken(BASE_REF) ?? "一致性检查没通过";
+const integrityName = project.integrity?.name ?? "一致性检查";
 
 /**
  * 把分支 rebase 到最新的 origin/main：没冲突直接 rebase；有冲突开一次 agent 会话按
@@ -1035,7 +753,7 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     const conflictFiles = probe.ok ? probe.out.split("\n\n")[0]!.split("\n").slice(1).filter(Boolean) : [];
     const rebase = await sandbox.exec(`git rebase ${BASE_REF}`);
     const conflicted = rebase.exitCode !== 0;
-    const chainBroken = !conflicted && (await sandbox.exec(MIGRATION_CHAIN_OK)).exitCode !== 0;
+    const chainBroken = !conflicted && (await sandbox.exec(INTEGRITY_OK)).exitCode !== 0;
     if (conflicted || chainBroken) {
       // 用量只进 usage.jsonl：这时 PR 已经开了。
       await runAgent("rebase", issue.id, `rebase-${issue.id}`, env, [], (agent) => sandbox.run({
@@ -1050,7 +768,7 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
           BASE: BASE_REF,
           SITUATION: conflicted
             ? `\`git rebase ${BASE_REF}\` 停在冲突上（rebase 进行中）。`
-            : `rebase 没有冲突，但本票的 drizzle 迁移没有接在 ${BASE_REF} 最新的迁移后面，需要重新生成。`,
+            : `rebase 没有冲突，但${integrityBroken()}，需要重新生成。`,
         },
       }));
       if ((await sandbox.exec(REBASE_STATE)).exitCode === 0) {
@@ -1060,24 +778,24 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
       if ((await sandbox.exec(`git merge-base --is-ancestor ${BASE_REF} HEAD`)).exitCode !== 0) {
         return { ok: false, reason: `处理后分支仍不在 ${BASE_REF} 之上。` };
       }
-      if ((await sandbox.exec(MIGRATION_CHAIN_OK)).exitCode !== 0) {
-        return { ok: false, reason: `drizzle 迁移仍没有接在 ${BASE_REF} 最新的迁移后面。` };
+      if ((await sandbox.exec(INTEGRITY_OK)).exitCode !== 0) {
+        return { ok: false, reason: `处理后仍然${integrityBroken()}。` };
       }
     }
 
     // 留给人审的 PR（merge 为 false）只跑 typecheck、不重跑测试：人合并前看 PR 评论里的冲突文件，
     // 需要时再补跑门槛。省掉一遍完整测试，也不占完整门槛的队列。
     if (!merge) {
-      const tc = await sandbox.exec("npm run typecheck > /tmp/rebase-typecheck.log 2>&1 || { tail -40 /tmp/rebase-typecheck.log; exit 1; }");
+      const tc = await sandbox.exec(`${project.gate.typecheck} > /tmp/rebase-typecheck.log 2>&1 || { tail -40 /tmp/rebase-typecheck.log; exit 1; }`);
       if (tc.exitCode !== 0) {
         return { ok: false, reason: `rebase 后 typecheck 失败：\n\n\`\`\`\n${tc.stdout.slice(-2000)}\n\`\`\`` };
       }
       await host.reacquire();
       await gitRemoteOrThrow(["push", "--force-with-lease", REMOTE, issue.branch]);
-      const files = conflictFiles.length ? conflictFiles.map((f) => `\`${f}\``).join("、") : "（没有文本冲突，迁移链分叉）";
+      const files = conflictFiles.length ? conflictFiles.map((f) => `\`${f}\``).join("、") : `（没有文本冲突，${integrityName}分叉）`;
       const how = conflicted || chainBroken ? "冲突由 agent 处理" : "rebase 没有冲突";
       console.log(`  ↻ #${issue.id} rebase 后 typecheck 通过，不重跑测试，留给人审`);
-      sh("gh", ["pr", "comment", pr, "--body", `Sandcastle 把分支 rebase 到最新的 ${BASE_REF}（原来和它冲突，${how}；冲突文件：${files}）。rebase 后只跑了 typecheck（通过），**没有重跑测试**：PR 正文 Gate 里的测试结果是 rebase 之前的，合并前请判断是否要补跑。`]);
+      forge.commentPr(pr, `Sandcastle 把分支 rebase 到最新的 ${BASE_REF}（原来和它冲突，${how}；冲突文件：${files}）。rebase 后只跑了 typecheck（通过），**没有重跑测试**：PR 正文 Gate 里的测试结果是 rebase 之前的，合并前请判断是否要补跑。`);
       return { ok: true };
     }
 
@@ -1089,13 +807,13 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
 
     await host.reacquire();
     await gitRemoteOrThrow(["push", "--force-with-lease", REMOTE, issue.branch]);
-    // GitHub 重新计算可合并状态要一点时间。
+    // 平台重新计算可合并状态要一点时间。
     let last = "";
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let tries = 0; tries < 3; tries++) {
       await sleep(10_000);
-      const merged = trySh("gh", ["pr", "merge", pr, "--rebase"]);
+      const merged = attempt(() => forge.mergePr(pr, project.mergeMethod));
       if (merged.ok) {
-        sh("gh", ["pr", "comment", pr, "--body", `Sandcastle 把分支 rebase 到最新的 ${BASE_REF}，门槛重跑通过后合并。`]);
+        forge.commentPr(pr, `Sandcastle 把分支 rebase 到最新的 ${BASE_REF}，门槛重跑通过后合并。`);
         return { ok: true };
       }
       last = merged.out;
@@ -1162,19 +880,19 @@ async function pushIfAhead(issue: Issue) {
 
 /** issue 已关闭（人在运行中途合并了 PR、或手动关了票）。查不到时当作没关。 */
 function issueClosed(id: string) {
-  const r = trySh("gh", ["issue", "view", id, "--json", "state", "--jq", ".state"]);
-  return r.ok && r.out === "CLOSED";
+  const r = attempt(() => forge.issueState(id));
+  return r.ok && r.value === "closed";
 }
 
-/** Phase 3：一张票的落地。在宿主机上做，用宿主机的 git / gh 凭据，沙箱没有写仓库的权限。 */
+/** Phase 3：一张票的落地。在宿主机上做，用宿主机的 git / 平台凭据，沙箱没有写仓库的权限。 */
 /**
- * 要留给人审的分支如果和最新的 origin/main 有文本冲突（或 drizzle 迁移链分叉），走 rebaseAndMerge 但不合并。
+ * 要留给人审的分支如果和最新的 origin/main 有文本冲突（或项目配置的一致性检查没过），走 rebaseAndMerge 但不合并。
  * 返回附在 leaveForHuman 说明后面的一句话；不需要 rebase 时为空串。
  */
 async function rebaseIfConflicting(issue: Issue, pr: string, host: HostGap): Promise<string> {
   await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
   const clean = trySh("git", ["merge-tree", "--write-tree", "--name-only", BASE_REF, issue.branch]).ok;
-  const chainOk = trySh("sh", ["-c", migrationChainOk(issue.branch)]).ok;
+  const chainOk = trySh("sh", ["-c", integrityOk(issue.branch)]).ok;
   if (clean && chainOk) return "";
   console.log(`  ↻ #${issue.id} 和最新的 ${BASE_REF} 冲突，rebase 后再留给人审`);
   const r = await untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host, false));
@@ -1203,12 +921,12 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     // implementer 判断必须由人拍板：推上已有的提交，直接交给人，不退回 prep。
     if (result.implement.completionSignal === NEEDS_DECISION) {
       const pushed = (await pushBranch(issue)).ok;
-      trySh("gh", ["issue", "edit", issue.id, "--add-label", "ready-for-human"]);
+      attempt(() => forge.addLabel(issue.id, LABEL.readyForHuman));
       markStuck(issue.id, `implementer 遇到必须由人拍板的设计决定（见上面 implementer 的评论）。${budgetNote}${pushed ? `已有的提交推到了分支 \`${issue.branch}\`。` : "提交没能推上去，留在宿主机的本地分支上。"}拍板后在票上回复，去掉 ${LABEL.stuck} 即可接着跑。`);
       console.log(`  ✋ #${issue.id} 要人拍板，打 ${LABEL.stuck}`);
       return;
     }
-    const comments = sh("gh", ["issue", "view", issue.id, "--json", "comments", "--jq", "[.comments[].body] | join(\"\\n\")"]);
+    const comments = forge.issueComments(issue.id).join("\n");
     if (comments.includes(REPREP_MARK)) {
       markStuck(
         issue.id,
@@ -1226,18 +944,18 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     const pushed = (await pushBranch(issue)).ok;
     const log = trySh("git", ["log", "--format=- %h %s", `${BASE_REF}..${issue.branch}`]);
     const commits = log.ok && log.out ? `\n\n分支 \`${issue.branch}\` 上已有的提交：\n\n${log.out}` : "\n\n分支上还没有提交。";
-    sh("gh", ["issue", "edit", issue.id, "--remove-label", LABEL.prepped]);
-    sh("gh", [
-      "issue", "comment", issue.id, "--body",
+    forge.removeLabel(issue.id, LABEL.prepped);
+    forge.commentIssue(
+      issue.id,
       `${REPREP_MARK}\n${IMPLEMENT_MAX_ITERATIONS} 次会话内没有完成。${budgetNote} 下次调度时 prep 会按上面 implementer 的进度评论重新准备：指引不对就重写，票太大就把没完成的验收标准拆成子票。再没做完就打 ${LABEL.stuck}。${commits}${pushed ? "" : "\n\n（分支没能推到远端，下一轮会在本地的同名分支上接着做。）"}`,
-    ]);
+    );
     console.log(`  ↺ #${issue.id} 没做完，退回 prep 重新准备`);
     return;
   }
 
   const overBudget = peak > CONTEXT_BUDGET ? "\n\n⚠️ 超过上下文预算，考虑把同类票切得更小。" : "";
   const flaky = result.gate.output.includes("GATE_FLAKY");
-  const tierName = result.gate.tier === "selected" ? "按依赖选的测试（test/http 与单元测试全跑，test/pipeline 只跑依赖图选中的）" : "完整测试";
+  const tierName = result.gate.tier === "selected" ? project.gate.selectedDescription : "完整测试";
   // 先 push 开 PR 才有 PR 号；开票放在后面，票号用评论补到 PR 上。
   const gateNote = !result.gate.ok
     ? `❌ 门槛失败：\n\n\`\`\`\n${result.gate.output}\n\`\`\``
@@ -1256,7 +974,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   const pr = await pushAndOpenPr(
     issue,
     {
-      acceptance: acceptanceSection(issue.branch, result.notes, { pageChanged: result.browser !== undefined }),
+      acceptance: acceptanceSection(issue.branch, result.notes, { pageChanged: result.browser !== undefined, pagePrep: project.acceptancePrep }),
       rest: restSections({
         review: `${result.summary}${revisionNote}`,
         browser: browserSection,
@@ -1274,7 +992,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
       ...(tickets.length ? [`门槛里的偶发失败已开票：${tickets.join("、")}`] : []),
       ...(deferred.length ? [`门槛里重跑才通过、报错只是超时或连接失败，7 天内第一次出现，只记进 .sandcastle/logs/flaky.json、不开票：${deferred.map((f) => `\`${f}\``).join("、")}`] : []),
     ];
-    if (notes.length) sh("gh", ["pr", "comment", pr, "--body", notes.join("\n\n")]);
+    if (notes.length) forge.commentPr(pr, notes.join("\n\n"));
   }
 
   // 外部 PR 一律留给人合并：不 rebase、不合并，只报告 review 与门槛结果。
@@ -1321,12 +1039,12 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     return;
   }
   // 先合并的票可能让这张冲突：rebase 到最新的 origin/main（冲突交给 agent）、重跑门槛，再合并一次。
-  // 迁移链要先在宿主机上查：没有文本冲突时 GitHub 会照样合并，分叉的迁移就进了 main。
+  // 一致性检查要先在宿主机上查：没有文本冲突时平台会照样合并，坏掉的状态就进了 main。
   await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
-  const chainOk = trySh("sh", ["-c", migrationChainOk(issue.branch)]).ok;
+  const chainOk = trySh("sh", ["-c", integrityOk(issue.branch)]).ok;
   const merged = chainOk
-    ? trySh("gh", ["pr", "merge", pr, "--rebase"])
-    : { ok: false as const, out: `本票的 drizzle 迁移没有接在 ${BASE_REF} 最新的迁移后面。` };
+    ? attempt(() => forge.mergePr(pr, project.mergeMethod))
+    : { ok: false as const, out: `${integrityBroken()}。` };
   if (!merged.ok) {
     console.log(`  ↻ #${issue.id} 没能直接合并，rebase 到最新的 ${BASE_REF} 后重试`);
     const retry = await untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host));
@@ -1348,7 +1066,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
 // 按依赖选测试的票每合并 MAIN_CHECK_EVERY 张，对当时的 origin/main 跑一次完整测试（和票的门槛排同一个队）。
 // 兜住依赖图漏选，和「两张票各自通过、合在一起才坏」。失败就开一张带 LABEL.mainBroken 的修复票（调度时排最前），
 // 自动合并照常、不暂停。状态存在 MAIN_CHECK_FILE：重启后接着计数，失败票里列出上次通过以来进 main 的提交。
-const MAIN_CHECK_EVERY = 4;
+const MAIN_CHECK_EVERY = project.mainCheckEvery;
 const MAIN_CHECK_FILE = ".sandcastle/logs/main-check.json";
 const MAIN_CHECK_ID = "main"; // 测试资源后缀 _imain，和票的 _i<n> 不撞
 type MainCheckState = { lastPass: string | null; selectedSince: number };
@@ -1407,33 +1125,19 @@ async function runMainFullCheck() {
     ? trySh("git", ["log", "--oneline", `${now.lastPass}..${sha}`]).out
     : `（之前没有通过记录，下面是最近 20 个提交）\n${trySh("git", ["log", "--oneline", "-n", "20", sha]).out}`;
   const summary = `\`\`\`\n${gate.stdout.slice(-3000)}\n\`\`\``;
-  const open = JSON.parse(sh("gh", ["issue", "list", "--state", "open", "--label", LABEL.mainBroken, "--json", "number"])) as { number: number }[];
+  const open = forge.listOpenIssues([LABEL.mainBroken]);
   if (open[0]) {
-    sh("gh", ["issue", "comment", String(open[0].number), "--body", `main（${short}）上的兜底完整测试又失败了：\n\n${summary}`]);
+    forge.commentIssue(String(open[0].number), `main（${short}）上的兜底完整测试又失败了：\n\n${summary}`);
     console.log(`  🛡 main 兜底完整测试失败：${short}，已记在 #${open[0].number}`);
     return;
   }
-  trySh("gh", ["label", "create", LABEL.mainBroken, "--color", "d73a4a", "--description", "main 上的兜底完整测试失败（Sandcastle 自动开票，调度时排最前）"]);
-  const body = [
-    `Sandcastle 在 main 的 \`${sha}\` 上跑兜底完整测试（\`GATE_FULL=1\`，8 个 worker），没通过。`,
-    "按依赖选测试的票只跑 test/http、test/ 根目录单元测试和依赖图选中的 test/pipeline 文件；这里失败说明要么依赖图漏选了，要么两张各自通过的票合在一起才出问题。",
-    "", "## 失败摘要", "", summary, "",
-    "## 上次兜底通过以来进 main 的提交", "", "```", commits.slice(0, 4000), "```", "",
-    "## 怎么修", "",
-    "- 先在 main 上单跑失败的文件确认能稳定复现；复现不了就按偶发失败处理（照 `flaky` 票的做法），在评论里写明。",
-    "- 用上面的提交列表缩小范围（`git bisect run npx vitest run <失败的文件>`），找到引入问题的提交，修掉并补能锁住它的用例。",
-    "- 如果是依赖图看不到的依赖导致漏选（某个文件改了、测试却没被选中），在评论里写明是哪个文件，交给人加进 `.sandcastle/main.ts` 的 `FULL_PATHS`。",
-    "",
-    "## Acceptance criteria", "",
-    "- [ ] 失败的测试文件在 main 上单跑通过；原因（哪个提交引入、为什么）写进提交信息",
-    "- [ ] 不放宽全局超时，不删除或改弱断言",
-    "- [ ] 是不是依赖图漏选导致的，在 issue 评论里写明结论",
-  ].join("\n");
-  const url = sh("gh", [
-    "issue", "create", "--title", `main 上的兜底完整测试失败（${short}）`, "--body", body,
-    "--label", LABEL.mainBroken, "--label", LABEL.picked, "--label", "ready-for-agent",
-  ]);
-  console.log(`  🛡 main 兜底完整测试失败：${short}，已开票 ${url}`);
+  attempt(() => forge.ensureLabel(LABEL.mainBroken, "d73a4a", "main 上的兜底完整测试失败（Sandcastle 自动开票，调度时排最前）"));
+  const id = forge.createIssue({
+    title: `main 上的兜底完整测试失败（${short}）`,
+    body: project.texts.mainBrokenIssueBody({ sha, summary, commits }),
+    labels: [LABEL.mainBroken, LABEL.picked, LABEL.readyForAgent],
+  });
+  console.log(`  🛡 main 兜底完整测试失败：${short}，已开票 #${id}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1441,7 +1145,7 @@ async function runMainFullCheck() {
 // ---------------------------------------------------------------------------
 
 /**
- * 宿主机上的 git 与 GitHub 标签操作串行做：调度（整理、prep、plan）和落地不交错，
+ * 宿主机上的 git 与平台标签操作串行做：调度（整理、prep、plan）和落地不交错，
  * 免得落地合并的同时清理删掉它的 worktree，或 prep 挂着的工作区被快进。build 在沙箱里跑，不占锁。
  */
 let hostTail: Promise<void> = Promise.resolve();
@@ -1510,7 +1214,7 @@ function start(issue: Issue) {
     const [outcome] = await Promise.allSettled([
       untilAfterLimit(`#${issue.id}`, () => retryTransient(`#${issue.id}`, () => build(issue)), () => pushIfAhead(issue)),
     ]);
-    // 落地在宿主机上做：用宿主机的 git / gh 凭据，沙箱没有写仓库的权限。
+    // 落地在宿主机上做：用宿主机的 git / 平台凭据，沙箱没有写仓库的权限。
     // 每张票单独兜底：一张票落地出错（网络、人在运行中途合并或删了分支等）不让整个运行崩掉。
     await withHost(async (host) => {
       try {
@@ -1519,8 +1223,8 @@ function start(issue: Issue) {
         const reason = String((e as { stderr?: unknown }).stderr || e).trim().slice(0, 500);
         console.error(`  ✗ #${issue.id} 落地出错：${reason}`);
         // 打 stuck 不让下次再做；本地分支保留，人看过后去掉 stuck 即可接着跑。
-        if (!issueClosed(issue.id)) trySh("gh", ["issue", "edit", issue.id, "--add-label", LABEL.stuck]);
-        if (!issueClosed(issue.id)) trySh("gh", ["issue", "comment", issue.id, "--body", `Sandcastle 停下了：落地（push / 开 PR / 合并）出错，本地分支 \`${issue.branch}\` 保留。\n\n\`\`\`\n${reason}\n\`\`\`\n\n处理后去掉 ${LABEL.stuck} 再运行。`]);
+        if (!issueClosed(issue.id)) attempt(() => forge.addLabel(issue.id, LABEL.stuck));
+        if (!issueClosed(issue.id)) attempt(() => forge.commentIssue(issue.id, `Sandcastle 停下了：落地（push / 开 PR / 合并）出错，本地分支 \`${issue.branch}\` 保留。\n\n\`\`\`\n${reason}\n\`\`\`\n\n处理后去掉 ${LABEL.stuck} 再运行。`));
       }
     });
   })()
@@ -1549,7 +1253,11 @@ async function schedule(): Promise<ScheduleResult> {
   reopenRequestedRevisions();
   closeFinishedParents();
   await cleanupClosedIssues();
-  pruneSeaweedMetalog();
+  try {
+    project.beforeSchedule();
+  } catch (e) {
+    console.warn(`  ⚠ 调度前的维护出错：${String(e).slice(0, 300)}`);
+  }
 
   // Prep —— 串行，因为拆票会改别的票的 Blocked by。
   // 每次重新查询，所以上次拆出来的子票（继承了 Sandcastle 标签）这里会被看到。
@@ -1578,7 +1286,7 @@ async function schedule(): Promise<ScheduleResult> {
     console.log(`Prep #${issue.number}: ${issue.title}`);
     try {
       await runAgent("prep", String(issue.number), `prep-${issue.number}`, {}, [], (agent) => sandcastle.run({
-        sandbox: podman(),
+        sandbox: project.sandbox({}),
         name: `prep-${issue.number}`,
         maxIterations: 1,
         idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
@@ -1598,8 +1306,8 @@ async function schedule(): Promise<ScheduleResult> {
       }
       console.error(`  ✗ prep #${issue.number} 出错：${String(e).slice(0, 500)}`);
     }
-    const after = trySh("gh", ["issue", "view", String(issue.number), "--json", "updatedAt", "--jq", ".updatedAt"]);
-    if (after.ok) prepTried.set(issue.number, after.out);
+    const after = attempt(() => forge.issueUpdatedAt(String(issue.number)));
+    if (after.ok) prepTried.set(issue.number, after.value);
   }
 
   // Plan
@@ -1651,4 +1359,4 @@ for (let pass = 1; ; pass++) {
 // 最后合并的票在上次 fetch 之后才进远端，收尾再同步一次。
 await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
 syncHostBase();
-console.log(`\nAll done. 本地 main 已快进到 ${BASE_REF}（不在 main 上时除外，见上面的警告）；带 ${LABEL.prOpen} 的票在 GitHub 上等你审。`);
+console.log(`\nAll done. 本地 main 已快进到 ${BASE_REF}（不在 main 上时除外，见上面的警告）；带 ${LABEL.prOpen} 的票在 ${forge.name} 上等你审。`);

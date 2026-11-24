@@ -22,31 +22,21 @@ const firstPath = (text: string) => {
 };
 
 /**
- * 只追加的索引文件：几张票同时往末尾追加行也不会真冲突（rebase-prompt.md 已写明两边都保留），
- * 不拿来判断「两张票改同一个文件」。曾经因为 `test/CATALOG.md` 几乎每张加测试的票都改，
- * 这类票只能一张接一张做，两个空位经常只用上一个（2026-11 #732）。
+ * 只追加的索引文件（项目配置 appendOnlyFiles）：几张票同时往末尾追加行也不会真冲突（rebase-prompt.md 已写明两边都保留），
+ * 不拿来判断「两张票改同一个文件」。比如测试目录索引几乎每张加测试的票都改，
+ * 不排除的话这类票只能一张接一张做，两个空位经常只用上一个（duckdb_crm 2026-11 #732）。
  */
-// 翻译表 app/i18n/en.*.json 按键增加，几乎每张双语票都改，算追加型文件，双语票才能两张并行（2026-11-22）。
-export const APPEND_ONLY = new Set([
-  "test/CATALOG.md",
-  "test/README.md",
-  "CONTEXT.md",
-  "docs/adr/README.md",
-  "app/i18n/en.client.json",
-  "app/i18n/en.server.json",
-  // 中文棘轮基线：每张双语票按文件下调计数，冲突时 rebase 用 `npm run i18n:ratchet -- --update` 重算（2026-11-22）。
-  "test/i18n-ratchet-baseline.json",
-]);
+const NO_APPEND_ONLY: ReadonlySet<string> = new Set();
 
 /**
  * 指引里要改的已有文件（去掉 `:行号`），两种写法都认：
  * - `- **Change**: \`path:行\` …`，一行一个文件（括号说明、全角冒号也行）；
  * - `- **Change**（说明）：` 下面缩进的子条目，每条开头一个 \`path:行\`。
  * `fallback` 是指引里一条 Change 都没有时的兜底：取除 New / Reuse / ADRs / Tests 之外各条里的 \`path:行号\` 引用。
- * 只追加的索引文件（APPEND_ONLY）不算：有 Change 行就不走兜底（哪怕全是索引文件），返回的数组里也过滤掉。
+ * 只追加的索引文件（appendOnly）不算：有 Change 行就不走兜底（哪怕全是索引文件），返回的数组里也过滤掉。
  * 宁可多认（多排队）也不漏认（两张并行的票改同一个文件，到合并才冲突）。
  */
-export const changedFiles = (body: string): { files: string[]; fallback: boolean } => {
+export const changedFiles = (body: string, appendOnly: ReadonlySet<string> = NO_APPEND_ONLY): { files: string[]; fallback: boolean } => {
   const lines = section(body, "Implementation guide").split("\n");
   const files = new Set<string>();
   let changeIndent: number | undefined;
@@ -64,7 +54,7 @@ export const changedFiles = (body: string): { files: string[]; fallback: boolean
       if (p) files.add(p);
     } else changeIndent = undefined;
   }
-  if (files.size > 0) return { files: [...files].filter((p) => !APPEND_ONLY.has(p)), fallback: false };
+  if (files.size > 0) return { files: [...files].filter((p) => !appendOnly.has(p)), fallback: false };
 
   let skip = false;
   for (const line of lines) {
@@ -76,7 +66,7 @@ export const changedFiles = (body: string): { files: string[]; fallback: boolean
       if (p) files.add(p);
     }
   }
-  const claimed = [...files].filter((p) => !APPEND_ONLY.has(p));
+  const claimed = [...files].filter((p) => !appendOnly.has(p));
   return { files: claimed, fallback: claimed.length > 0 };
 };
 
@@ -116,8 +106,10 @@ export const splitChildren = (body: string): number[] => {
   return [...new Set(refs)];
 };
 
-/** 门槛失败摘要里的 FAIL 行：` FAIL  test/….test.ts > 用例名`（与 GATE_SCRIPT `failures()` 的输出格式一致）。 */
-const FAIL_LINE = /^ FAIL +(test\/\S+\.test\.tsx?)/;
+/** 默认的测试文件路径（项目配置 gate.testFile）。 */
+export const DEFAULT_TEST_FILE = /test\/\S+\.test\.tsx?/;
+/** 门槛失败摘要里的 FAIL 行：` FAIL  test/….test.ts > 用例名`（与门槛脚本 `failures()` 的输出格式一致）。 */
+const failLine = (testFile: RegExp) => new RegExp(`^ FAIL +(${testFile.source})`);
 /** 报错行之后不该当成报错的行：下一条 FAIL、分隔线（⎯ / = 等）、结尾的统计行、缩进的堆栈上下文。 */
 const NOT_ERROR = /^(?: FAIL |[\s⎯━─=*]{3,}| *(?:Test Files|Tests) )/;
 
@@ -140,8 +132,9 @@ export const flakySignature = (errorLine: string): string =>
  * 归一化后作为签名；同一个文件只取第一条报错。摘要可能被门槛脚本的 `head -80` 截断，最后一个文件
  * 只剩 FAIL 行、没有报错时签名为空串，reportFlaky 让它退回只按标题去重的老逻辑。
  */
-export const flakyFailures = (summary: string): { file: string; signature: string }[] => {
+export const flakyFailures = (summary: string, testFile: RegExp = DEFAULT_TEST_FILE): { file: string; signature: string }[] => {
   const lines = summary.split("\n");
+  const FAIL_LINE = failLine(testFile);
   const firsts = new Map<string, string>();
   for (let i = 0; i < lines.length; i++) {
     const file = lines[i]!.match(FAIL_LINE)?.[1];
@@ -168,8 +161,9 @@ export const flakyTickets = (
   files: string[],
   after: string,
   open: { number: number; title: string; body: string }[],
+  testFile: RegExp = DEFAULT_TEST_FILE,
 ): { files: string[]; signature: string; marker?: string; title: string; existing?: number }[] => {
-  const signatures = new Map(flakyFailures(after).map((f) => [f.file, f.signature]));
+  const signatures = new Map(flakyFailures(after, testFile).map((f) => [f.file, f.signature]));
   const groups = new Map<string, string[]>();
   for (const file of files) {
     const key = signatures.get(file) || `按标题：${file}`;

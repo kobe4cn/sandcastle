@@ -1,0 +1,49 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { describe, expect, it } from "vitest";
+import { DEFAULT_LABELS, loadProject, resolveProject, type ProjectProfile } from "../src/profile.ts";
+
+const minimal: ProjectProfile = {
+  install: { onSandboxReady: "npm ci" },
+  isolation: { env: (id) => ({ RUN: id }) },
+  gate: { script: ({ baseRef }) => `echo ${baseRef}`, testFile: /test\/\S+\.test\.ts/, typecheck: "npm run typecheck" },
+};
+
+describe("resolveProject", () => {
+  it("只给必填项时其余取默认值", () => {
+    const p = resolveProject(minimal);
+    expect(p.forge.name).toBe("github");
+    expect([p.remote, p.baseBranch, p.mergeMethod, p.maxParallel, p.reviseMax, p.contextBudget]).toEqual(["origin", "main", "rebase", 2, 2, 150_000]);
+    expect(p.labels).toEqual(DEFAULT_LABELS);
+    expect(p.gate.rerunMax).toBe(3);
+    expect(p.install.copyToWorktree).toEqual([]);
+    expect(p.integrity).toBeUndefined();
+    expect(p.texts.revisePrompt({ issueId: "1", branch: "b", title: "t", viewIssue: "gh issue view 1", items: "- x" })).toContain("gh issue view 1");
+  });
+
+  it("标签只覆盖给了的那几个", () => {
+    const p = resolveProject({ ...minimal, labels: { picked: "agent" } });
+    expect(p.labels.picked).toBe("agent");
+    expect(p.labels.stuck).toBe(DEFAULT_LABELS.stuck);
+  });
+});
+
+describe("loadProject", () => {
+  it("读项目根目录的 .sandcastle/sandcastle.config.ts", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sc-profile-"));
+    mkdirSync(join(dir, ".sandcastle"));
+    const profileTs = resolve("src/profile.ts");
+    writeFileSync(
+      join(dir, ".sandcastle/sandcastle.config.ts"),
+      `import { defineProject } from ${JSON.stringify(profileTs)};
+export default defineProject({ maxParallel: 5, install: { onSandboxReady: "x" }, isolation: { env: () => ({}) },
+  gate: { script: () => "true", testFile: /t/, typecheck: "true" } });`,
+    );
+    expect((await loadProject(dir)).maxParallel).toBe(5);
+  });
+
+  it("没有配置文件时报错说明去哪写", async () => {
+    await expect(loadProject(mkdtempSync(join(tmpdir(), "sc-empty-")))).rejects.toThrow(".sandcastle/sandcastle.config.ts");
+  });
+});
