@@ -75,4 +75,9 @@ export interface Forge {
   // ---- 给 agent 的提示词用 ----
   /** agent 在沙箱里看 issue 的命令，比如 `gh issue view 12`。 */
   viewIssueCommand(issueId: string): string;
+  /**
+   * 注入提示词 {{FORGE}} 的一段 Markdown：agent 在沙箱里操作这个平台的命令清单（看票和评论、评论、改正文、
+   * 标签、开票、搜票、看 PR 与行内意见）。提示词模板只说「做什么」，具体命令都在这里。
+   */
+  agentGuide(): string;
 }

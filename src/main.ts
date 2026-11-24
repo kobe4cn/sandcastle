@@ -10,7 +10,7 @@
 //                    `sandcastle:prepped` 的选中票逐张（串行）跑 prep-ticket（`## Blocked by` 里
 //                    还有 open 票的脚本直接跳过，不开会话）：
 //                    够小且指引新鲜 → 打 prepped；太大 → 拆成子票（子票继承
-//                    `Sandcastle`，父票去掉）；要人拍板 → 打 sandcastle:stuck（能代拍板的按 .sandcastle/DECISIONS.md 自己定）。
+//                    `Sandcastle`，父票去掉）；要人拍板 → 打 sandcastle:stuck（能代拍板的按提示词的「设计决定」自己定）。
 //   Phase 1 (Plan):  脚本自己算（不用 agent）：只看 `Sandcastle` + `sandcastle:prepped`、且没有
 //                    pr-open / stuck 的票，排除仍有未关闭 blocker 的票；剩下的按编号从小到大，
 //                    和已选的票或等人审（pr-open）的票改同一个文件（指引的 Change 行）就跳过。
@@ -22,7 +22,7 @@
 //   Phase 3 (Land):  在宿主机上 push、开 PR（`Closes #n`）。reviewer 说 merge 且门槛通过
 //                    → `gh pr merge --rebase`，issue 自动关闭；否则打 sandcastle:pr-open 等人审。
 //                    合并不了（先合并的票造成冲突，或项目配置的一致性检查没过，如迁移链分叉）时，rebase 到
-//                    最新的 origin/main（冲突与迁移交给 agent，rebase-prompt.md），重跑门槛后再合并一次。
+//                    最新的 origin/main（冲突与迁移交给 agent，prompts/rebase.md），重跑门槛后再合并一次。
 //   每次调度开头：等人审的 PR 上有晚于分支最新提交的打回信号（`/sandcastle` 开头的评论或 review，
 //                    或别人点的 Request changes）→ 去掉 issue 的 sandcastle:pr-open，这张票这次
 //                    重新进入 plan，implementer 先读 PR 上的意见。
@@ -50,6 +50,7 @@ import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage
 import { acceptanceSection, checkAcceptanceNotes, replaceSection, restSections } from "./pr-body.ts";
 import type { ForgeIssue, ForgePr } from "./forge.ts";
 import { loadProject } from "./profile.ts";
+import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
 
 // ---------------------------------------------------------------------------
@@ -67,10 +68,10 @@ const MAX_PARALLEL = project.maxParallel; // 同时实现的票数：受测试�
 const IMPLEMENT_MAX_ITERATIONS = project.implementMaxSessions; // 一张票最多开几次全新会话；超过说明票太大，交给人
 /** 第一次没做完时脚本留在 issue 上的标记；prep 看到它就按「实现没做完」重新准备，再没做完才打 stuck。 */
 const REPREP_MARK = "<!-- sandcastle:reprep -->";
-/** implementer 的两个完成信号：做完了；遇到必须由人拍板的设计决定（.sandcastle/DECISIONS.md），票直接交给人，不再开新会话。 */
+/** implementer 的两个完成信号：做完了；遇到必须由人拍板的设计决定（提示词的「设计决定」），票直接交给人，不再开新会话。 */
 const COMPLETE = "<promise>COMPLETE</promise>";
 const NEEDS_DECISION = "<promise>NEEDS_DECISION</promise>";
-/** agent 代拍板时 issue 评论的第一行（.sandcastle/DECISIONS.md）；落地时脚本据此打 sandcastle:decided 并把评论贴到 PR 上。 */
+/** agent 代拍板时 issue 评论的第一行（提示词的「设计决定」）；落地时脚本据此打 sandcastle:decided 并把评论贴到 PR 上。 */
 const DECIDED_MARK = "<!-- sandcastle:decided -->";
 const REVISE_MAX = project.reviseMax; // reviewer 给 revise 时最多打回几次；之后仍不行就留 PR 给人
 const CONTEXT_BUDGET = project.contextBudget; // 单个会话的上下文预算
@@ -83,6 +84,8 @@ const ONLY = new Set((process.env.SANDCASTLE_ONLY ?? "").split(",").map((s) => s
 const allowed = (id: string | number) => ONLY.size === 0 || ONLY.has(String(id).replace(/^#/, ""));
 
 const LABEL = project.labels;
+// 提示词：通用模板 + .sandcastle/PROJECT.md 的章节 + 平台命令，启动时渲染一次（改了 PROJECT.md 要重启才生效）
+const PROMPTS = renderPrompts({ doc: loadProjectDoc(), forgeGuide: forge.agentGuide(), labels: LABEL });
 const APPEND_ONLY: ReadonlySet<string> = new Set(project.appendOnlyFiles);
 
 /** 调度顺序：main 坏了的修复票排最前，其余按编号从小到大（早建的票通常是后面票的 blocker）。 */
@@ -512,7 +515,7 @@ function reportDecisions(issueId: string, pr: string) {
   const decisions = r.value.filter((body) => body.startsWith(DECIDED_MARK)).map((body) => body.slice(DECIDED_MARK.length).trim());
   if (!decisions.length) return;
   const label = attempt(() => forge.addLabel(issueId, LABEL.decided));
-  const comment = attempt(() => forge.commentPr(pr, `## 代拍板\n\nagent 按 \`.sandcastle/DECISIONS.md\` 自己定了 ${decisions.length} 个设计决定，请事后确认（不同意就在 issue 上回复，确认后去掉 #${issueId} 的 \`${LABEL.decided}\`）：\n\n${decisions.map((d, n) => `<details><summary>第 ${n + 1} 个</summary>\n\n${d}\n\n</details>`).join("\n\n")}`));
+  const comment = attempt(() => forge.commentPr(pr, `## 代拍板\n\nagent 按「必须停下 / 可以代拍板」的规则自己定了 ${decisions.length} 个设计决定，请事后确认（不同意就在 issue 上回复，确认后去掉 #${issueId} 的 \`${LABEL.decided}\`）：\n\n${decisions.map((d, n) => `<details><summary>第 ${n + 1} 个</summary>\n\n${d}\n\n</details>`).join("\n\n")}`));
   for (const x of [label, comment]) if (!x.ok) console.warn(`  ⚠ #${issueId} 代拍板标记失败：${x.out.slice(0, 200)}`);
   console.log(`  📝 #${issueId} 有 ${decisions.length} 个代拍板，打 ${LABEL.decided}`);
 }
@@ -629,7 +632,7 @@ async function build(issue: Issue) {
         idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
         completionSignal: [COMPLETE, NEEDS_DECISION],
         agent,
-        promptFile: "./.sandcastle/implement-prompt.md",
+        promptFile: PROMPTS.implement,
         promptArgs: { TASK_ID: issue.id, ISSUE_TITLE: issue.title, BRANCH: issue.branch },
       }));
       implement.iterations.push(...r.iterations);
@@ -648,8 +651,8 @@ async function build(issue: Issue) {
         maxIterations: 1,
         idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
         agent,
-        promptFile: "./.sandcastle/review-prompt.md",
-        promptArgs: { TASK_ID: issue.id, BRANCH: issue.branch, ROUND: round, REVISE_MAX },
+        promptFile: PROMPTS.review,
+        promptArgs: { TASK_ID: issue.id, BRANCH: issue.branch, BASE: BASE_REF, ROUND: round, REVISE_MAX },
       }));
     // reviewer 给 revise：修改意见交给新的 implementer 会话，改完再审一次。
     const reviews = [await runReview(0)];
@@ -723,7 +726,7 @@ const integrityName = project.integrity?.name ?? "一致性检查";
 
 /**
  * 把分支 rebase 到最新的 origin/main：没冲突直接 rebase；有冲突开一次 agent 会话按
- * rebase-prompt.md 解决。merge 为 true 时重跑门槛，通过才 force-push 再合并；
+ * prompts/rebase.md 解决。merge 为 true 时重跑门槛，通过才 force-push 再合并；
  * 为 false 时只跑 typecheck 就 force-push 更新 PR（留给人审的 PR 不和 main 冲突，测试由人合并前决定是否补跑）。
  * 任何一步不成都返回原因，由调用方留 PR。
  */
@@ -761,7 +764,7 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
         maxIterations: 1,
         idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
         agent,
-        promptFile: "./.sandcastle/rebase-prompt.md",
+        promptFile: PROMPTS.rebase,
         promptArgs: {
           TASK_ID: issue.id,
           BRANCH: issue.branch,
@@ -1291,11 +1294,8 @@ async function schedule(): Promise<ScheduleResult> {
         maxIterations: 1,
         idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
         agent,
-        promptFile: "./.sandcastle/prep-prompt.md",
-        promptArgs: {
-          TASK_ID: issue.number, LABEL_PICKED: LABEL.picked, LABEL_PREPPED: LABEL.prepped, LABEL_STUCK: LABEL.stuck,
-          REPREP_MARK,
-        },
+        promptFile: PROMPTS.prep,
+        promptArgs: { TASK_ID: issue.number, REPREP_MARK },
       }));
     } catch (e) {
       const limit = limitWait(e);

@@ -32,6 +32,16 @@ const toPr = (pr: GhPr): ForgePr => ({
 /** 截图附件：gh 2.99+ 的 --attach 上传图片，没在正文里引用的附在末尾 */
 const attachArgs = (files: string[]) => files.flatMap((file) => ["--attach", `${file}#${basename(file)}`]);
 
+const GITHUB_AGENT_GUIDE = `平台是 GitHub，用已登录的 \`gh\`。issue 和 PR 都用编号（不带 #）；正文里引用别的票写 \`#<n>\`。
+
+- 看票与全部评论：\`gh issue view <n> --comments\`；只看状态：\`gh issue view <n> --json state -q .state\`
+- 评论 / 改正文：正文先写进临时文件，\`gh issue comment <n> --body-file <file>\` / \`gh issue edit <n> --body-file <file>\`
+- 加 / 去标签：\`gh issue edit <n> --add-label "<label>"\` / \`gh issue edit <n> --remove-label "<label>"\`
+- 开新票：\`gh issue create --title "<标题>" --body-file <file> --label "<label>"\`（多个标签写多个 --label），输出的 URL 末尾是编号
+- 搜票：\`gh issue list --state open --search "<文本>" --json number,title,body\`；带标签的已关闭票：\`gh issue list --label "<label>" --state closed --search "<文本>"\`
+- 分支上的 PR 与评论：\`gh pr view <分支> --comments\`（没有 PR 时报 no pull requests found）
+- PR 的行内审查意见：\`gh api "repos/{owner}/{repo}/pulls/$(gh pr view <分支> --json number -q .number)/comments" --jq '.[] | "\\(.path):\\(.line) \\(.body)"'\``;
+
 const lines = (out: string) => out.split("\n").filter(Boolean);
 
 export function githubForge(gh: GhRunner = (args) => sh("gh", args)): Forge {
@@ -122,5 +132,6 @@ export function githubForge(gh: GhRunner = (args) => sh("gh", args)): Forge {
     },
 
     viewIssueCommand: (issueId) => `gh issue view ${issueId}`,
+    agentGuide: () => GITHUB_AGENT_GUIDE,
   };
 }

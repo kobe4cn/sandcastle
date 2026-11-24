@@ -1,7 +1,7 @@
 /**
  * 解析 issue 正文与门槛失败摘要的纯函数：plan() 靠它们判断 blocker 和「两张票改同一个文件」，
  * reportFlaky() 靠 flakyFailures 按报错签名去重开偶发失败的票。单独放出来是为了能测。
- * 指引的写法见 docs/agents/ticket-sizing.md 的 `## Implementation guide` 模板。
+ * 指引的写法见 prompts/ticket-sizing.md 的 `## Implementation guide` 模板。
  */
 
 /** 正文里 `## <title>` 一节的内容（到下一个 `## ` 为止），没有这一节时为空串。 */
@@ -22,7 +22,7 @@ const firstPath = (text: string) => {
 };
 
 /**
- * 只追加的索引文件（项目配置 appendOnlyFiles）：几张票同时往末尾追加行也不会真冲突（rebase-prompt.md 已写明两边都保留），
+ * 只追加的索引文件（项目配置 appendOnlyFiles）：几张票同时往末尾追加行也不会真冲突（prompts/rebase.md 与 PROJECT.md「合并冲突」已写明两边都保留），
  * 不拿来判断「两张票改同一个文件」。比如测试目录索引几乎每张加测试的票都改，
  * 不排除的话这类票只能一张接一张做，两个空位经常只用上一个（duckdb_crm 2026-11 #732）。
  */
