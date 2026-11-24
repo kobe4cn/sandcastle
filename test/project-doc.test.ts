@@ -15,7 +15,12 @@ const minimal = (extra = "") =>
   ["## 概况", "一个服务", "## 开发命令", "`make check`", "## 测试", "`make test`", "## 提交", "英文提交信息", extra].join("\n");
 
 const render = (md: string) => {
-  const files = renderPrompts({ doc: parseProjectDoc(md), forgeGuide: githubForge(() => "").agentGuide(), labels: DEFAULT_LABELS, cwd: emptyCwd });
+  const files = renderPrompts({
+    doc: parseProjectDoc(md),
+    forgeGuide: githubForge(() => "").agentGuide(),
+    labels: DEFAULT_LABELS,
+    cwd: emptyCwd,
+  });
   return Object.fromEntries(PROMPT_NAMES.map((n) => [n, readFileSync(files[n], "utf8")])) as Record<(typeof PROMPT_NAMES)[number], string>;
 };
 
@@ -50,7 +55,9 @@ describe("parseProjectDoc", () => {
 
 describe("renderTemplate", () => {
   it("只换渲染期占位符，运行时的留给上游；未知的渲染期占位符报错", () => {
-    expect(renderTemplate("{{P_A}} {{TASK_ID}} {{IF_BROWSER}}有{{ELSE_BROWSER}}无{{END_BROWSER}}", { P_A: "a" }, { browser: false })).toBe("a {{TASK_ID}} 无");
+    expect(renderTemplate("{{P_A}} {{TASK_ID}} {{IF_BROWSER}}有{{ELSE_BROWSER}}无{{END_BROWSER}}", { P_A: "a" }, { browser: false })).toBe(
+      "a {{TASK_ID}} 无",
+    );
     expect(() => renderTemplate("{{P_NOPE}}", {}, { browser: true })).toThrow(/P_NOPE/);
   });
 });

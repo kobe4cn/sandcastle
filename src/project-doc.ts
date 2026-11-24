@@ -67,14 +67,20 @@ export function parseProjectDoc(md: string, file = PROJECT_DOC): ProjectDoc {
   const known = new Set<string>(Object.values(SECTIONS));
   const unknown = [...byTitle.keys()].filter((t) => !known.has(t));
   if (unknown.length > 0) {
-    throw new Error(`${file}：不认识的章节${unknown.map((t) => `「${t}」`).join("、")}；只能用 ${[...known].map((t) => `「${t}」`).join("、")}`);
+    throw new Error(
+      `${file}：不认识的章节${unknown.map((t) => `「${t}」`).join("、")}；只能用 ${[...known].map((t) => `「${t}」`).join("、")}`,
+    );
   }
   const doc = {} as ProjectDoc;
   const missing: string[] = [];
   for (const [key, title] of Object.entries(SECTIONS) as [SectionKey, string][]) {
     // HTML 注释是模板里给人看的填写说明，不进提示词
-    const body = (byTitle.get(title) ?? []).join("\n").replace(/<!--[\s\S]*?-->/g, "").trim();
-    if (body.includes("!`")) throw new Error(`${file}「${title}」里有 !\`…\`：提示词里这是「执行命令并替换」的语法，命令请写成普通的 \`…\``);
+    const body = (byTitle.get(title) ?? [])
+      .join("\n")
+      .replace(/<!--[\s\S]*?-->/g, "")
+      .trim();
+    if (body.includes("!`"))
+      throw new Error(`${file}「${title}」里有 !\`…\`：提示词里这是「执行命令并替换」的语法，命令请写成普通的 \`…\``);
     if (!body && REQUIRED.includes(key)) missing.push(title);
     doc[key] = body || MISSING[key];
   }
@@ -109,8 +115,9 @@ const STATIC_PLACEHOLDER = /\{\{\s*((?:P|DOC|L)_[A-Z_]+|FORGE)\s*\}\}/g;
 
 /** 只替换渲染期占位符；其余 {{X}} 原样留给上游在运行时替换。未知的渲染期占位符报错。 */
 export function renderTemplate(template: string, vars: StaticVars, opts: { browser: boolean }): string {
-  const withBranches = template.replace(/\{\{IF_BROWSER\}\}([\s\S]*?)\{\{ELSE_BROWSER\}\}([\s\S]*?)\{\{END_BROWSER\}\}/g, (_, yes: string, no: string) =>
-    opts.browser ? yes : no,
+  const withBranches = template.replace(
+    /\{\{IF_BROWSER\}\}([\s\S]*?)\{\{ELSE_BROWSER\}\}([\s\S]*?)\{\{END_BROWSER\}\}/g,
+    (_, yes: string, no: string) => (opts.browser ? yes : no),
   );
   return withBranches.replace(STATIC_PLACEHOLDER, (_, key: string) => {
     const value = vars[key];
