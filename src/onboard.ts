@@ -166,6 +166,18 @@ export function containerfileSource(template: string, f: ProjectFacts): string {
   return out;
 }
 
+/** 流水线在 worktree 里写、不提交的目录（浏览器验收产物、playwright-cli 会话、验收说明）。 */
+export const WORKSPACE_IGNORES = [".browser-check/", ".playwright-cli/", ".pr-notes/"];
+
+/** 项目根目录 .gitignore 补上流水线的工作目录；已有的不重复加。返回新内容，不用改时返回 undefined。 */
+export function mergeGitignore(existing: string): string | undefined {
+  const have = new Set(existing.split("\n").map((l) => l.trim().replace(/^\//, "")));
+  const missing = WORKSPACE_IGNORES.filter((p) => !have.has(p) && !have.has(p.slice(0, -1)));
+  if (!missing.length) return undefined;
+  const sep = existing === "" || existing.endsWith("\n\n") ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
+  return `${existing}${sep}# Sandcastle：沙箱里浏览器验收的截图与结论、playwright-cli 会话、验收说明（编排脚本读出后附到 PR，不提交）\n${missing.join("\n")}\n`;
+}
+
 type HookEntry = { matcher: string; hooks: { type: string; command: string }[] };
 type Settings = { hooks?: Record<string, HookEntry[]> } & Record<string, unknown>;
 
@@ -221,6 +233,11 @@ export function installFiles(root: string, f: ProjectFacts): Outcome[] {
     mkdirSync(dirname(settingsPath), { recursive: true });
     writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
   }
+  const ignorePath = join(root, ".gitignore");
+  const ignoreBefore = existsSync(ignorePath) ? readFileSync(ignorePath, "utf8") : "";
+  const ignoreAfter = mergeGitignore(ignoreBefore);
+  if (ignoreAfter !== undefined) writeFileSync(ignorePath, ignoreAfter);
+  out.push({ file: ".gitignore", status: ignoreAfter === undefined ? "无需改动" : ignoreBefore ? "已更新" : "写入" });
   out.push({ file: ".claude/settings.json", status: changed ? (Object.keys(existing).length ? "已更新" : "写入") : "无需改动" });
   return out;
 }

@@ -206,9 +206,22 @@ function otherLanguageFacts(root: string, language: Language) {
   return { install: "true", copyToWorktree: [] as string[], commands: {}, testFilePattern: String.raw`\S*test\S*`, migrations: undefined };
 }
 
+/** 根目录与一级子目录（db_script/、docker/、deploy/……）里的 compose 文件用到的服务 */
 function composeServices(root: string): string[] {
-  const files = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml", "docker-compose.dev.yml"];
-  const text = files.map((f) => read(root, f) ?? "").join("\n");
+  const names = /^(docker-)?compose(\.[\w-]+)?\.ya?ml$/;
+  const dirs = [
+    ".",
+    ...readdirSync(root, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && !d.name.startsWith(".") && !IGNORED_DIRS.has(d.name))
+      .map((d) => d.name),
+  ];
+  const text = dirs
+    .flatMap((d) =>
+      readdirSync(join(root, d))
+        .filter((f) => names.test(f))
+        .map((f) => readFileSync(join(root, d, f), "utf8")),
+    )
+    .join("\n");
   const images = [...text.matchAll(/^\s*image:\s*["']?([^\s"']+)/gm)].map((m) => m[1]);
   return [...new Set(images.flatMap((img) => SERVICE_IMAGES.filter(([re]) => re.test(img.toLowerCase())).map(([, name]) => name)))];
 }

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { containerfileSource, installFiles, mergeSettings, onboardPrompt } from "../src/onboard.ts";
+import { containerfileSource, installFiles, mergeGitignore, mergeSettings, onboardPrompt } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { parseProjectDoc } from "../src/project-doc.ts";
 
@@ -28,7 +28,8 @@ function nodeRepo() {
     }),
   );
   w("pnpm-lock.yaml", "");
-  w("compose.yml", "services:\n  db:\n    image: pgvector/pgvector:pg17\n  cache:\n    image: 'redis:7'\n");
+  w("compose.yml", "services:\n  db:\n    image: pgvector/pgvector:pg17\n");
+  w("deploy/docker-compose.dev.yml", "services:\n  cache:\n    image: 'redis:7'\n");
   w("drizzle/0000_init/migration.sql", "");
   w("CLAUDE.md", "# rules");
   w("test/a.test.ts", "");
@@ -71,7 +72,7 @@ describe("detectProject", () => {
       commitLanguage: "zh",
       testDirs: ["test"],
     });
-    expect(f.topDirs).toEqual(["app", "drizzle", "test"]);
+    expect(f.topDirs).toEqual(["app", "deploy", "drizzle", "test"]);
     expect(f.docs).toContain("CLAUDE.md");
   });
 });
@@ -111,6 +112,15 @@ describe("mergeSettings", () => {
     expect(once.settings.hooks!.PostToolUse[0].matcher).toBe("*");
     expect(mergeSettings(once.settings).changed).toBe(false);
     expect(existing.hooks.PreToolUse).toHaveLength(1);
+  });
+});
+
+describe("mergeGitignore", () => {
+  it("补上缺的工作目录，已有的（带不带 / 前缀、尾斜杠）不重复；都有时不改", () => {
+    const out = mergeGitignore("node_modules\n/.browser-check\n")!;
+    expect(out).toMatch(/^node_modules\n\/\.browser-check\n\n# Sandcastle.*\n\.playwright-cli\/\n\.pr-notes\/\n$/);
+    expect(mergeGitignore(out)).toBeUndefined();
+    expect(mergeGitignore("")).toContain(".browser-check/");
   });
 });
 
