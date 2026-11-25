@@ -79,6 +79,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, write
 import { cpus, loadavg, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
+import type { SandboxExecOptions } from "@ai-hero/sandcastle";
 import {
   AllProfilesLimited, CLAUDE_LIMIT_PATTERN, agentFor, limitResetAt, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
   type AgentRun, type Phase, type UsageRecord,
@@ -88,6 +89,7 @@ import { acceptanceSection, checkAcceptanceNotes, replaceSection, restSections }
 import type { ForgeIssue, ForgePr } from "./forge.ts";
 import { loadProject } from "./profile.ts";
 import { messages } from "./i18n.ts";
+import { duration, startGateProgress } from "./gate-progress.ts";
 import { setTermLanguage, t } from "./term.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
@@ -233,17 +235,17 @@ const GATE_SCRIPT = project.gate.script({ baseRef: BASE_REF });
 // With the gate to itself it can be given more resources (project config gate.env, e.g. more workers).
 let gateQueue: Promise<unknown> = Promise.resolve();
 type ExecResult = { stdout: string; exitCode: number };
-// 不到一分钟显示秒：小项目的门槛只跑几秒，显示「0.0 分钟」看不出用时。
-// Show seconds under a minute: small projects' gates take seconds, and "0.0 min" says nothing.
-const duration = (ms: number) =>
-  ms < 60_000 ? t(`${Math.round(ms / 1000)} 秒`, `${Math.round(ms / 1000)}s`) : t(`${(ms / 60_000).toFixed(1)} 分钟`, `${(ms / 60_000).toFixed(1)} min`);
+
+const GATE_LOG_DIR = ".sandcastle/logs";
 
 /**
  * 跑一次门槛：所有门槛排同一个队；用时（和排队时间）打进日志，并追加在输出末尾一行 GATE_TIME（进 PR 的 Gate 一节）。
+ * 运行中输出实时写进 .sandcastle/logs/gate-*.log，定时打印心跳（gate-progress.ts 的 HEARTBEAT_MS）。
  * Run the gate once: all gates share one queue; the time taken (and time queued) is logged and appended as a GATE_TIME line at the end of the output (goes into the PR's Gate section).
+ * While running, output is written live to .sandcastle/logs/gate-*.log and a heartbeat is printed periodically (HEARTBEAT_MS in gate-progress.ts).
  */
 async function runGate<R extends ExecResult>(
-  exec: (command: string) => Promise<R>,
+  exec: (command: string, opts?: SandboxExecOptions) => Promise<R>,
   issueId: string,
   env: Record<string, string>,
 ): Promise<R> {
@@ -254,13 +256,24 @@ async function runGate<R extends ExecResult>(
     const started = Date.now();
     // stderr 并进 stdout：命令找不到、typecheck 报错这类原因多半写在 stderr，不并进来 baseline 和 PR 里只看到「失败」。
     // Merge stderr into stdout: causes like a missing command or typecheck errors usually go to stderr; without this, baseline and the PR only show "failed".
-    const r = await exec(`${envPrefix({ ...env, ...project.gate.env })} sh -c ${shellQuote(GATE_SCRIPT)} 2>&1`);
-    const tier = gateTierName(gateTier(r.stdout));
+    const progress = startGateProgress({ issueId, logDir: GATE_LOG_DIR });
+    let r: R;
+    try {
+      r = await exec(`${envPrefix({ ...env, ...project.gate.env })} sh -c ${shellQuote(GATE_SCRIPT)} 2>&1`, { onLine: progress.onLine });
+    } finally {
+      progress.stop();
+    }
+    // 传了 onLine 后沙箱返回的 stdout 可能只剩末尾一段（podman 只留 64KB），开头的 GATE_TIER 会丢：换成自己累积的完整输出。
+    // With onLine passed, the sandbox's stdout may be only a tail (podman keeps 64KB), losing GATE_TIER at the top: use the full output accumulated here instead.
+    // provider 没回调 onLine 时（第三方 provider 可能没实现）退回它返回的 stdout。
+    // If the provider never called onLine (a third-party provider may not implement it), fall back to the stdout it returned.
+    const stdout = progress.output() || r.stdout;
+    const tier = gateTierName(gateTier(stdout));
     const took = duration(Date.now() - started);
     const before = waited > 5_000 ? t(`（之前排队 ${duration(waited)}）`, ` (queued ${duration(waited)} before)`) : "";
     const line = t(`${tier}门槛用时 ${took}${before}`, `${tier} gate took ${took}${before}`);
     console.log(`  ⏱ #${issueId} ${line}${r.exitCode === 0 ? t("，通过", ", passed") : t("，失败", ", failed")}`);
-    return { ...r, stdout: `${r.stdout}\nGATE_TIME: ${line}` };
+    return { ...r, stdout: `${stdout}\nGATE_TIME: ${line}` };
   };
   const run = gateQueue.then(go);
   gateQueue = run.catch(() => {});
@@ -844,7 +857,7 @@ async function build(issue: Issue) {
     }
     const review = reviews.at(-1)!;
 
-    const gate = () => runGate((c) => sandbox.exec(c), issue.id, env);
+    const gate = () => runGate((c, o) => sandbox.exec(c, o), issue.id, env);
     let gateResult = await gate();
     let fix: sandcastle.SandboxRunResult | undefined;
     if (gateResult.exitCode !== 0) {
@@ -983,7 +996,7 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
 
     // rebase 后的门槛和开工时同一套选测试规则（分支相对新 main 的改动），不再因冲突强制完整测试（2026-11-24）。
     // The gate after a rebase uses the same test selection as at the start (the branch's changes against the new main), no longer forcing the full suite because of conflicts (2026-11-24).
-    const gate = await runGate((c) => sandbox.exec(c), issue.id, env);
+    const gate = await runGate((c, o) => sandbox.exec(c, o), issue.id, env);
     if (gate.exitCode !== 0) {
       return { ok: false, reason: M.rebaseGateFailed(gate.stdout.slice(-2000)) };
     }
@@ -1340,7 +1353,7 @@ async function fullGateAt(sha: string): Promise<ExecResult> {
   const env = testEnv(MAIN_CHECK_ID);
   const sandbox = await sandcastle.createSandbox({ branch, baseBranch: BASE_REF, sandbox: sandboxFor(env), hooks, copyToWorktree });
   try {
-    return await runGate((c) => sandbox.exec(c), MAIN_CHECK_ID, { ...env, GATE_FULL: "1" });
+    return await runGate((c, o) => sandbox.exec(c, o), MAIN_CHECK_ID, { ...env, GATE_FULL: "1" });
   } finally {
     await sandbox.close();
     await dropTestResources(MAIN_CHECK_ID);

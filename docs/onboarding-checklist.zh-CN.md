@@ -31,6 +31,7 @@
 ## 3. 门槛基线
 
 - [ ] `sandpipe baseline`：在沙箱里对 `origin/main` 跑一次完整门槛，必须通过
+  - 运行期间每 5 分钟打印一次心跳，完整输出实时写在 `.sandcastle/logs/gate-*.log`（开头会打印路径），可以 `tail -f` 跟着看
   - 没过：要么 main 本来就坏，要么 `gate.script` / `isolation` / `install` 在沙箱里不对。修好再跑，不要带着红的基线做票
   - 通过但提示有偶发失败：记下 `GATE_FLAKY` 列出的文件，先修，或者暂时从门槛里排除
 - [ ] 记下这次门槛用了多久（输出里的 `GATE_TIME`），作为之后判断门槛是否变慢的参照

@@ -31,6 +31,7 @@ Run every command in the target project's root; if the config lives elsewhere, f
 ## 3. Gate baseline
 
 - [ ] `sandpipe baseline`: runs the full gate once against `origin/main` in a sandbox, and it must pass
+  - While it runs, a heartbeat is printed every 5 minutes, and the full output is written live to `.sandcastle/logs/gate-*.log` (the path is printed at the start); `tail -f` it to follow along
   - If it fails: either main is already broken, or `gate.script` / `isolation` / `install` is wrong in the sandbox. Fix it and rerun; don't work tickets on a red baseline
   - If it passes but reports flaky failures: note the files listed by `GATE_FLAKY` and fix them first, or exclude them from the gate for now
 - [ ] Note how long the gate took (`GATE_TIME` in the output), as a reference for spotting a slower gate later

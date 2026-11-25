@@ -26,6 +26,7 @@
 | `src/profile.ts` | **ProjectProfile**：项目配置（测试隔离、门槛、安装、一致性检查、文案）与默认值 |
 | `src/project-doc.ts` | 解析 `.sandcastle/PROJECT.md`、渲染提示词 |
 | `prompts/` | 通用提示词模板（implement / review / prep / rebase）与共享片段（设计决定、编码规范、票的大小） |
+| `src/gate-progress.ts` | 门槛进度：输出实时写进 `.sandcastle/logs/gate-*.log`、心跳、用时文案 |
 | `src/shell.ts` | 宿主机命令（超时、远端重试） |
 | `src/guide.ts` `src/pr-body.ts` `src/models.ts` | 票正文解析、PR 正文、模型档案 |
 | `templates/.sandcastle/` | 装到新项目的 PROJECT.md 模板、配置模板、Containerfile、models.json |
