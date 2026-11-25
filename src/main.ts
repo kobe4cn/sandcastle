@@ -252,7 +252,9 @@ async function runGate<R extends ExecResult>(
     const waited = Date.now() - queued;
     if (waited > 5_000) console.log(t(`  ⏳ #${issueId} 排队 ${duration(waited)}后开始跑门槛`, `  ⏳ #${issueId} starting the gate after queueing ${duration(waited)}`));
     const started = Date.now();
-    const r = await exec(`${envPrefix({ ...env, ...project.gate.env })} sh -c ${shellQuote(GATE_SCRIPT)}`);
+    // stderr 并进 stdout：命令找不到、typecheck 报错这类原因多半写在 stderr，不并进来 baseline 和 PR 里只看到「失败」。
+    // Merge stderr into stdout: causes like a missing command or typecheck errors usually go to stderr; without this, baseline and the PR only show "failed".
+    const r = await exec(`${envPrefix({ ...env, ...project.gate.env })} sh -c ${shellQuote(GATE_SCRIPT)} 2>&1`);
     const tier = gateTierName(gateTier(r.stdout));
     const took = duration(Date.now() - started);
     const before = waited > 5_000 ? t(`（之前排队 ${duration(waited)}）`, ` (queued ${duration(waited)} before)`) : "";
