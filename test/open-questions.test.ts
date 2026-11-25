@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { OPEN_QUESTIONS, parseOpenQuestions, readOpenQuestions } from "../src/open-questions.ts";
+import { OPEN_QUESTIONS, parseOpenQuestions, readOpenQuestions, unknownSectionTargets } from "../src/open-questions.ts";
 
 describe("parseOpenQuestions", () => {
   it("中英文类别都认，标题行和空行跳过，问题和目标去掉首尾空格", () => {
@@ -54,5 +54,26 @@ describe("readOpenQuestions", () => {
     mkdirSync(join(root, ".sandcastle"));
     writeFileSync(join(root, OPEN_QUESTIONS), "# 缺口清单\n- [意图] 项目还没有术语表 → GLOSSARY.md\n");
     expect(readOpenQuestions(root)).toEqual([{ category: "intent", question: "项目还没有术语表", target: "GLOSSARY.md", line: 2 }]);
+  });
+});
+
+describe("unknownSectionTargets", () => {
+  it("已知节名（中英文都认）和别的文件不返回；新造的节名和没加引号的 PROJECT.md 目标返回，行号对得上", () => {
+    const md = [
+      "# 缺口清单",
+      "",
+      "- [规范] 用哪个测试框架？ → PROJECT.md「测试」",
+      "- [convention] Which test helper? → PROJECT.md \"Testing\"",
+      "- [意图] 红线？ → PROJECT.md “必须停下”",
+      "- [意图] 还没有术语表 → GLOSSARY.md",
+      "- [规范] review 标准？ → PROJECT.md 新增「审查」一节",
+      "- [规范] 别的？ → PROJECT.md 新增审查一节",
+      "- [intent] Why? → PROJECT.md \"Review\"",
+    ].join("\n");
+    expect(unknownSectionTargets(parseOpenQuestions(md))).toEqual([
+      { line: 7, section: "审查" },
+      { line: 8, section: "PROJECT.md 新增审查一节" },
+      { line: 9, section: "Review" },
+    ]);
   });
 });

@@ -8,6 +8,7 @@
 - `sandpipe onboard --questions-only`：给早于缺口清单接入的项目补一份 `.sandcastle/OPEN-QUESTIONS.md`。agent 读现有 PROJECT.md 和代码找缺口，只许写这份清单，不生成、不改动其他文件；清单已存在时提示删掉后重跑。
 - `sandpipe doctor` 新增「项目知识」检查，读缺口清单：还有 N 条时警告，提示在 Claude Code 里运行 `/fill-project-docs`；清单不存在时警告，提示运行 `sandpipe onboard --questions-only`；清单为空时通过；格式错时警告并指出行号。这项检查不会不通过；没有 PROJECT.md 时不做。
 - 新增 `/fill-project-docs` skill（装在 `.claude/skills/fill-project-docs/`，附 NOTICE）：在 Claude Code 里和人逐条补完缺口清单，一次问一个问题，能从代码查到的事实不问人；答案按类别写进 PROJECT.md 对应的节、术语表（`CONTEXT.md` / `GLOSSARY.md`，都没有就新建 `GLOSSARY.md`）或 ADR，写完从清单删掉这一条；之后可选梳理核心术语，跑 `sandpipe doctor` 自检，人确认后提交。已接入的项目要跑 `sandpipe update` 才装得上；`sandpipe doctor` 会在它缺失或被改过时警告。
+- 缺口清单的「写到哪」不再指向 PROJECT.md 里不存在的节：onboard（含 `--questions-only`）的提示词列出可用的节名（中文项目列中文那套，英文项目列英文那套），写明不能新建节，放不进的写最接近的那一节；onboard 写完校验清单时，目标节名不认识的条目打印警告并给出行号（只警告，不算格式错误）。
 
 ## 0.1.4
 

@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
 import { agentWritable, configSource, containerfileSource, hasGlobalSkill, installFiles, installGlobalSkill, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
-import { parseProjectDoc } from "../src/project-doc.ts";
+import { parseProjectDoc, SECTIONS, SECTIONS_EN } from "../src/project-doc.ts";
 import { nodeRepo, pythonRepo } from "./fixtures.ts";
 
 const containerTemplate = readFileSync(new URL("../templates/.sandcastle/Containerfile", import.meta.url), "utf8");
@@ -306,6 +306,21 @@ describe("questionsPrompt / --questions-only", () => {
     expect(p).toContain("shop-marker-42");
     expect(p).toContain("[intent]");
     expect(p).toContain("# Open questions");
+  });
+
+  it("「写到哪」只许用现有节名：中文列中文节名，英文列英文节名，写明不能新建节", () => {
+    const zh = Object.values(SECTIONS).map((s) => `「${s}」`);
+    const en = Object.values(SECTIONS_EN).map((s) => `「${s}」`);
+    for (const p of [questionsPrompt(detectProject(nodeRepo()), "zh", projectMd), onboardPrompt(detectProject(nodeRepo()), "zh")]) {
+      for (const s of zh) expect(p).toContain(s);
+      expect(p).not.toContain(en.join("、"));
+      expect(p).toContain("不能新建");
+    }
+    for (const p of [questionsPrompt(detectProject(pythonRepo()), "en", projectMd), onboardPrompt(detectProject(pythonRepo()), "en")]) {
+      for (const s of en) expect(p).toContain(s);
+      expect(p).not.toContain(zh.join("、"));
+      expect(p).toContain("不能新建");
+    }
   });
 
   it("questionsOnlyPrecheck：清单已存在 / 没有 PROJECT.md / 都满足", () => {

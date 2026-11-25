@@ -24,7 +24,7 @@ import { fileURLToPath } from "node:url";
 import { detectProject, type ProjectFacts } from "./detect.ts";
 import type { Language } from "./i18n.ts";
 import { DEFAULT_LABELS } from "./profile.ts";
-import { OPEN_QUESTIONS, readOpenQuestions } from "./open-questions.ts";
+import { OPEN_QUESTIONS, readOpenQuestions, unknownSectionTargets } from "./open-questions.ts";
 import { parseProjectDoc, SECTIONS, SECTIONS_EN } from "./project-doc.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { RELEASES_REPO } from "./version.ts";
@@ -508,15 +508,17 @@ export function agentWritable(root: string): string[] {
 /**
  * 缺口清单的格式说明（提示词正文是中文，英文项目的类别和标题换法写在开头的输出语言规则里）。
  * `factsHandling` 是代码里查得到的事实该怎么处理（一句话）：完整 onboard 时写进 PROJECT.md，`--questions-only` 时不记。
+ * `lang` 决定列出哪一套 PROJECT.md 节名：中文项目列中文节名，英文项目列英文节名。
  * Format notes for the open questions list (the prompt body is Chinese; English projects get the category and heading swap in the output-language rule up front).
  * `factsHandling` says (as a sentence) what to do with facts found in the code: written into PROJECT.md in a full onboard, skipped with `--questions-only`.
+ * `lang` picks which PROJECT.md section titles are listed: Chinese titles for Chinese projects, English titles for English ones.
  */
-const questionsFormat = (factsHandling: string) => [
+const questionsFormat = (factsHandling: string, lang: Language) => [
   `把拿不准、需要人补的点写进 \`${OPEN_QUESTIONS}\`，这份文件会提交进仓库，之后由人在 Claude Code 里逐条补完：`,
   "",
   "- 以 `# 缺口清单` 开头，下面每条一行：`- [类别] 问题 → 写到哪`。不编号、不加 ID，箭头只用 `→`。",
   "- 类别只有两种：`规范`（代码风格、测试写法、提交约定这类能从代码推一部分、但你拿不准的）和 `意图`（业务规则、领域术语、红线、设计原因这类只能由人说出来的）。",
-  "- 「写到哪」写答案该进哪份文档：PROJECT.md 的哪一节，或术语表、ADR 之类的文件。",
+  `- 「写到哪」写答案该进哪份文档。写进 PROJECT.md 的只能写成 \`PROJECT.md「节名」\`，节名只能取这几个：${Object.values(lang === "en" ? SECTIONS_EN : SECTIONS).map((s) => `「${s}」`).join("、")}。不能新建节，放不进这些节的答案写最接近的那一节。不写进 PROJECT.md 的，写术语表（GLOSSARY.md / CONTEXT.md）、ADR 之类的其他文件。`,
   `- 什么算缺口：意图层面的信息（术语表、红线、设计原因）在代码和文档里都找不到，或者规范拿不准。代码里查得到的事实不算，${factsHandling}`,
   "- 没有缺口时只写标题那一行。",
   "",
@@ -550,7 +552,7 @@ const ANSWER_EN = "Write your final notes in English too. The instructions below
 export function onboardPrompt(f: ProjectFacts, lang: Language = f.commitLanguage, writable: string[] = AGENT_WRITABLE): string {
   const facts = factsJson(f);
   const listWritable = writable.includes(OPEN_QUESTIONS);
-  const questions = listWritable ? questionsFormat("自己查清楚写进 PROJECT.md。") : `\`${OPEN_QUESTIONS}\` 已存在，不要动它；拿不准的点在最后的输出里另起一段「拿不准的点」，每条一行。`;
+  const questions = listWritable ? questionsFormat("自己查清楚写进 PROJECT.md。", lang) : `\`${OPEN_QUESTIONS}\` 已存在，不要动它；拿不准的点在最后的输出里另起一段「拿不准的点」，每条一行。`;
   const rule =
     lang === "en"
       ? `Output language: write PROJECT.md in English and use the English section titles instead of the Chinese ones in the template below (${(Object.keys(SECTIONS) as (keyof typeof SECTIONS)[]).map((k) => `${SECTIONS[k]} → \`## ${SECTIONS_EN[k]}\``).join(", ")}). ` +
@@ -575,7 +577,7 @@ export function questionsPrompt(f: ProjectFacts, lang: Language, projectMd: stri
     .replace("{{FACTS}}", () => factsJson(f))
     .replace("{{PROJECT}}", () => projectMd.trim())
     .replace("{{WRITABLE}}", () => writableList([OPEN_QUESTIONS]))
-    .replace("{{QUESTIONS}}", () => questionsFormat("不用记。"));
+    .replace("{{QUESTIONS}}", () => questionsFormat("不用记。", lang));
 }
 
 /**
@@ -656,6 +658,13 @@ function reportOpenQuestions(root: string): number {
       return 0;
     }
     console.log(t(`✓ 缺口清单还有 ${questions.length} 条`, `✓ ${questions.length} open question(s) left`));
+    for (const { line, section } of unknownSectionTargets(questions))
+      console.warn(
+        t(
+          `⚠ 缺口清单第 ${line} 行：「写到哪」指向 PROJECT.md 里没有的节「${section}」，只能用现有节名`,
+          `⚠ Open questions line ${line}: target points to a PROJECT.md section that doesn't exist, "${section}"; use an existing section`,
+        ),
+      );
     return questions.length;
   } catch (e) {
     console.warn(t("⚠ 缺口清单校验没过：", "⚠ The open questions list is invalid: ") + (e as Error).message);
