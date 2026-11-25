@@ -1,6 +1,9 @@
 // 脚本自己写到托管平台上的文字（PR 正文、评论、自动开的票）：按项目配置的 language 选中文或英文。
 // agent 写的文字由提示词里的「输出语言」规则管（project-doc.ts 的 languageVars）。终端输出不在这里，见 term.ts。
 // 新增一条：zh 和 en 都要加（en 的类型是 Messages，少了编译不过）。
+// Text the script writes to the forge (PR bodies, comments, auto-opened tickets): Chinese or English per the project's language.
+// What the agent writes is governed by the "output language" rule in the prompts (languageVars in project-doc.ts). Terminal output isn't here; see term.ts.
+// To add an entry, add it to both zh and en (en is typed as Messages, so a missing one won't compile).
 
 export type Language = "zh" | "en";
 
@@ -8,9 +11,12 @@ const zh = {
   list: (items: string[]) => items.join("、"),
   sep: "；",
 
-  // —— PR 正文：验收说明 ——
+  // —— PR 正文：验收说明 —— / PR body: acceptance notes
   notesTitle: "验收说明",
-  /** 验收说明必须有的三个小标题（implementer 按提示词写，pr-body.ts 检查）。 */
+  /**
+   * 验收说明必须有的三个小标题（implementer 按提示词写，pr-body.ts 检查）。
+   * The three headings acceptance notes must have (the implementer writes them per the prompt; pr-body.ts checks them).
+   */
   noteHeadings: ["### 做了什么", "### 怎么验证", "### 最终效果"] as readonly [string, string, string],
   notesMissingFile: "文件不存在",
   notesMissingHeading: (h: string) => `缺 \`${h}\` 小标题`,
@@ -21,7 +27,7 @@ const zh = {
   prepPage: (branch: string) => `### 准备\n\n\`git checkout ${branch}\`，按项目说明起 dev server`,
   prepNoPage: (branch: string) => `### 准备\n\n\`git checkout ${branch}\`（本票没改页面，不用起 dev server）`,
 
-  // —— PR 正文：其余各节 ——
+  // —— PR 正文：其余各节 —— / PR body: other sections
   usageNone: "（没有记录到用量）",
   usageHeader: "| 会话 | 档案 | 次数 | 输入 | 缓存写 | 缓存读 | 输出 | 上下文峰值 |",
   usageProfile: (profile: string, model: string) => `${profile}（${model}）`,
@@ -39,7 +45,7 @@ const zh = {
   revisionN: (n: number) => `第 ${n} 次的意见`,
   noReviewSummary: "（reviewer 没有给出摘要）",
 
-  // —— PR 评论 ——
+  // —— PR 评论 —— / PR comments
   prUpdated: "Sandcastle 更新了这个分支。",
   prUpdatedNotes: "Sandcastle 更新了这个分支（验收说明已更新）。",
   notMerged: (reason: string) => `没有自动合并：${reason}`,
@@ -58,7 +64,7 @@ const zh = {
   rebaseNoTextConflict: (integrity: string) => `（没有文本冲突，${integrity}分叉）`,
   rebasedMerged: (base: string) => `Sandcastle 把分支 rebase 到最新的 ${base}，门槛重跑通过后合并。`,
 
-  // —— 留给人的原因（接在 notMerged 后面） ——
+  // —— 留给人的原因（接在 notMerged 后面） —— / Reasons for leaving a PR to a human (appended after notMerged)
   reasonExternal: (verdict: string | undefined, gateOk: boolean) =>
     `这是外部 PR，Sandcastle 只负责修改，合并由人决定。reviewer 结论：${verdict}；门槛${gateOk ? "通过" : "没通过"}（见上面的评论）。`,
   reasonExternalConflict: (base: string, branch: string) => `\n\n⚠️ 分支和最新的 ${base} 有冲突，需要先把 ${branch} 合进来。`,
@@ -71,7 +77,7 @@ const zh = {
   rebasedForHuman: (base: string) => `\n\n分支和最新的 ${base} 冲突，已 rebase，只重跑了 typecheck（通过），没有重跑测试。`,
   rebaseForHumanFailed: (base: string, reason: string) => `\n\n⚠️ 分支和最新的 ${base} 冲突，自动 rebase 没成：${reason}`,
 
-  // —— rebase 失败的原因 ——
+  // —— rebase 失败的原因 —— / Reasons a rebase failed
   rebaseExternal: (branch: string) => `外部 PR 的分支 ${branch} 不由 Sandcastle rebase 或合并。`,
   rebaseNotBehind: (base: string) => `分支已经包含最新的 ${base}，失败不是冲突造成的，需要人看。`,
   rebaseAgentFailed: "agent 没能解决 rebase 冲突（原因见 issue 评论）。",
@@ -83,7 +89,7 @@ const zh = {
   integrityName: "一致性检查",
   integrityBroken: "一致性检查没通过",
 
-  // —— issue 评论：停下 / 退回 ——
+  // —— issue 评论：停下 / 退回 —— / Issue comments: stop / send back
   stuck: (reason: string) => `Sandcastle 停下了：${reason}`,
   sandboxError: (err: string) => `沙箱出错：${err}`,
   pushedTo: (branch: string) => `已有的提交推到了分支 \`${branch}\`。`,
@@ -103,7 +109,7 @@ const zh = {
   landError: (branch: string, reason: string, stuckLabel: string) =>
     `Sandcastle 停下了：落地（push / 开 PR / 合并）出错，本地分支 \`${branch}\` 保留。\n\n\`\`\`\n${reason}\n\`\`\`\n\n处理后去掉 ${stuckLabel} 再运行。`,
 
-  // —— 偶发失败与 main 兜底 ——
+  // —— 偶发失败与 main 兜底 —— / Flaky failures and the fallback run on main
   flakyLabelDesc: "偶发失败的测试（Sandcastle 门槛自动开票）",
   flakySeen: (issueId: string, pr: string) => `#${issueId} 的门槛（PR #${pr}）`,
   flakyEnv: (others: string[], load: string, cores: number) =>
@@ -119,6 +125,7 @@ const zh = {
   mainBrokenNoHistory: "（之前没有通过记录，下面是最近 20 个提交）",
 
   // —— 默认的自动开票正文（项目配置 texts 可以整份替换） ——
+  // Default bodies for auto-opened tickets (the project config's texts can replace them wholesale)
   flakyIssueBody: (list: string, seen: string, env: string, prior: string, summary: string) =>
     [
       `${list} 在 ${seen}的测试里失败，单独重跑通过。`,
@@ -145,6 +152,7 @@ const zh = {
     ].join("\n"),
 
   // —— 给 agent 的输出语言规则（渲染进每个提示词开头，以及内联的 revise / fix 提示词） ——
+  // Output language rule for the agent (rendered at the top of every prompt, and in the inline revise / fix prompts)
   outputLanguage:
     "输出语言：写到 issue、PR、评论里的一切文字（票的标题和正文、进度评论、验收说明、review 摘要）都用中文。提交信息的语言按 PROJECT.md「提交」一节。",
 };

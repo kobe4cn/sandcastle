@@ -38,6 +38,42 @@
 // Usage（在目标项目根目录）: npx tsx <本仓库>/src/main.ts
 //        SANDCASTLE_ONLY=328,329 npx tsx <本仓库>/src/main.ts   只处理这几张票（试跑、单独补跑）
 //        SANDCASTLE_BASELINE=1 …（即 sandpipe baseline）   对 origin/main 跑一次完整门槛就退出
+//
+// Sandcastle: prep → plan → implement + review → gate → merge (PRs that can't merge are left open)
+// Scheduling (no rounds): at most MAX_PARALLEL slots. When a slot is free, run one "tidy → prep → plan" pass to fill the slots; each ticket
+// runs build → land on its own and frees its slot as soon as it's done, triggering the next pass. With free slots but nothing startable, poll every POLL_INTERVAL_MS
+// (a merged PR, a closed blocker or a removed stuck label can start work at the next poll); a pass with nothing running and nothing startable is an idle poll,
+// and MAX_ITERATIONS idle polls in a row end the run. git / label operations on the host (scheduling and landing) are serialized; builds run in parallel in sandboxes.
+// Each pass and each ticket:
+//   Phase 0 (Prep):  a human adding the `Sandcastle` label "picks" an issue. Picked tickets without
+//                    `sandcastle:prepped` run prep-ticket one at a time (tickets whose `## Blocked by` still has
+//                    open tickets are skipped without a session):
+//                    small enough with a fresh guide → prepped; too big → split into children (children inherit
+//                    `Sandcastle`, the parent loses it); needs a human decision → sandcastle:stuck (decisions the agent may make follow the prompt's "design decisions").
+//   Phase 1 (Plan):  computed by the script (no agent): only tickets with `Sandcastle` + `sandcastle:prepped` and without
+//                    pr-open / stuck, minus those with open blockers; the rest in ascending number order,
+//                    skipping any that change a file (guide Change lines) also changed by an already-picked or pr-open ticket.
+//   Phase 2 (Build): one sandbox per ticket, branched from origin/main: implementer (each iteration
+//                    is a fresh Claude session) → reviewer (verdict merge / revise / pr; on revise
+//                    the requested changes go to a new implementer session and are reviewed again, at most REVISE_MAX times) →
+//                    gate (the script runs typecheck + the full suite itself; on failure the implementer gets one fix).
+//                    At most MAX_PARALLEL in parallel, each sandbox with its own test databases and prefixes.
+//   Phase 3 (Land):  on the host, push and open a PR (`Closes #n`). Reviewer says merge and the gate passes
+//                    → `gh pr merge --rebase`, closing the issue; otherwise (or with autoMerge: false) label sandcastle:pr-open for review.
+//                    When it can't merge (a conflict from an earlier merge, or the project's integrity check fails, e.g. a forked migration chain), rebase onto
+//                    the latest origin/main (conflicts and migrations go to the agent, prompts/rebase.md), rerun the gate and merge again.
+//   Start of each pass: a send-back signal on a PR under review newer than the branch's latest commit (a comment or review starting with `/sandcastle`,
+//                    or someone else's Request changes) → remove the issue's sandcastle:pr-open; the ticket
+//                    re-enters plan and the implementer reads the PR feedback first.
+//   External PRs: PRs opened by others that `Closes` a Sandcastle ticket (branch not starting with `sandcastle/`) are continued on their branch after a send-back:
+//                    plain pushes only, no rebase, no merge, no branch deletion; results are commented on the PR for a human to merge.
+// Which model each phase uses (Claude subscription or another vendor's Anthropic-compatible API) and which to switch to on limits: .sandcastle/models.json (models.ts).
+// Label state machine: "Labels" in docs/config.md; the full design notes are in docs/internal/sandcastle.md.
+// Project-specific parts (forge, test isolation, gate, pre-merge checks, auto-ticket texts) live in the target project's
+// .sandcastle/sandcastle.config.ts (ProjectProfile in profile.ts); all forge operations go through Forge (forge.ts).
+// Usage (in the target project's root): npx tsx <this repo>/src/main.ts
+//        SANDCASTLE_ONLY=328,329 npx tsx <this repo>/src/main.ts   only these tickets (trial runs, reruns)
+//        SANDCASTLE_BASELINE=1 … (i.e. sandpipe baseline)   run the full gate once against origin/main and exit
 
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, loadavg, tmpdir } from "node:os";
@@ -61,52 +97,71 @@ import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, 
 // ---------------------------------------------------------------------------
 
 const project = await loadProject();
-/** 写到平台上的文字（PR、评论、自动开的票）按项目语言。 */
+/** 写到平台上的文字（PR、评论、自动开的票）按项目语言。 / Text written to the forge (PRs, comments, auto-opened tickets) follows the project's language. */
 const M = messages(project.language);
 // 终端输出也跟项目语言（设了 SANDPIPE_LANG 时以它为准） / Terminal output follows the project's language too (SANDPIPE_LANG wins when set)
 setTermLanguage(project.language);
 const forge = project.forge;
 
 // agent 多久没输出算卡死：库默认 600 秒，太短（门槛失败后的 fix 会话要在后台重跑慢测试，等通知期间没有输出）。
+// How long without agent output counts as stuck: the library default of 600 seconds is too short (fix sessions after a failed gate rerun slow tests in the background with no output while waiting).
 const AGENT_IDLE_TIMEOUT_S = project.agentIdleTimeoutS;
-const POLL_INTERVAL_MS = project.pollIntervalMs; // 有空位时隔多久重新调度一次（整理 → prep → plan），看有没有新开得了工的票
-const MAX_ITERATIONS = project.maxIdlePolls; // 连续空转（没有票在做、也开不出新票）多少次就结束运行
-const MAX_PARALLEL = project.maxParallel; // 同时实现的票数：受测试依赖的服务与机器负载限制；门槛另外排队、同一时间只跑一个（runGate）
-const IMPLEMENT_MAX_ITERATIONS = project.implementMaxSessions; // 一张票最多开几次全新会话；超过说明票太大，交给人
-/** 第一次没做完时脚本留在 issue 上的标记；prep 看到它就按「实现没做完」重新准备，再没做完才打 stuck。 */
+const POLL_INTERVAL_MS = project.pollIntervalMs; // 有空位时隔多久重新调度一次（整理 → prep → plan），看有没有新开得了工的票 / how often to reschedule when a slot is free (tidy → prep → plan), looking for newly startable tickets
+const MAX_ITERATIONS = project.maxIdlePolls; // 连续空转（没有票在做、也开不出新票）多少次就结束运行 / how many idle polls in a row (nothing running, nothing startable) end the run
+const MAX_PARALLEL = project.maxParallel; // 同时实现的票数：受测试依赖的服务与机器负载限制；门槛另外排队、同一时间只跑一个（runGate） / tickets implemented at once: limited by test services and machine load; gates queue separately, one at a time (runGate)
+const IMPLEMENT_MAX_ITERATIONS = project.implementMaxSessions; // 一张票最多开几次全新会话；超过说明票太大，交给人 / maximum fresh sessions per ticket; beyond that the ticket is too big and goes to a human
+/**
+ * 第一次没做完时脚本留在 issue 上的标记；prep 看到它就按「实现没做完」重新准备，再没做完才打 stuck。
+ * Marker the script leaves on the issue when the first attempt didn't finish; prep re-prepares it as "implementation unfinished", and only another failure means stuck.
+ */
 const REPREP_MARK = "<!-- sandcastle:reprep -->";
-/** implementer 的两个完成信号：做完了；遇到必须由人拍板的设计决定（提示词的「设计决定」），票直接交给人，不再开新会话。 */
+/**
+ * implementer 的两个完成信号：做完了；遇到必须由人拍板的设计决定（提示词的「设计决定」），票直接交给人，不再开新会话。
+ * The implementer's two completion signals: done; or hit a design decision a human must make (the prompt's "design decisions"), handing the ticket to a human without more sessions.
+ */
 const COMPLETE = "<promise>COMPLETE</promise>";
 const NEEDS_DECISION = "<promise>NEEDS_DECISION</promise>";
-/** agent 代拍板时 issue 评论的第一行（提示词的「设计决定」）；落地时脚本据此打 sandcastle:decided 并把评论贴到 PR 上。 */
+/**
+ * agent 代拍板时 issue 评论的第一行（提示词的「设计决定」）；落地时脚本据此打 sandcastle:decided 并把评论贴到 PR 上。
+ * First line of the issue comment when the agent decides on a human's behalf (the prompt's "design decisions"); on landing the script labels sandcastle:decided and copies the comments to the PR.
+ */
 const DECIDED_MARK = "<!-- sandcastle:decided -->";
-const REVISE_MAX = project.reviseMax; // reviewer 给 revise 时最多打回几次；之后仍不行就留 PR 给人
-const CONTEXT_BUDGET = project.contextBudget; // 单个会话的上下文预算
+const REVISE_MAX = project.reviseMax; // reviewer 给 revise 时最多打回几次；之后仍不行就留 PR 给人 / maximum send-backs when the reviewer says revise; after that the PR is left for a human
+const CONTEXT_BUDGET = project.contextBudget; // 单个会话的上下文预算 / context budget per session
 const REMOTE = project.remote;
 const BASE_BRANCH = project.baseBranch;
 // 从远端 main 建分支：已合并的代码在远端，不动宿主机本地 main 的工作区。
+// Branch from the remote main: merged code is on the remote, and the host's local main worktree isn't touched.
 const BASE_REF = `${REMOTE}/${BASE_BRANCH}`;
 // 只处理这几张票（逗号分隔）；不设则处理全部带 Sandcastle 标签的票。拆出来的子票不在名单里，要另外加。
+// Only these tickets (comma separated); when unset, all tickets labelled Sandcastle. Split-off children aren't in the list and must be added separately.
 const ONLY = new Set((process.env.SANDCASTLE_ONLY ?? "").split(",").map((s) => s.trim()).filter(Boolean));
 const allowed = (id: string | number) => ONLY.size === 0 || ONLY.has(String(id).replace(/^#/, ""));
 
 const LABEL = project.labels;
 // 提示词：通用模板 + .sandcastle/PROJECT.md 的章节 + 平台命令，启动时渲染一次（改了 PROJECT.md 要重启才生效）
+// Prompts: generic templates + .sandcastle/PROJECT.md sections + forge commands, rendered once at startup (restart after changing PROJECT.md)
 const PROMPTS = renderPrompts({ doc: loadProjectDoc(), forgeGuide: forge.agentGuide(), labels: LABEL, language: project.language });
 const APPEND_ONLY: ReadonlySet<string> = new Set(project.appendOnlyFiles);
 
-/** 调度顺序：main 坏了的修复票排最前，其余按编号从小到大（早建的票通常是后面票的 blocker）。 */
+/**
+ * 调度顺序：main 坏了的修复票排最前，其余按编号从小到大（早建的票通常是后面票的 blocker）。
+ * Scheduling order: main-broken fix tickets first, the rest by ascending number (older tickets usually block later ones).
+ */
 const byUrgency = (a: { number: number; labels: string[] }, b: { number: number; labels: string[] }) => {
   const urgent = (i: typeof a) => (i.labels.includes(LABEL.mainBroken) ? 0 : 1);
   return urgent(a) - urgent(b) || a.number - b.number;
 };
 
 // 同一会话超过预算前自动压缩；预算本身靠 prep 把票切小来保证。
+// A session compacts automatically before exceeding the budget; the budget itself is upheld by prep cutting tickets small.
 const claudeEnv = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(CONTEXT_BUDGET) };
 
 /**
  * 跑一次 agent 会话：阶段用哪个档案（模型、厂商）由 .sandcastle/models.json 决定，撞限额换下一个（models.ts）。
  * 用量追加到 .sandcastle/logs/usage.jsonl，也放进 usage（落地时写进 PR）。
+ * Run one agent session: which profile (model, vendor) a phase uses comes from .sandcastle/models.json, switching to the next on limits (models.ts).
+ * Usage is appended to .sandcastle/logs/usage.jsonl and also returned in usage (written into the PR on landing).
  */
 async function runAgent<T extends AgentRun>(
   phase: Phase,
@@ -123,6 +178,7 @@ async function runAgent<T extends AgentRun>(
 
 // ---------------------------------------------------------------------------
 // 每张票的测试环境：项目配置的 isolation（独立的测试库、前缀……），关沙箱后回收。
+// Each ticket's test environment: the project's isolation (separate test databases, prefixes…), reclaimed after the sandbox closes.
 // ---------------------------------------------------------------------------
 
 const testEnv = (runId: string) => project.isolation.env(runId);
@@ -136,6 +192,8 @@ async function dropTestResources(runId: string) {
 
 // 浏览器验收的产物：implementer 写在 worktree 的 .browser-check/（.gitignore 忽略），
 // 关沙箱前拷到宿主机，开 PR 时把截图用 `gh --attach` 附上、RESULT.md 写进正文。
+// Browser check output: the implementer writes it to .browser-check/ in the worktree (ignored by .gitignore);
+// it's copied to the host before the sandbox closes, and when opening the PR screenshots are attached with `gh --attach` and RESULT.md goes into the body.
 const BROWSER_DIR = ".browser-check";
 const SHOTS_ROOT = join(tmpdir(), "sandcastle-browser-check");
 
@@ -161,6 +219,8 @@ function readAcceptanceNotes(worktreePath: string): string | undefined {
 
 // 合并门槛：脚本自己跑，不信 agent 的口头结论。脚本内容与输出约定见项目配置的 gate（profile.ts 的 GateConfig）。
 // 输出里有一行 GATE_TIER: full|selected，脚本据此计数、写进 PR；重跑才通过时有 GATE_FLAKY。
+// Merge gate: the script runs it itself rather than trusting the agent's word. Script and output conventions: the project's gate (GateConfig in profile.ts).
+// The output has a line GATE_TIER: full|selected, which the script counts and writes into the PR; GATE_FLAKY appears when a rerun was needed to pass.
 const GATE_RERUN_MAX = project.gate.rerunMax;
 type GateTier = "selected" | "full";
 const gateTier = (stdout: string): GateTier => (stdout.includes("GATE_TIER: selected") ? "selected" : "full");
@@ -169,13 +229,19 @@ const GATE_SCRIPT = project.gate.script({ baseRef: BASE_REF });
 
 // 门槛同一时间只跑一个（不分档位）：并行跑时 CPU 与测试依赖的服务都被挤满，反而比先后跑更慢、更容易超时。
 // 门槛独占时可以给更多资源（项目配置 gate.env，比如更多 worker）。
+// Only one gate runs at a time (regardless of tier): in parallel, CPU and the test services saturate, making them slower and more timeout-prone than running in sequence.
+// With the gate to itself it can be given more resources (project config gate.env, e.g. more workers).
 let gateQueue: Promise<unknown> = Promise.resolve();
 type ExecResult = { stdout: string; exitCode: number };
 // 不到一分钟显示秒：小项目的门槛只跑几秒，显示「0.0 分钟」看不出用时。
+// Show seconds under a minute: small projects' gates take seconds, and "0.0 min" says nothing.
 const duration = (ms: number) =>
   ms < 60_000 ? t(`${Math.round(ms / 1000)} 秒`, `${Math.round(ms / 1000)}s`) : t(`${(ms / 60_000).toFixed(1)} 分钟`, `${(ms / 60_000).toFixed(1)} min`);
 
-/** 跑一次门槛：所有门槛排同一个队；用时（和排队时间）打进日志，并追加在输出末尾一行 GATE_TIME（进 PR 的 Gate 一节）。 */
+/**
+ * 跑一次门槛：所有门槛排同一个队；用时（和排队时间）打进日志，并追加在输出末尾一行 GATE_TIME（进 PR 的 Gate 一节）。
+ * Run the gate once: all gates share one queue; the time taken (and time queued) is logged and appended as a GATE_TIME line at the end of the output (goes into the PR's Gate section).
+ */
 async function runGate<R extends ExecResult>(
   exec: (command: string) => Promise<R>,
   issueId: string,
@@ -200,6 +266,7 @@ async function runGate<R extends ExecResult>(
 }
 
 // 沙箱建好后装依赖（项目配置 install）：拷进来的 node_modules 等是宿主机的，可能缺容器平台的原生包。
+// Install dependencies once the sandbox is ready (project config install): copied node_modules etc. come from the host and may lack the container platform's native packages.
 const hooks = {
   sandbox: { onSandboxReady: [{ command: project.install.onSandboxReady }] },
 };
@@ -213,11 +280,14 @@ const sandboxFor = (env: Record<string, string>) => project.sandbox({ ...claudeE
 // Host helpers
 // ---------------------------------------------------------------------------
 
-// sh / trySh / gitRemote 在 shell.ts。
+// sh / trySh / gitRemote 在 shell.ts。 / sh / trySh / gitRemote are in shell.ts.
 
 // 沙箱和落地里的临时错误（2026-11-07 机器睡眠醒来后：复制 node_modules 到工作区超过 60 秒、
 // GitHub API 读超时）不直接打 stuck：等一会儿整步重跑。build 在原分支上重跑，implementer 会接着已有提交做；
 // land 开头会查 issue 是否已关、PR 是否已开，重跑最多多出一条评论。
+// Transient errors in sandboxes and landing (on 2026-11-07, after the machine woke from sleep: copying node_modules into the worktree took over 60 seconds,
+// GitHub API read timeouts) don't mark the ticket stuck right away: wait, then rerun the whole step. build reruns on the same branch, and the implementer continues from existing commits;
+// land first checks whether the issue is closed or a PR already exists, so a rerun adds at most one extra comment.
 const TRANSIENT = new RegExp(`${REMOTE_TRANSIENT.source}|CopyToWorktreeTimeoutError|timed out`, "i");
 const TRANSIENT_RETRY_WAITS_MS = [60_000, 300_000, 900_000];
 
@@ -264,26 +334,33 @@ function syncHostBase() {
   }
 }
 
-/** 带全部 `include` 标签、不带任何 `exclude` 标签的 open 票（排除的标签在本地过滤）。 */
+/**
+ * 带全部 `include` 标签、不带任何 `exclude` 标签的 open 票（排除的标签在本地过滤）。
+ * Open tickets with every `include` label and none of the `exclude` labels (exclusions are filtered locally).
+ */
 type ListedIssue = ForgeIssue;
 const listIssues = (include: string[], exclude: string[] = []): ListedIssue[] =>
   forge.listOpenIssues(include).filter((issue) => !issue.labels.some((label) => exclude.includes(label)));
 
 // ---------------------------------------------------------------------------
 // Plan：确定性计算，不交给 agent（planner agent 曾把「同文件只留编号小的」比反）
+// Plan: deterministic, not left to an agent (a planner agent once inverted "keep the lower number when files clash")
 // ---------------------------------------------------------------------------
 
-/** 票的 open 状态，每次调度开头清空（blocker 可能在两次调度之间被合并）。 */
+/**
+ * 票的 open 状态，每次调度开头清空（blocker 可能在两次调度之间被合并）。
+ * Open state of tickets, cleared at the start of every pass (blockers may be merged between passes).
+ */
 const openStates = new Map<number, boolean>();
 function isOpen(n: number): boolean {
   if (!openStates.has(n)) {
     const r = attempt(() => forge.issueState(String(n)));
-    openStates.set(n, !r.ok || r.value === "open"); // 查不到时当作 open，宁可少做
+    openStates.set(n, !r.ok || r.value === "open"); // 查不到时当作 open，宁可少做 / treat as open when the lookup fails, preferring to do less
   }
   return openStates.get(n)!;
 }
 
-/** `## Blocked by` 里还没关的票。 */
+/** `## Blocked by` 里还没关的票。 / Tickets in `## Blocked by` that are still open. */
 const openBlockers = (body: string) => blockersOf(body).filter(isOpen);
 
 /**
@@ -291,6 +368,10 @@ const openBlockers = (body: string) => blockersOf(body).filter(isOpen);
  * 被它 block 的票就一直排不上（2026-11-04 #381 的子票 #389、#390 都合并了，#382 仍在等 #381）。
  * 每次调度开头查不带 Sandcastle、有 `## Split into` 的 open 票，子票全关了就勾上清单、关掉父票。
  * 「上下文不够」那种父票保留 Sandcastle、由自己的 PR 关，不在这里处理。平台出错只打警告。
+ * Split parents: when prep splits a ticket it removes Sandcastle from the parent and adds `## Split into` to its body; nobody tends it afterwards,
+ * so tickets it blocks never get scheduled (2026-11-04: #381's children #389 and #390 were both merged, yet #382 still waited on #381).
+ * At the start of every pass, find open tickets without Sandcastle that have `## Split into`; when all children are closed, tick the list and close the parent.
+ * Parents split for "not enough context" keep Sandcastle and are closed by their own PR, so they aren't handled here. Forge errors only warn.
  */
 function closeFinishedParents() {
   const parents = attempt(() => forge.listSplitParents(LABEL.picked));
@@ -388,12 +469,18 @@ async function cleanupClosedIssues() {
  * 所以冲突时总是编号小的先做，等人审的 PR 合入或关闭前不会有第二个 PR 改同一个文件。
  * 被 blocker 挡住的票不占文件，不会连带挡住编号大的票。
  * running 是正在 build / 落地的票：不再选，它们改的文件和等人审的票一样先占上；最多补满 slots 张。
+ * Tickets that can start on main and run in parallel, in ascending number order.
+ * Skip tickets with open blockers (including PRs opened but not merged), and tickets changing a file also changed by a picked ticket or one under review (pr-open),
+ * so on a clash the lower number always goes first, and no second PR touches the same file until the one under review is merged or closed.
+ * Tickets held by blockers don't claim files, so they don't also hold back higher-numbered tickets.
+ * running holds tickets being built / landed: they aren't picked again, and their files are claimed like those of tickets under review; fill up to slots tickets.
  */
 function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue[] {
   const log = quiet ? () => {} : console.log;
   const warn = quiet ? () => {} : console.warn;
   const candidates = listIssues([LABEL.picked, LABEL.prepped], [LABEL.prOpen, LABEL.stuck]);
   // 等人审的 PR 还没合进 main：它们改的文件先占上，免得新票在旧 main 上改同一个文件，两个 PR 互相冲突。
+  // PRs under review aren't in main yet: claim their files first, so a new ticket doesn't change the same file on an old main and make the two PRs conflict.
   const waiting = listIssues([LABEL.picked, LABEL.prOpen]);
   const taken = new Map<string, number>();
   const awaitingReview = new Set<number>();
@@ -434,6 +521,7 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
     if (picked.length >= slots) break;
     for (const f of files) taken.set(f, issue.number);
     // 已有外部 PR（`Closes` 了这张票）时在它的分支上接着改；否则照旧用自己的分支。
+    // When an external PR (that `Closes` this ticket) exists, continue on its branch; otherwise use our own branch as usual.
     const pr = prFor(issue.number);
     const branch = pr && !pr.branch.startsWith("sandcastle/") ? pr.branch : ownBranch(issue.number);
     picked.push({ id: String(issue.number), title: issue.title, branch });
@@ -441,12 +529,13 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
   return picked;
 }
 
-/** implement 的几次会话合在一起（每次会话单独挑档案，分开跑）。 */
+/** implement 的几次会话合在一起（每次会话单独挑档案，分开跑）。 / implement's sessions combined (each session picks its own profile and runs separately). */
 type Sessions = { iterations: sandcastle.IterationResult[]; stdout: string; completionSignal?: string };
 const peakContext = (...runs: ({ readonly iterations: readonly sandcastle.IterationResult[] } | undefined)[]) =>
   Math.max(
     0,
     // 每次会话取会话文件里单条消息的最大上下文；只看结束时的大小会漏掉中途压缩前的峰值。
+    // Each session takes the largest single-message context in its session file; looking only at the final size misses the peak before a mid-session compaction.
     ...runs.flatMap((run) => (run?.iterations ?? []).map(sessionPeak)),
   );
 
@@ -459,10 +548,15 @@ const ownBranch = (issueId: string | number) => `sandcastle/issue-${issueId}`;
 /**
  * 外部 PR：别人（其他 agent、人）开的、`Closes` 了这张票的 PR，分支不是 `sandcastle/` 开头。
  * Sandcastle 在它的分支上接着改，但只做普通 push：不 force、不 rebase、不合并、不删分支，合并留给人。
+ * External PR: a PR opened by someone else (another agent, a person) that `Closes` this ticket, with a branch not starting with `sandcastle/`.
+ * Sandcastle continues on its branch but only with plain pushes: no force, no rebase, no merge, no branch deletion; merging is left to a human.
  */
 const isExternal = (issue: Issue) => !issue.branch.startsWith("sandcastle/");
 
-/** 推分支：自己的分支照旧 force-with-lease（rebase 过）；外部分支只做普通 push，被拒就报错。 */
+/**
+ * 推分支：自己的分支照旧 force-with-lease（rebase 过）；外部分支只做普通 push，被拒就报错。
+ * Push the branch: our own branches use force-with-lease as before (they were rebased); external branches get plain pushes and error when rejected.
+ */
 function pushBranch(issue: Issue) {
   return gitRemote(isExternal(issue)
     ? ["push", REMOTE, `${issue.branch}:${issue.branch}`]
@@ -473,6 +567,9 @@ function pushBranch(issue: Issue) {
  * 这张票的 open PR：先按 issue 关联（PR 正文的关闭写法），同时有自己的分支时用自己的；
  * 关联里只有一个本仓库的外部 PR 时用它；有多个外部 PR 时不猜，返回 null 并打日志。
  * 关联查不到（接口出错、没有关联）时退回按分支名 `sandcastle/issue-n` 查。
+ * This ticket's open PR: first by issue link (the closing keyword in the PR body), preferring our own branch when both exist;
+ * if the links contain exactly one external PR from this repo, use it; with several external PRs, don't guess: return null and log.
+ * If the link lookup fails (API error, no links), fall back to the branch name `sandcastle/issue-n`.
  */
 function prFor(issueId: string | number): ForgePr | null {
   const view = (ref: string): ForgePr | null => {
@@ -499,6 +596,8 @@ function prFor(issueId: string | number): ForgePr | null {
 /**
  * 外部 PR 的分支：开沙箱前同步到宿主机本地（沙箱从本地分支建 worktree，本地没有就会从 main 新建，丢掉对方的提交）。
  * 本地没有就从远端建；本地落后就快进；本地领先（上次没推上去）就保留；两边分叉就报错，交给人。
+ * An external PR's branch: sync it to the host before opening the sandbox (the sandbox creates its worktree from the local branch; without one it branches from main and loses their commits).
+ * Create it from the remote if missing; fast-forward if behind; keep it if ahead (last push didn't land); error out if diverged, leaving it to a human.
  */
 async function syncExternalBranch(issue: Issue) {
   await gitRemoteOrThrow(["fetch", REMOTE, issue.branch]);
@@ -517,7 +616,10 @@ async function syncExternalBranch(issue: Issue) {
   }
 }
 
-/** PR 正文的两大块：验收说明（最前面的一节，准备段落 + `.pr-notes/验收说明.md`）与其余各节（restSections 的结果）。 */
+/**
+ * PR 正文的两大块：验收说明（最前面的一节，准备段落 + `.pr-notes/验收说明.md`）与其余各节（restSections 的结果）。
+ * The two parts of the PR body: acceptance notes (the first section: setup steps + `.pr-notes/验收说明.md`) and the remaining sections (from restSections).
+ */
 type PrNotes = { acceptance: string; rest: string };
 
 async function pushAndOpenPr(issue: Issue, notes: PrNotes, shots: string[]): Promise<string> {
@@ -527,6 +629,8 @@ async function pushAndOpenPr(issue: Issue, notes: PrNotes, shots: string[]): Pro
   if (existing) {
     // 已有 PR：自己的分支只替换正文里的「验收说明」一节，其余（上次的 Review / Gate 记录）逐字保留；
     // 外部 PR 不动别人写的正文，验收说明贴在评论里。
+    // Existing PR: for our own branch, replace only the acceptance notes section, keeping the rest (earlier Review / Gate records) verbatim;
+    // for an external PR, don't touch the author's body; post the acceptance notes as a comment.
     if (isExternal(issue)) {
       forge.commentPr(existing, `${M.prUpdated}\n\n## ${M.notesTitle}\n\n${notes.acceptance}\n\n${notes.rest}`, shots);
     } else {
@@ -536,7 +640,7 @@ async function pushAndOpenPr(issue: Issue, notes: PrNotes, shots: string[]): Pro
     }
     return existing;
   }
-  // 外部 PR 不在这里新开：它被关了就说明人不要了。
+  // 外部 PR 不在这里新开：它被关了就说明人不要了。 / External PRs aren't reopened here: if it was closed, a human didn't want it.
   if (isExternal(issue))
     throw new Error(t(`分支 ${issue.branch} 上已经没有 open 的 PR，外部 PR 不由 Sandcastle 重开。`, `Branch ${issue.branch} no longer has an open PR; Sandcastle doesn't reopen external PRs.`));
   const commits = sh("git", ["log", `${BASE_REF}..${issue.branch}`, "--format=- %B"]);
@@ -549,7 +653,10 @@ function leaveForHuman(issue: Issue, pr: string, reason: string) {
   forge.commentPr(pr, M.notMerged(reason));
 }
 
-/** agent 代拍板过的票：打 sandcastle:decided，把那些评论贴到 PR 上，人事后确认。平台出错只警告，不影响落地。 */
+/**
+ * agent 代拍板过的票：打 sandcastle:decided，把那些评论贴到 PR 上，人事后确认。平台出错只警告，不影响落地。
+ * Tickets where the agent made decisions: label sandcastle:decided and copy those comments to the PR for a human to confirm later. Forge errors only warn and don't block landing.
+ */
 function reportDecisions(issueId: string, pr: string) {
   const r = attempt(() => forge.issueComments(issueId));
   if (!r.ok) return console.warn(t(`  ⚠ 读 #${issueId} 的代拍板评论失败：`, `  ⚠ Reading #${issueId}'s decision comments failed: `) + r.out.slice(0, 200));
@@ -573,6 +680,9 @@ const REVISE_COMMAND = "/sandcastle";
  * 等人审的票：PR 上有晚于分支最新提交的打回信号（`/sandcastle` 开头的评论或 review，或别人点的
  * Request changes）→ 去掉 issue 的 pr-open，让它回到 plan。比较时间是为了不重复回流：
  * Sandcastle 改完推上新提交后，同一条意见不再算数。
+ * Tickets under review: a send-back signal on the PR newer than the branch's latest commit (a comment or review starting with `/sandcastle`, or someone else's
+ * Request changes) → remove the issue's pr-open so it returns to plan. Comparing times avoids repeated send-backs:
+ * once Sandcastle pushes new commits, the same feedback no longer counts.
  */
 function reopenRequestedRevisions() {
   for (const { number: issueId } of listIssues([LABEL.prOpen], [LABEL.stuck])) {
@@ -596,10 +706,15 @@ function reopenRequestedRevisions() {
  * 同签名（同根因落在不同文件）只开一张；已有同签名、或标题 `偶发失败：<文件>` 相同的老票，
  * 就在那张票上追加一次出现记录，不重复开票。只是超时 / 连不上、且同一文件 7 天内第一次出现的，
  * 只记进 FLAKY_FILE、不开票（规则见 guide.ts 的 flakyTriage）。返回票号与只记录的文件，写进 PR 评论。
+ * Test files that passed only on a gate rerun: open tickets deduped by error signature (with Sandcastle, so the next pass preps and fixes them).
+ * One ticket per signature (one root cause across files); when an old ticket has the same signature or the title `偶发失败：<file>`,
+ * append an occurrence to it instead of opening another. Plain timeouts / connection failures seen for the first time in 7 days for that file
+ * are only recorded in FLAKY_FILE, without a ticket (rules in flakyTriage in guide.ts). Returns ticket numbers and recorded-only files for the PR comment.
  */
 const FLAKY_FILE = ".sandcastle/logs/flaky.json";
 function reportFlaky(issue: Issue, pr: string, gateOutput: string): { tickets: string[]; deferred: string[] } {
   // 单元测试和后面一段各可能重跑通过一次（两个 GATE_FLAKY）：每段重跑前列出的文件都要算上
+  // The unit tests and the later stage may each pass on a rerun (two GATE_FLAKY): count the files listed before each rerun
   const parts = gateOutput.split("GATE_FLAKY");
   const before = parts.slice(0, -1).join("\n");
   const after = parts.slice(1).join("\n");
@@ -610,10 +725,12 @@ function reportFlaky(issue: Issue, pr: string, gateOutput: string): { tickets: s
   const seen = M.flakySeen(issue.id, pr);
   const summary = `\`\`\`\n${after.trim().slice(0, 3000)}\n\`\`\``;
   // 当时的环境：判断是不是负载 / 并发问题时先看这个
+  // The environment at the time: check this first when judging whether it's a load / concurrency problem
   const others = [...running.values()].filter((i) => i.id !== issue.id).map((i) => `#${i.id}`);
   const load = loadavg().map((n) => n.toFixed(1)).join(" / ");
   const env = M.flakyEnv(others, load, cpus().length);
   // 分组、签名标记、标题与已有票的匹配见 guide.ts 的 flakyTickets；开不开票见 flakyTriage；正文见项目配置 texts.flakyIssueBody。
+  // Grouping, signature markers, titles and matching existing tickets: flakyTickets in guide.ts; whether to open: flakyTriage; body: the project's texts.flakyIssueBody.
   let history: FlakySighting[] = [];
   try {
     history = JSON.parse(readFileSync(FLAKY_FILE, "utf8")) as FlakySighting[];
@@ -629,6 +746,7 @@ function reportFlaky(issue: Issue, pr: string, gateOutput: string): { tickets: s
       ),
     );
   // 同一文件 7 天内之前的出现（超时类第二次出现才开票，票里列出前几次，方便判断是不是同一个环境时段）
+  // Earlier occurrences of the same file within 7 days (timeouts open a ticket on the second occurrence, and the ticket lists the earlier ones to judge whether it's the same environmental window)
   const prior = (groupFiles: string[]) => {
     const seenAt = history.filter((h) => groupFiles.includes(h.file)).map((h) => M.flakyPriorItem(h.at.slice(0, 16), h.issue, h.file));
     return seenAt.length ? M.flakyPrior(seenAt) : "";
@@ -651,6 +769,7 @@ function reportFlaky(issue: Issue, pr: string, gateOutput: string): { tickets: s
 
 // ---------------------------------------------------------------------------
 // Build one issue inside its own sandbox
+// 在独立沙箱里构建一张票
 // ---------------------------------------------------------------------------
 
 async function build(issue: Issue) {
@@ -669,6 +788,8 @@ async function build(issue: Issue) {
   try {
     // 每次会话单独挑档案：撞了限额，下一次会话就换下一个档案接着做（交接靠 issue 上的进度评论）。
     // 档案名经环境变量 SANDCASTLE_PROFILE 给 implementer，不走 promptArgs：运行中的旧进程也会读到新提示词，多出的占位符会让它报错。
+    // Each session picks its own profile: after a limit, the next session continues with the next profile (handover via progress comments on the issue).
+    // The profile name reaches the implementer via the SANDCASTLE_PROFILE env var, not promptArgs: an old running process would also read the new prompts, and an extra placeholder makes it error.
     const implement: Sessions = { iterations: [], stdout: "" };
     for (let session = 1; session <= IMPLEMENT_MAX_ITERATIONS && implement.completionSignal === undefined; session++) {
       const r = await run("implement", `implement-${issue.id}-${session}`, (agent) => sandbox.run({
@@ -685,6 +806,7 @@ async function build(issue: Issue) {
       implement.completionSignal = r.completionSignal;
     }
     // 看分支上的提交，不看这次会话的：重新准备后父票只剩已完成的部分，收尾时可能不再提交。
+    // Look at the branch's commits, not this session's: after re-prep the parent may only have finished parts left, and wrapping up may not commit anything.
     const ahead = Number((await sandbox.exec(`git rev-list --count ${BASE_REF}..HEAD`)).stdout.trim()) || 0;
     if (implement.completionSignal !== COMPLETE || ahead === 0) {
       return { done: false as const, implement, usage };
@@ -700,6 +822,7 @@ async function build(issue: Issue) {
         promptArgs: { TASK_ID: issue.id, BRANCH: issue.branch, BASE: BASE_REF, ROUND: round, REVISE_MAX },
       }));
     // reviewer 给 revise：修改意见交给新的 implementer 会话，改完再审一次。
+    // Reviewer says revise: the requested changes go to a new implementer session, then review again.
     const reviews = [await runReview(0)];
     const revisions: { items: string; run: sandcastle.SandboxRunResult }[] = [];
     while (revisions.length < REVISE_MAX && tagged(reviews.at(-1)!.stdout, "verdict") === "revise") {
@@ -723,7 +846,7 @@ async function build(issue: Issue) {
     let gateResult = await gate();
     let fix: sandcastle.SandboxRunResult | undefined;
     if (gateResult.exitCode !== 0) {
-      // 给 implementer 一次修的机会（新会话），再跑一次门槛。
+      // 给 implementer 一次修的机会（新会话），再跑一次门槛。 / Give the implementer one chance to fix (new session), then run the gate again.
       fix = await run("fix", `fix-${issue.id}`, (agent) => sandbox.run({
         name: `fix-${issue.id}`,
         maxIterations: 1,
@@ -757,6 +880,7 @@ async function build(issue: Issue) {
 
 // ---------------------------------------------------------------------------
 // Rebase + retry merge（合并失败时）
+// Rebase and retry the merge (when merging fails)
 // ---------------------------------------------------------------------------
 
 const REBASE_STATE = "test -d \"$(git rev-parse --git-path rebase-merge)\" || test -d \"$(git rev-parse --git-path rebase-apply)\"";
@@ -764,6 +888,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 合并前的额外一致性检查（项目配置 integrity，比如数据库迁移链没分叉）：rebase 没有文本冲突也可能坏。
 // 没配置时恒为通过。
+// Extra consistency check before merging (project config integrity, e.g. the database migration chain didn't fork): a rebase without text conflicts can still break it.
+// Always passes when not configured.
 const integrityOk = (head: string) => (project.integrity ? project.integrity.command(head, BASE_REF) : "true");
 const INTEGRITY_OK = integrityOk("HEAD");
 const integrityBroken = () => project.integrity?.broken(BASE_REF) ?? M.integrityBroken;
@@ -781,6 +907,9 @@ type HostGap = { release: () => void; reacquire: () => Promise<void> };
  * 调用方持有宿主机锁（withHost）。开沙箱、rebase、跑门槛这段放开锁（和 build 一样只动本票的分支与 worktree；
  * 这张票还在 running 里，它改的文件不会被新票占用；票没关，清理不会删它的 worktree），push 与合并前再拿回锁。
  * 放开期间别的票可能先合进 main：这里的合并会失败，按原有路径留 PR。
+ * The caller holds the host lock (withHost). Opening the sandbox, rebasing and running the gate happen with the lock released (like build, touching only this ticket's branch and worktree;
+ * the ticket is still in running, so its files can't be claimed by new tickets; the ticket isn't closed, so cleanup won't remove its worktree); the lock is retaken before push and merge.
+ * Meanwhile other tickets may merge into main first: then this merge fails and the PR is left open as usual.
  */
 async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = true): Promise<{ ok: true } | { ok: false; reason: string }> {
   if (isExternal(issue)) return { ok: false, reason: M.rebaseExternal(issue.branch) };
@@ -797,13 +926,14 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     }
 
     // merge-tree 有冲突时退出码 1、冲突文件列在 stdout 第一行（树 id）之后；`; true` 让 trySh 拿到 stdout
+    // merge-tree exits 1 on conflicts and lists the conflicting files after the first stdout line (the tree id); `; true` lets trySh capture stdout
     const probe = trySh("sh", ["-c", `git merge-tree --write-tree --name-only ${BASE_REF} ${issue.branch}; true`]);
     const conflictFiles = probe.ok ? probe.out.split("\n\n")[0]!.split("\n").slice(1).filter(Boolean) : [];
     const rebase = await sandbox.exec(`git rebase ${BASE_REF}`);
     const conflicted = rebase.exitCode !== 0;
     const chainBroken = !conflicted && (await sandbox.exec(INTEGRITY_OK)).exitCode !== 0;
     if (conflicted || chainBroken) {
-      // 用量只进 usage.jsonl：这时 PR 已经开了。
+      // 用量只进 usage.jsonl：这时 PR 已经开了。 / Usage only goes to usage.jsonl: the PR is already open at this point.
       await runAgent("rebase", issue.id, `rebase-${issue.id}`, env, [], (agent) => sandbox.run({
         name: `rebase-${issue.id}`,
         maxIterations: 1,
@@ -833,6 +963,8 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
 
     // 留给人审的 PR（merge 为 false）只跑 typecheck、不重跑测试：人合并前看 PR 评论里的冲突文件，
     // 需要时再补跑门槛。省掉一遍完整测试，也不占完整门槛的队列。
+    // PRs left for review (merge is false) only run typecheck, not tests: before merging, a human checks the conflicting files in the PR comment
+    // and reruns the gate if needed. Saves a full test run and doesn't take a slot in the full gate queue.
     if (!merge) {
       const tc = await sandbox.exec(`${project.gate.typecheck} > /tmp/rebase-typecheck.log 2>&1 || { tail -40 /tmp/rebase-typecheck.log; exit 1; }`);
       if (tc.exitCode !== 0) {
@@ -848,6 +980,7 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     }
 
     // rebase 后的门槛和开工时同一套选测试规则（分支相对新 main 的改动），不再因冲突强制完整测试（2026-11-24）。
+    // The gate after a rebase uses the same test selection as at the start (the branch's changes against the new main), no longer forcing the full suite because of conflicts (2026-11-24).
     const gate = await runGate((c) => sandbox.exec(c), issue.id, env);
     if (gate.exitCode !== 0) {
       return { ok: false, reason: M.rebaseGateFailed(gate.stdout.slice(-2000)) };
@@ -855,7 +988,7 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
 
     await host.reacquire();
     await gitRemoteOrThrow(["push", "--force-with-lease", REMOTE, issue.branch]);
-    // 平台重新计算可合并状态要一点时间。
+    // 平台重新计算可合并状态要一点时间。 / The forge needs a moment to recompute mergeability.
     let last = "";
     for (let tries = 0; tries < 3; tries++) {
       await sleep(10_000);
@@ -878,13 +1011,15 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
 
 // ---------------------------------------------------------------------------
 // 用量限额：等到重置后接着跑，不当成票的失败
+// Usage limits: wait for the reset and continue, not counted as a ticket failure
 // ---------------------------------------------------------------------------
 
 // 撞限额的识别、重置时间的解析和换档案在 models.ts；这里处理「这个阶段的档案都在等」：等到最早恢复的那个再从头跑。
-const LIMIT_RESUME_SLACK_MS = 2 * 60_000; // 重置时间之后再多等一会儿
-const LIMIT_FALLBACK_WAIT_MS = 30 * 60_000; // 认不出重置时间时每次等这么久再试
+// Detecting limits, parsing reset times and switching profiles live in models.ts; this handles "every profile for this phase is waiting": wait for the earliest one, then rerun from the start.
+const LIMIT_RESUME_SLACK_MS = 2 * 60_000; // 重置时间之后再多等一会儿 / wait a little longer after the reset time
+const LIMIT_FALLBACK_WAIT_MS = 30 * 60_000; // 认不出重置时间时每次等这么久再试 / how long to wait between tries when the reset time can't be read
 
-/** 分步睡：笔记本合盖时计时器会停，醒来按墙上时间判断。 */
+/** 分步睡：笔记本合盖时计时器会停，醒来按墙上时间判断。 / Sleep in steps: timers stop while a laptop lid is closed, so after waking judge by wall-clock time. */
 async function sleepUntil(at: number) {
   while (Date.now() < at) await sleep(Math.min(60_000, at - Date.now()));
 }
@@ -893,6 +1028,9 @@ async function sleepUntil(at: number) {
  * 跑 fn，撞上用量限额就等到重置后重跑；其他错误照抛。
  * fn 要能从头重跑：prep 本来就幂等；build 重跑时在原分支上接着做（implementer 先看已有提交）。
  * onLimit 在等之前调用，比如把分支推到远端。
+ * Run fn; on a usage limit wait for the reset and rerun it; other errors are rethrown.
+ * fn must be rerunnable from the start: prep is idempotent anyway; build continues on the same branch when rerun (the implementer looks at existing commits first).
+ * onLimit is called before waiting, e.g. to push the branch to the remote.
  */
 async function untilAfterLimit<T>(what: string, fn: () => Promise<T>, onLimit?: () => void | Promise<void>): Promise<T> {
   for (;;) {
@@ -909,9 +1047,9 @@ async function untilAfterLimit<T>(what: string, fn: () => Promise<T>, onLimit?: 
   }
 }
 
-/** 错误是用量限额时，该等到什么时候（含余量）；不是限额返回 null。 */
+/** 错误是用量限额时，该等到什么时候（含余量）；不是限额返回 null。 / When the error is a usage limit, when to resume (with slack); null when it isn't a limit. */
 function limitWait(e: unknown): { until: number; why: string } | null {
-  // AllProfilesLimited 的 until 已经含了余量。
+  // AllProfilesLimited 的 until 已经含了余量。 / AllProfilesLimited's until already includes the slack.
   if (e instanceof AllProfilesLimited) return { until: e.until, why: "" };
   const message = String(e);
   if (!CLAUDE_LIMIT_PATTERN.test(message)) return null;
@@ -921,22 +1059,30 @@ function limitWait(e: unknown): { until: number; why: string } | null {
     : { until: resetAt + LIMIT_RESUME_SLACK_MS, why: "" };
 }
 
-/** 分支上已有提交时推到远端，免得只留在宿主机上。 */
+/** 分支上已有提交时推到远端，免得只留在宿主机上。 / Push to the remote when the branch has commits, so they aren't only on the host. */
 async function pushIfAhead(issue: Issue) {
   const ahead = trySh("git", ["rev-list", "--count", `${BASE_REF}..${issue.branch}`]);
   if (ahead.ok && Number(ahead.out) > 0) await pushBranch(issue);
 }
 
-/** issue 已关闭（人在运行中途合并了 PR、或手动关了票）。查不到时当作没关。 */
+/**
+ * issue 已关闭（人在运行中途合并了 PR、或手动关了票）。查不到时当作没关。
+ * The issue is closed (a human merged the PR or closed the ticket mid-run). Treated as open when the lookup fails.
+ */
 function issueClosed(id: string) {
   const r = attempt(() => forge.issueState(id));
   return r.ok && r.value === "closed";
 }
 
-/** Phase 3：一张票的落地。在宿主机上做，用宿主机的 git / 平台凭据，沙箱没有写仓库的权限。 */
+/**
+ * Phase 3：一张票的落地。在宿主机上做，用宿主机的 git / 平台凭据，沙箱没有写仓库的权限。
+ * Phase 3: landing one ticket. Done on the host with the host's git / forge credentials; the sandbox has no write access to the repo.
+ */
 /**
  * 要留给人审的分支如果和最新的 origin/main 有文本冲突（或项目配置的一致性检查没过），走 rebaseAndMerge 但不合并。
  * 返回附在 leaveForHuman 说明后面的一句话；不需要 rebase 时为空串。
+ * If a branch to be left for review has text conflicts with the latest origin/main (or fails the project's integrity check), go through rebaseAndMerge without merging.
+ * Returns a sentence appended to leaveForHuman's note; an empty string when no rebase was needed.
  */
 async function rebaseIfConflicting(issue: Issue, pr: string, host: HostGap): Promise<string> {
   await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
@@ -952,6 +1098,7 @@ async function rebaseIfConflicting(issue: Issue, pr: string, host: HostGap): Pro
 
 async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnType<typeof build>>>, host: HostGap) {
   // 运行期间人已经合并了这张票的 PR 或关了票：不再 push、开 PR、打标签，本地分支留着备查。
+  // A human already merged this ticket's PR or closed it during the run: no push, PR or labels; the local branch is kept for reference.
   if (issueClosed(issue.id)) {
     console.log(t(`  ⏭ #${issue.id} 已被关闭（运行期间有人合并了 PR 或关了票），跳过落地`, `  ⏭ #${issue.id} was closed (someone merged the PR or closed it during the run); skipping landing`));
     return;
@@ -968,6 +1115,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   const budgetNote = M.budgetNote(Math.round(peak / 1000), CONTEXT_BUDGET / 1000, result.implement.iterations.length);
   if (!result.done) {
     // implementer 判断必须由人拍板：推上已有的提交，直接交给人，不退回 prep。
+    // The implementer judged that a human must decide: push the existing commits and hand it straight to a human, not back to prep.
     if (result.implement.completionSignal === NEEDS_DECISION) {
       const pushed = (await pushBranch(issue)).ok;
       attempt(() => forge.addLabel(issue.id, LABEL.readyForHuman));
@@ -984,12 +1132,14 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
       return;
     }
     // 外部 PR 不退回 prep（prep 会按 sandcastle/issue-n 拆票）：推上已有的提交，交给人。
+    // External PRs don't go back to prep (prep would split along sandcastle/issue-n): push the existing commits and hand it to a human.
     if (isExternal(issue)) {
       const pushed = (await pushBranch(issue)).ok;
       markStuck(issue.id, M.externalIncomplete(issue.branch, IMPLEMENT_MAX_ITERATIONS, budgetNote, pushed ? M.pushedHere : M.notPushed));
       return;
     }
     // 第一次没做完：分支推上去免得部分提交只留在宿主机，提交列表写进评论给 prep 看，退回 prep 重新准备。
+    // First attempt unfinished: push the branch so partial commits aren't only on the host, list the commits in a comment for prep, and send it back to prep.
     const pushed = (await pushBranch(issue)).ok;
     const log = trySh("git", ["log", "--format=- %h %s", `${BASE_REF}..${issue.branch}`]);
     const commits = log.ok && log.out ? M.reprepCommits(issue.branch, log.out) : M.reprepNoCommits;
@@ -1006,6 +1156,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   const flaky = result.gate.output.includes("GATE_FLAKY");
   const tierName = result.gate.tier === "selected" ? project.gate.selectedDescription : M.tierFull;
   // 先 push 开 PR 才有 PR 号；开票放在后面，票号用评论补到 PR 上。
+  // Push and open the PR first to get its number; tickets are opened afterwards and their numbers added to the PR in a comment.
   const gateNote = !result.gate.ok
     ? M.gateFailed(result.gate.output)
     : flaky
@@ -1045,6 +1196,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   }
 
   // 外部 PR 一律留给人合并：不 rebase、不合并，只报告 review 与门槛结果。
+  // External PRs are always left for a human to merge: no rebase, no merge, only the review and gate results are reported.
   if (isExternal(issue)) {
     await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
     const clean = trySh("git", ["merge-tree", "--write-tree", "--name-only", BASE_REF, issue.branch]).ok;
@@ -1057,11 +1209,13 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     return;
   }
   // 验收说明缺失或格式不对：正文里已经有警告，下面每条留给人的路径都把它附进原因（外部 PR 本来就不自动合并，不走这里）。
+  // Acceptance notes missing or badly formatted: the body already has a warning, and every leave-for-human path below adds it to the reason (external PRs never auto-merge, so they don't come here).
   const notesNote = notesProblems.length
     ? M.reasonNotes(notesProblems.join(M.sep))
     : "";
   if (result.verdict !== "merge") {
     // 开工后 main 上合进了改同一处的票：先 rebase 好再交给人，免得人审的是一个合不进去的 PR。
+    // A ticket changing the same spot merged into main after this one started: rebase first, so the human doesn't review a PR that can't merge.
     const rebaseNote = result.gate.ok ? await rebaseIfConflicting(issue, pr, host) : "";
     leaveForHuman(
       issue,
@@ -1081,6 +1235,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     return;
   }
   // reviewer 给了 merge、门槛也过了，但验收说明不合格：照样不自动合并。
+  // The reviewer said merge and the gate passed, but the acceptance notes are invalid: still no auto-merge.
   if (notesProblems.length > 0) {
     leaveForHuman(issue, pr, notesNote.trimStart());
     console.log(
@@ -1091,6 +1246,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     return;
   }
   // 试跑期（autoMerge: false）：全程都过了也只留 PR，人看过再合并。
+  // Trial period (autoMerge: false): even when everything passes, leave the PR for a human to check and merge.
   if (!project.autoMerge) {
     const rebaseNote = await rebaseIfConflicting(issue, pr, host);
     leaveForHuman(issue, pr, `${M.reasonAutoMergeOff}${rebaseNote}`);
@@ -1099,6 +1255,8 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   }
   // 先合并的票可能让这张冲突：rebase 到最新的 origin/main（冲突交给 agent）、重跑门槛，再合并一次。
   // 一致性检查要先在宿主机上查：没有文本冲突时平台会照样合并，坏掉的状态就进了 main。
+  // An earlier merge may make this one conflict: rebase onto the latest origin/main (conflicts go to the agent), rerun the gate, and merge again.
+  // The integrity check must run on the host first: without a text conflict the forge would merge anyway, putting the broken state into main.
   await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
   const chainOk = trySh("sh", ["-c", integrityOk(issue.branch)]).ok;
   const merged = chainOk
@@ -1125,9 +1283,13 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
 // 按依赖选测试的票每合并 MAIN_CHECK_EVERY 张，对当时的 origin/main 跑一次完整测试（和票的门槛排同一个队）。
 // 兜住依赖图漏选，和「两张票各自通过、合在一起才坏」。失败就开一张带 LABEL.mainBroken 的修复票（调度时排最前），
 // 自动合并照常、不暂停。状态存在 MAIN_CHECK_FILE：重启后接着计数，失败票里列出上次通过以来进 main 的提交。
+// Periodic fallback full run on main (2026-11-24)
+// After every MAIN_CHECK_EVERY merged dependency-selected tickets, run the full suite on the origin/main of the moment (sharing the tickets' gate queue).
+// Catches what the dependency graph misses, and "two tickets that pass alone but break together". On failure open a fix ticket labelled LABEL.mainBroken (scheduled first);
+// auto-merge carries on without pausing. State lives in MAIN_CHECK_FILE: counting resumes after a restart, and the failure ticket lists commits merged into main since the last pass.
 const MAIN_CHECK_EVERY = project.mainCheckEvery;
 const MAIN_CHECK_FILE = ".sandcastle/logs/main-check.json";
-const MAIN_CHECK_ID = "main"; // 测试资源后缀 _imain，和票的 _i<n> 不撞
+const MAIN_CHECK_ID = "main"; // 测试资源后缀 _imain，和票的 _i<n> 不撞 / test resource suffix _imain, distinct from tickets' _i<n>
 type MainCheckState = { lastPass: string | null; selectedSince: number };
 const readMainCheck = (): MainCheckState => {
   try {
@@ -1142,7 +1304,10 @@ const writeMainCheck = (s: MainCheckState) => {
 };
 let mainCheckRunning = false;
 
-/** 票合并后记一笔；按依赖选测试的票攒够 MAIN_CHECK_EVERY 张就在后台开跑兜底（不等它，不占宿主机锁）。 */
+/**
+ * 票合并后记一笔；按依赖选测试的票攒够 MAIN_CHECK_EVERY 张就在后台开跑兜底（不等它，不占宿主机锁）。
+ * Record a merged ticket; once MAIN_CHECK_EVERY dependency-selected tickets accumulate, start the fallback in the background (not awaited, no host lock).
+ */
 function noteMerged(tier: GateTier) {
   const s = readMainCheck();
   if (tier === "selected") s.selectedSince++;
@@ -1161,9 +1326,13 @@ function noteMerged(tier: GateTier) {
     .finally(() => (mainCheckRunning = false));
 }
 
-/** 在沙箱里对 sha 跑一次完整门槛（GATE_FULL=1），跑完扔掉 worktree、分支和测试资源。 */
+/**
+ * 在沙箱里对 sha 跑一次完整门槛（GATE_FULL=1），跑完扔掉 worktree、分支和测试资源。
+ * Run the full gate once on sha in a sandbox (GATE_FULL=1), then discard the worktree, branch and test resources.
+ */
 async function fullGateAt(sha: string): Promise<ExecResult> {
   // 本地分支先指到这个提交：createSandbox 从本地分支建 worktree（本地没有才从 main 新建，那时的 main 可能又变了）。
+  // Point a local branch at this commit first: createSandbox builds the worktree from the local branch (only without one does it branch from main, which may have moved on).
   const branch = `sandcastle/main-check-${sha.slice(0, 8)}`;
   sh("git", ["branch", "-f", branch, sha]);
   const env = testEnv(MAIN_CHECK_ID);
@@ -1174,6 +1343,7 @@ async function fullGateAt(sha: string): Promise<ExecResult> {
     await sandbox.close();
     await dropTestResources(MAIN_CHECK_ID);
     // 跑完就扔：worktree 里测试留下的文件不要（close 没删掉时强删），再删本地分支
+    // Discard when done: files the tests left in the worktree aren't needed (force-remove if close didn't), then delete the local branch
     trySh("git", ["worktree", "remove", "--force", sandbox.worktreePath]);
     trySh("git", ["branch", "-D", branch]);
   }
@@ -1182,6 +1352,8 @@ async function fullGateAt(sha: string): Promise<ExecResult> {
 /**
  * 接入新项目时的门槛基线（sandpipe baseline）：对 origin/main 跑一次完整门槛，只报告、不开票。
  * 通过时记为兜底完整测试的起点；失败说明门槛本身或 main 有问题，先修好再让 Sandcastle 做票。
+ * Gate baseline when onboarding a project (sandpipe baseline): run the full gate once on origin/main, report only, no tickets.
+ * A pass becomes the starting point for fallback full runs; a failure means the gate itself or main is broken; fix it before letting Sandcastle work tickets.
  */
 async function runBaseline(): Promise<boolean> {
   await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
@@ -1222,7 +1394,7 @@ async function runMainFullCheck() {
     ),
   );
   const gate = await fullGateAt(sha);
-  // 跑的期间又合并进来的票留给下一次兜底。
+  // 跑的期间又合并进来的票留给下一次兜底。 / Tickets merged while this runs are left for the next fallback run.
   const now = readMainCheck();
   const rest = Math.max(0, now.selectedSince - counted);
   if (gate.exitCode === 0) {
@@ -1258,9 +1430,11 @@ async function runMainFullCheck() {
 /**
  * 宿主机上的 git 与平台标签操作串行做：调度（整理、prep、plan）和落地不交错，
  * 免得落地合并的同时清理删掉它的 worktree，或 prep 挂着的工作区被快进。build 在沙箱里跑，不占锁。
+ * git and forge label operations on the host are serialized: scheduling (tidy, prep, plan) and landing don't interleave,
+ * so cleanup can't delete a worktree while it's being landed and merged, and prep's mounted workspace isn't fast-forwarded under it. build runs in the sandbox without the lock.
  */
 let hostTail: Promise<void> = Promise.resolve();
-/** 排队拿锁（先来先得），返回释放函数。 */
+/** 排队拿锁（先来先得），返回释放函数。 / Queue for the lock (first come, first served); returns the release function. */
 function acquireHost(): Promise<() => void> {
   let release!: () => void;
   const held = new Promise<void>((r) => (release = r));
@@ -1271,6 +1445,8 @@ function acquireHost(): Promise<() => void> {
 /**
  * 持锁跑 fn。fn 拿到的 HostGap 能中途放开锁、之后再排队拿回：落地里的 rebase 补救要在沙箱里跑门槛（完整测试
  * 半小时以上，还可能排队），期间放开锁让调度照常开新票（2026-11-24 #1165 的 rebase 让空位白等了约 40 分钟）。
+ * Run fn holding the lock. The HostGap fn receives can release the lock midway and queue for it again later: rebase recovery during landing runs the gate in a sandbox (the full suite
+ * takes half an hour or more, maybe queued), and releasing the lock meanwhile lets scheduling start new tickets as usual (on 2026-11-24 #1165's rebase left a slot idle for about 40 minutes).
  */
 async function withHost<T>(fn: (gap: HostGap) => Promise<T>): Promise<T> {
   let release: (() => void) | null = await acquireHost();
@@ -1290,7 +1466,10 @@ async function withHost<T>(fn: (gap: HostGap) => Promise<T>): Promise<T> {
   }
 }
 
-/** 有票做完、让出空位时叫醒主循环；主循环没在等时记下来，下次等的时候立刻返回。 */
+/**
+ * 有票做完、让出空位时叫醒主循环；主循环没在等时记下来，下次等的时候立刻返回。
+ * Wake the main loop when a ticket finishes and frees its slot; if the loop isn't waiting, remember it so the next wait returns immediately.
+ */
 let notify: (() => void) | null = null;
 let slotFreed = false;
 function signalSlotFreed() {
@@ -1314,19 +1493,28 @@ async function waitForSlotOrPoll(ms: number) {
   slotFreed = false;
 }
 
-/** 正在 build 或落地的票。一张票从开工到落地完一直占着空位：落地里的 rebase 补救也要跑门槛（跑门槛时放开宿主机锁，调度照常开另一个空位）。 */
+/**
+ * 正在 build 或落地的票。一张票从开工到落地完一直占着空位：落地里的 rebase 补救也要跑门槛（跑门槛时放开宿主机锁，调度照常开另一个空位）。
+ * Tickets being built or landed. A ticket holds its slot from start to the end of landing: rebase recovery during landing also runs the gate (with the host lock released, so scheduling can fill another slot).
+ */
 const running = new Map<string, Issue>();
 
-/** 一张票独立跑完 build → 落地，做完就让出空位，不等同批的其他票。 */
+/**
+ * 一张票独立跑完 build → 落地，做完就让出空位，不等同批的其他票。
+ * One ticket runs build → land on its own and frees its slot when done, without waiting for others in the same batch.
+ */
 function start(issue: Issue) {
   running.set(issue.id, issue);
   void (async () => {
     // 撞上限额的票等重置后在原分支上重跑，不打 stuck。
+    // Tickets that hit a usage limit rerun on the same branch after the reset, without being marked stuck.
     const [outcome] = await Promise.allSettled([
       untilAfterLimit(`#${issue.id}`, () => retryTransient(`#${issue.id}`, () => build(issue)), () => pushIfAhead(issue)),
     ]);
     // 落地在宿主机上做：用宿主机的 git / 平台凭据，沙箱没有写仓库的权限。
     // 每张票单独兜底：一张票落地出错（网络、人在运行中途合并或删了分支等）不让整个运行崩掉。
+    // Landing happens on the host with the host's git / forge credentials; the sandbox has no write access to the repo.
+    // Each ticket is guarded separately: one ticket's landing error (network, a human merging or deleting the branch mid-run, etc.) doesn't crash the whole run.
     await withHost(async (host) => {
       try {
         await retryTransient(t(`落地 #${issue.id}`, `landing #${issue.id}`), () => land(issue, outcome!, host));
@@ -1334,6 +1522,7 @@ function start(issue: Issue) {
         const reason = String((e as { stderr?: unknown }).stderr || e).trim().slice(0, 500);
         console.error(t(`  ✗ #${issue.id} 落地出错：`, `  ✗ #${issue.id} landing failed: `) + reason);
         // 打 stuck 不让下次再做；本地分支保留，人看过后去掉 stuck 即可接着跑。
+        // Marking stuck keeps it from being retried; the local branch is kept, and removing stuck after a human looks lets it continue.
         if (!issueClosed(issue.id)) attempt(() => forge.addLabel(issue.id, LABEL.stuck));
         if (!issueClosed(issue.id)) attempt(() => forge.commentIssue(issue.id, M.landError(issue.branch, reason, LABEL.stuck)));
       }
@@ -1355,10 +1544,10 @@ const prepTried = new Map<number, string>();
 
 type ScheduleResult = { started: number; split: boolean; prepLimitedUntil?: number };
 
-/** 一次调度：整理 → prep → plan，把空位补满。在 withHost 里跑。 */
+/** 一次调度：整理 → prep → plan，把空位补满。在 withHost 里跑。 / One pass: tidy → prep → plan, filling the slots. Runs inside withHost. */
 async function schedule(): Promise<ScheduleResult> {
-  reloadModels(); // 每次调度读一次 .sandcastle/models.json：改了配置不用重启，下次生效
-  await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]); // 刚合并进远端 main 的代码
+  reloadModels(); // 每次调度读一次 .sandcastle/models.json：改了配置不用重启，下次生效 / read .sandcastle/models.json every pass: config changes apply next pass without a restart
+  await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]); // 刚合并进远端 main 的代码 / code just merged into the remote main
   openStates.clear();
   syncHostBase();
   reopenRequestedRevisions();
@@ -1376,6 +1565,12 @@ async function schedule(): Promise<ScheduleResult> {
   // 跳过的票仍留在 toPrep 里，下面判断「这次拆出了新子票」时不会把它当成新票。
   // 撞上用量限额不在这里等（会占着宿主机锁，做完的票落不了地）：停止这次 prep，交给主循环决定等多久。
   // 按编号从小到大：和 plan 的顺序一致，早建的票（通常是后面票的 blocker）先 prep、先开工。
+  // Prep is serial, because splitting tickets changes other tickets' Blocked by.
+  // Re-queried every pass, so children split off last time (which inherit the Sandcastle label) show up here.
+  // Tickets with open blockers are skipped without a session (a prep agent would end without changing anything anyway);
+  // skipped tickets stay in toPrep, so the "new children were split off" check below doesn't count them as new.
+  // Usage limits aren't waited out here (that would hold the host lock and block finished tickets from landing): stop this prep and let the main loop decide how long to wait.
+  // Ascending number order, matching plan: older tickets (usually blockers of later ones) are prepped and started first.
   const toPrep = listIssues([LABEL.picked], [LABEL.prepped, LABEL.prOpen, LABEL.stuck])
     .filter((issue) => allowed(issue.number))
     .sort(byUrgency);
@@ -1384,6 +1579,8 @@ async function schedule(): Promise<ScheduleResult> {
   for (const issue of toPrep) {
     // 已有够填满空位的可开工票就先开工，剩下的票等下次调度（有票做完或轮询）再 prep。
     // 否则一下子建了二十多张票时，要把它们逐张 prep 完（每张几分钟）才开工，空位空等一两个小时（2026-11-23）。
+    // When there are already enough startable tickets to fill the slots, start them first and prep the rest next pass (when a ticket finishes or on the poll).
+    // Otherwise, after twenty-odd tickets are created at once, every one would have to be prepped (minutes each) before any work starts, leaving slots idle for an hour or two (2026-11-23).
     if (slots > 0 && plan(new Set(running.keys()), slots, true).length >= slots) {
       console.log(t(`  已有 ${slots} 张可开工的票，先开工；其余票下次调度再 prep`, `  ${slots} ticket(s) ready to start, starting them first; the rest are prepped next pass`));
       break;
@@ -1425,6 +1622,8 @@ async function schedule(): Promise<ScheduleResult> {
   if (issues.length === 0) {
     // 这次 prep 拆出的子票还没 prep 过（下次才看到），这时不能当作没活可做。
     // 只认这次新出现的票：留在 toPrep 里的票（如等 blocker）下次仍不会有新票。
+    // Children split off by this prep haven't been prepped yet (they're seen next pass), so this can't count as having nothing to do.
+    // Only tickets that newly appeared count: tickets left in toPrep (e.g. waiting on blockers) won't yield new ones next time either.
     const prepped = new Set(toPrep.map((issue) => issue.number));
     const split = listIssues([LABEL.picked], [LABEL.prepped, LABEL.prOpen, LABEL.stuck])
       .filter((issue) => allowed(issue.number) && !prepped.has(issue.number));
@@ -1442,6 +1641,9 @@ async function schedule(): Promise<ScheduleResult> {
 // 有空位就调度一次；然后等「有票做完」或「过了 POLL_INTERVAL_MS」，先到哪个算哪个。
 // 等人审的 PR 合入、blocker 关闭、人去掉 stuck 之后，下一次轮询就能开工，不用等正在做的票做完。
 // 没有票在做、也开不出新票时算一次空转；连续 MAX_ITERATIONS 次空转就结束运行。
+// Schedule once when a slot is free; then wait for "a ticket finished" or "POLL_INTERVAL_MS passed", whichever comes first.
+// Once a PR under review is merged, a blocker closes or a human removes stuck, the next poll can start work without waiting for running tickets.
+// Nothing running and nothing startable counts as an idle poll; MAX_ITERATIONS idle polls in a row end the run.
 if (process.env.SANDCASTLE_BASELINE === "1") {
   process.exitCode = (await runBaseline()) ? 0 : 1;
 } else {
@@ -1455,7 +1657,7 @@ for (let pass = 1; ; pass++) {
     if (running.size > 0 || r.started > 0) {
       idlePolls = 0;
     } else if (r.prepLimitedUntil !== undefined) {
-      // 没票在做、prep 在等限额：等到重置再来，不算空转。
+      // 没票在做、prep 在等限额：等到重置再来，不算空转。 / Nothing running and prep is waiting on a limit: wait for the reset, not counted as idle.
       const until = new Date(r.prepLimitedUntil).toLocaleString();
       console.log(t(`没有票在做，等 prep 的用量限额到 ${until} 重置`, `Nothing running; waiting for prep's usage limit to reset at ${until}`));
       await sleepUntil(r.prepLimitedUntil);
@@ -1484,6 +1686,7 @@ for (let pass = 1; ; pass++) {
 }
 
 // 最后合并的票在上次 fetch 之后才进远端，收尾再同步一次。
+// The last merged tickets reached the remote after the previous fetch, so sync once more at the end.
 await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
 syncHostBase();
 console.log(

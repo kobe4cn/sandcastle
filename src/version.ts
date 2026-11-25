@@ -1,5 +1,7 @@
 // 版本与升级：每次发版同时发到 npm（包名 sandpipe）和公开的 releases 仓库（package.json 的
 // sandcastle.releases，附固定名字的 sandpipe.tgz，给不方便用 npm 源的人）。最新版本按 npm 查。
+// Versions and upgrades: every release goes to npm (package sandpipe) and to the public releases repo (package.json's
+// sandcastle.releases, with a fixed-name sandpipe.tgz for people who can't use the npm registry). The latest version is looked up on npm.
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -17,13 +19,15 @@ export const LATEST_URL = `https://github.com/${RELEASES_REPO}/releases/latest/d
 /**
  * 用装本工具的那个包管理器升级。pnpm 装的包实际放在它的 store 里：旧版是 …/.pnpm/…，
  * 新版是 …/store/v11/links/…（PNPM_HOME 可以随便设，所以不靠目录名里有没有 pnpm）。其余按 npm。
+ * Upgrade with the package manager that installed this tool. pnpm keeps packages in its store: older versions under …/.pnpm/…,
+ * newer ones under …/store/v11/links/… (PNPM_HOME can be anything, so the directory name isn't relied on). Everything else uses npm.
  */
 export function upgradeCommand(installedAt: string = fileURLToPath(import.meta.url)): string {
   const pnpm = /[\\/]\.pnpm[\\/]|[\\/]store[\\/]v\d+[\\/]links[\\/]/.test(installedAt);
   return pnpm ? `pnpm add -g ${PACKAGE}@latest` : `npm i -g ${PACKAGE}@latest`;
 }
 
-/** npm 上的最新版本号；网络不通、还没发版时返回 undefined。 */
+/** npm 上的最新版本号；网络不通、还没发版时返回 undefined。 / Latest version on npm; undefined when offline or not released yet. */
 export async function latestVersion(fetcher: typeof fetch = fetch): Promise<string | undefined> {
   try {
     const res = await fetcher(`https://registry.npmjs.org/${PACKAGE}/latest`, { signal: AbortSignal.timeout(10_000) });
@@ -34,7 +38,7 @@ export async function latestVersion(fetcher: typeof fetch = fetch): Promise<stri
   }
 }
 
-/** a 比 b 新（只比 x.y.z 的数字部分）。 */
+/** a 比 b 新（只比 x.y.z 的数字部分）。 / a is newer than b (compares only the numeric x.y.z part). */
 export function newer(a: string, b: string): boolean {
   const pa = a.split(/[.-]/).map(Number);
   const pb = b.split(/[.-]/).map(Number);

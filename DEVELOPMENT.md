@@ -7,6 +7,7 @@
 - 给人看的手册（README、`docs/config`、`docs/onboarding-checklist`）中英各一份：`X.md` 是英文，`X.zh-CN.md` 是中文。改一份就同步另一份；`test/docs-i18n.test.ts` 检查两份的标题结构和表格行数一致。
 - 给 agent 看的（`prompts/`、`claude/`）只有一份，不翻译。
 - `docs/internal/` 是内部文档（设计说明、测试计划），只用中文，不发布。
+- 代码注释中英对照：模块头和 JSDoc 先写中文、再写对应的英文（JSDoc 会进 `dist/types/` 的声明文件）；短注释写成 `// 中文 / English`。`npm run check:comments` 列出不合格的注释，`test/comments.test.ts` 在 `npm test` 里检查（范围是 `src/`、`scripts/`、`claude/hooks/`，测试文件不查）。
 
 在 [`@ai-hero/sandcastle`](https://github.com/mattpocock/sandcastle)（沙箱、跑 agent、worktree）之上的 issue → PR → 合并流水线，
 从 duckdb_crm 的 `.sandcastle/` 抽出来：prep 拆票写指引、确定性排期（blocker、同文件冲突）、implement + review（revise 打回）、

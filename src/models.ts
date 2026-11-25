@@ -1,5 +1,7 @@
 // Sandcastle 每个阶段用哪个模型：读 .sandcastle/models.json，按阶段挑档案、撞限额时换下一个，记录每次会话的 token 用量。
-// 格式与规则见 docs/agents/sandcastle.md「模型配置」。
+// 格式与规则见 docs/internal/sandcastle.md「模型配置」。
+// Which model each Sandcastle phase uses: reads .sandcastle/models.json, picks a profile per phase, moves to the next one on a usage limit, and records each session's token usage.
+// Format and rules: "模型配置" in docs/internal/sandcastle.md.
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
@@ -13,7 +15,7 @@ export type Phase = (typeof PHASES)[number];
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 type Effort = (typeof EFFORTS)[number];
 
-/** sandbox.run 与 sandcastle.run 的结果都满足它。 */
+/** sandbox.run 与 sandcastle.run 的结果都满足它。 / Results of both sandbox.run and sandcastle.run satisfy it. */
 export interface AgentRun {
   readonly iterations: readonly sandcastle.IterationResult[];
   readonly completionSignal?: string;
@@ -24,12 +26,15 @@ export interface Profile {
   readonly name: string;
   readonly model: string;
   readonly effort?: Effort;
-  /** 只在这次会话的 claude 进程上生效；值是 `${VAR}` 的，在容器里从同名环境变量取（来自 .sandcastle/.env）。 */
+  /**
+   * 只在这次会话的 claude 进程上生效；值是 `${VAR}` 的，在容器里从同名环境变量取（来自 .sandcastle/.env）。
+   * Applies only to this session's claude process; `${VAR}` values come from the same-named environment variable in the container (from .sandcastle/.env).
+   */
   readonly env: Readonly<Record<string, string>>;
-  /** 设了 ANTHROPIC_BASE_URL：请求发到别家，不走 Claude 订阅。 */
+  /** 设了 ANTHROPIC_BASE_URL：请求发到别家，不走 Claude 订阅。 / ANTHROPIC_BASE_URL set: requests go to another vendor, not the Claude subscription. */
   readonly thirdParty: boolean;
   readonly limitPattern: RegExp;
-  /** 别家报错里不带时区的重置时间按这个时区解析。 */
+  /** 别家报错里不带时区的重置时间按这个时区解析。 / Reset times without a time zone in another vendor's errors are parsed in this zone. */
   readonly resetTimeZone?: string;
 }
 
@@ -43,19 +48,26 @@ const SANDCASTLE_ENV_PATH = ".sandcastle/.env";
 const USAGE_LOG = ".sandcastle/logs/usage.jsonl";
 const SECRET_REF = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
-/** 脚本统一给容器设的上下文预算（CLAUDE.md「Context budget」），档案不能改。 */
+/**
+ * 脚本统一给容器设的上下文预算（CLAUDE.md「Context budget」），档案不能改。
+ * Context budget the pipeline sets for every container (CLAUDE.md "Context budget"); profiles can't change it.
+ */
 const RESERVED_ENV = ["CLAUDE_CODE_AUTO_COMPACT_WINDOW"];
-/** 别家档案里要清掉的 Claude 凭据：不能跟着请求发到别家的接口。 */
+/**
+ * 别家档案里要清掉的 Claude 凭据：不能跟着请求发到别家的接口。
+ * Claude credentials cleared for other vendors' profiles: they must not be sent to another vendor's API.
+ */
 const CLAUDE_CREDENTIALS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
 
 /** claude-code 撞订阅限额的报错，如「You've hit your 5-hour limit · resets 6:20am (UTC)」。 */
 export const CLAUDE_LIMIT_PATTERN = /hit your .*?limit/i;
-/** 认不出重置时间时跳过这个档案多久。 */
+/** 认不出重置时间时跳过这个档案多久。 / How long to skip a profile when the reset time can't be read. */
 const UNKNOWN_RESET_SKIP_MS = 60 * 60_000;
 const RESET_SLACK_MS = 2 * 60_000;
 
 // ---------------------------------------------------------------------------
 // 读配置
+// Reading the config
 // ---------------------------------------------------------------------------
 
 const fail = (message: string): never => {
@@ -63,7 +75,10 @@ const fail = (message: string): never => {
 };
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** sandcastle 只把 .sandcastle/.env 里列出的键带进容器（值取文件里的，空的取宿主机环境变量）。 */
+/**
+ * sandcastle 只把 .sandcastle/.env 里列出的键带进容器（值取文件里的，空的取宿主机环境变量）。
+ * sandcastle passes only the keys listed in .sandcastle/.env into the container (values from the file; empty ones from the host environment).
+ */
 function sandcastleEnvKeys(): Set<string> {
   if (!existsSync(SANDCASTLE_ENV_PATH)) return new Set();
   const vars = parseEnv(readFileSync(SANDCASTLE_ENV_PATH, "utf8"));
@@ -167,6 +182,7 @@ function parseConfig(text: string, envKeys: Set<string>, warn: (m: string) => vo
     phases[phase] = list as string[];
   }
   // 只查阶段用到的档案：没启用的档案（比如还没填密钥的别家）不挡运行。
+  // Only check profiles that phases use: unused profiles (e.g. another vendor without a key yet) don't block the run.
   for (const name of new Set(Object.values(phases).flat())) {
     for (const { where, variable } of profiles.get(name)!.refs) {
       if (!envKeys.has(variable)) fail(
@@ -182,7 +198,10 @@ function parseConfig(text: string, envKeys: Set<string>, warn: (m: string) => vo
 
 let config: ModelsConfig | undefined;
 
-/** doctor 用：读一遍 models.json，返回各阶段用到的档案和警告；读不成直接抛。 */
+/**
+ * doctor 用：读一遍 models.json，返回各阶段用到的档案和警告；读不成直接抛。
+ * For doctor: read models.json once and return the profiles each phase uses plus warnings; throws if it can't be read.
+ */
 export function inspectModels(): { phases: Record<Phase, readonly string[]>; used: Profile[]; warnings: string[] } {
   const warnings: string[] = [];
   const c = parseConfig(readFileSync(CONFIG_PATH, "utf8"), sandcastleEnvKeys(), (m) => warnings.push(m));
@@ -192,6 +211,7 @@ export function inspectModels(): { phases: Record<Phase, readonly string[]>; use
 
 /**
  * 每轮开头调用。第一次读不成直接抛（运行起不来）；之后读不成就警告并沿用上一份，不打断正在跑的运行。
+ * Called at the start of each pass. The first failed read throws (the run can't start); later failures warn and keep the previous config without interrupting the run.
  */
 export function reloadModels() {
   const warnings: string[] = [];
@@ -208,6 +228,7 @@ export function reloadModels() {
 
 // ---------------------------------------------------------------------------
 // 档案 → agent provider
+// Profile → agent provider
 // ---------------------------------------------------------------------------
 
 const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -219,6 +240,7 @@ const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 export function agentFor(profile: Profile, env: Record<string, string>, phase?: Phase): sandcastle.AgentProvider {
   const base = sandcastle.claudeCode(profile.model, { env, ...(profile.effort ? { effort: profile.effort } : {}) });
   // SANDCASTLE_PHASE 给 .claude/hooks/sandcastle-context.mjs：上下文到预算时按阶段给出不同的收尾要求。
+  // SANDCASTLE_PHASE is for .claude/hooks/sandcastle-context.mjs: at the budget it gives a different wrap-up request per phase.
   const assignments = Object.entries({ ...profile.env, SANDCASTLE_PROFILE: profile.name, ...(phase ? { SANDCASTLE_PHASE: phase } : {}) }).map(([k, v]) => {
     const ref = SECRET_REF.exec(v);
     return `${k}=${ref ? `"$${ref[1]}"` : shellQuote(v)}`;
@@ -236,19 +258,29 @@ export function agentFor(profile: Profile, env: Record<string, string>, phase?: 
 
 // ---------------------------------------------------------------------------
 // 按阶段挑档案；撞限额换下一个
+// Pick a profile per phase; move to the next on a usage limit
 // ---------------------------------------------------------------------------
 
-/** 档案名 → 在这个时刻之前跳过它。所有并行的票共用：一张票撞了 opus 的限额，别的票也不再去撞。 */
+/**
+ * 档案名 → 在这个时刻之前跳过它。所有并行的票共用：一张票撞了 opus 的限额，别的票也不再去撞。
+ * Profile name → skip it until this time. Shared by all parallel tickets: once one ticket hits opus's limit, the others don't hit it again.
+ */
 const blockedUntil = new Map<string, number>();
 
-/** 这个阶段的档案全都在等限额重置；untilAfterLimit 认它，等到 until 再从头跑。 */
+/**
+ * 这个阶段的档案全都在等限额重置；untilAfterLimit 认它，等到 until 再从头跑。
+ * Every profile for this phase is waiting for a limit reset; untilAfterLimit recognizes it and reruns from the start after until.
+ */
 export class AllProfilesLimited extends Error {
   constructor(readonly phase: Phase, readonly until: number) {
     super(t(`阶段 ${phase} 的档案都撞上了用量限额，最早 ${new Date(until).toLocaleString()} 恢复`, `every profile for phase ${phase} hit its usage limit; the earliest resets at ${new Date(until).toLocaleString()}`));
   }
 }
 
-/** 某时刻在 timeZone 里比 UTC 快多少毫秒；timeZone 不合法时抛 RangeError。 */
+/**
+ * 某时刻在 timeZone 里比 UTC 快多少毫秒；timeZone 不合法时抛 RangeError。
+ * How many milliseconds timeZone is ahead of UTC at a given moment; throws RangeError for an invalid timeZone.
+ */
 function tzOffsetMs(at: number, timeZone: string) {
   const parts = Object.fromEntries(
     new Intl.DateTimeFormat("en-US", {
@@ -264,6 +296,10 @@ function tzOffsetMs(at: number, timeZone: string) {
  * - claude-code 的「resets 6:20am (UTC)」：下一次到这个钟点的时刻。只认钟点，带日期的（每周限额）可能算早，
  *   醒来再撞上会重新等，代价是多一次失败的调用。
  * - 别家常见的「2026-11-07 15:30:00」：按 timeZone 解析（不给就按宿主机时区）。
+ * Reset time in an error; null if unrecognized. Two forms:
+ * - claude-code's "resets 6:20am (UTC)": the next time that clock time comes round. Only the clock time is read, so dated (weekly) limits may resolve early;
+ *   hitting the limit again after waking just waits again, at the cost of one more failed call.
+ * - the common "2026-11-07 15:30:00" from other vendors: parsed in timeZone (the host's zone if not given).
  */
 export function limitResetAt(message: string, timeZone?: string, now = Date.now()): number | null {
   const clock = /resets\b.*?(\d{1,2})(?::(\d{2}))?\s*(am|pm)\s*\(([^)]+)\)/i.exec(message);
@@ -293,13 +329,15 @@ export function limitResetAt(message: string, timeZone?: string, now = Date.now(
   return null;
 }
 
-/** 有的报错不抛出来，而是作为最后的输出、不带完成信号返回。 */
+/** 有的报错不抛出来，而是作为最后的输出、不带完成信号返回。 / Some errors aren't thrown but returned as the final output without the completion signal. */
 const limitText = (run: AgentRun, p: Profile) =>
   run.completionSignal === undefined && p.limitPattern.test(run.stdout.slice(-2000)) ? run.stdout.slice(-2000) : undefined;
 
 /**
  * 用这个阶段第一个没在等限额的档案跑一次会话。撞上限额就记下重置时间（认不出跳过 1 小时）、换下一个；
  * 都在等时抛 AllProfilesLimited。其他错误照抛。
+ * Run one session with this phase's first profile that isn't waiting on a limit. On a limit, record the reset time (skip 1 hour if unreadable) and try the next;
+ * throw AllProfilesLimited when all are waiting. Other errors are rethrown.
  */
 export async function runWithProfile<T extends AgentRun>(
   phase: Phase,
@@ -333,6 +371,7 @@ export async function runWithProfile<T extends AgentRun>(
 
 // ---------------------------------------------------------------------------
 // 用量记录
+// Usage records
 // ---------------------------------------------------------------------------
 
 export interface UsageRecord {
@@ -347,7 +386,10 @@ export interface UsageRecord {
   readonly cacheCreation: number;
   readonly cacheRead: number;
   readonly output: number;
-  /** 这次 run 里单条消息的最大上下文（输入 + 缓存写 + 缓存读），预算看的就是它；会话中途压缩过时比结束时的大得多。 */
+  /**
+   * 这次 run 里单条消息的最大上下文（输入 + 缓存写 + 缓存读），预算看的就是它；会话中途压缩过时比结束时的大得多。
+   * Largest context of a single message in this run (input + cache write + cache read), which is what the budget measures; much larger than the final size when the session was compacted midway.
+   */
   readonly peak: number;
 }
 
@@ -387,10 +429,16 @@ function sessionTotals(it: sandcastle.IterationResult) {
     : zero;
 }
 
-/** 一次会话的上下文峰值：会话文件里单条 assistant 消息的最大上下文；没有会话文件时退回最后一条消息（只是结束时的大小）。 */
+/**
+ * 一次会话的上下文峰值：会话文件里单条 assistant 消息的最大上下文；没有会话文件时退回最后一条消息（只是结束时的大小）。
+ * A session's peak context: the largest single assistant message context in the session file; without a session file, falls back to the last message (only the final size).
+ */
 export const sessionPeak = (it: sandcastle.IterationResult) => sessionTotals(it).peak;
 
-/** 记一次 run 的用量：追加到 .sandcastle/logs/usage.jsonl 并返回，调用方收集起来写进 PR。写不进只警告。 */
+/**
+ * 记一次 run 的用量：追加到 .sandcastle/logs/usage.jsonl 并返回，调用方收集起来写进 PR。写不进只警告。
+ * Record one run's usage: append to .sandcastle/logs/usage.jsonl and return it; callers collect it for the PR. Write failures only warn.
+ */
 export function recordUsage(issue: string, phase: Phase, run: AgentRun, name: string, profile: Profile): UsageRecord {
   const totals = run.iterations.map(sessionTotals).reduce(
     (a, b) => ({
@@ -414,7 +462,10 @@ export function recordUsage(issue: string, phase: Phase, run: AgentRun, name: st
 
 const k = (n: number) => `${(n / 1000).toFixed(1)}k`;
 
-/** PR 正文里的用量表：每次 run 一行，只记 token 数（别家档案的「费用」是按 Claude 单价算的，没有意义）。 */
+/**
+ * PR 正文里的用量表：每次 run 一行，只记 token 数（别家档案的「费用」是按 Claude 单价算的，没有意义）。
+ * Usage table in the PR body: one row per run, token counts only (another vendor's "cost" is computed at Claude prices and means nothing).
+ */
 export function usageTable(records: readonly UsageRecord[], m: Messages = messages()): string {
   if (records.length === 0) return m.usageNone;
   const rows = records.map((r) => `| ${r.run} | ${m.usageProfile(r.profile, r.model)} | ${r.sessions} | ${k(r.input)} | ${k(r.cacheCreation)} | ${k(r.cacheRead)} | ${k(r.output)} | ${k(r.peak)} |`);

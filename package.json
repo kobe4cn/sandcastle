@@ -39,6 +39,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "check:comments": "node scripts/check-comments.mjs",
     "build": "node scripts/build.mjs",
     "prepack": "npm run build"
   },

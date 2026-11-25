@@ -2,6 +2,10 @@
 // 查：仓库根目录、配置能加载、PROJECT.md 与提示词能渲染、models.json、.env 的 token、平台登录与权限、
 // 标签（--fix 时补建）、远端基础分支、沙箱镜像、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
 // 有一项 ✗ 退出码就是 1。
+// doctor: before running the pipeline, check everything that can be checked on the host, giving a verdict and a fix for each.
+// Checks: repository root, config loads, PROJECT.md and prompts render, models.json, .env tokens, forge login and permissions,
+// labels (created with --fix), remote base branch, sandbox image, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
+// Exit code 1 if any check is ✗.
 
 import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -39,7 +43,10 @@ const LABEL_META: Record<keyof Labels, [color: string, zh: string, en: string]> 
   readyForHuman: ["e4e669", "需要人来做", "Needs a human"],
 };
 
-/** 流水线第一次用到时自己建（main.ts 里 ensureLabel），缺了不算问题。 */
+/**
+ * 流水线第一次用到时自己建（main.ts 里 ensureLabel），缺了不算问题。
+ * Created by the pipeline when first needed (ensureLabel in main.ts), so missing ones aren't a problem.
+ */
 const AUTO_LABELS: (keyof Labels)[] = ["flaky", "mainBroken"];
 
 const firstLine = (s: string) => s.trim().split("\n")[0] ?? "";
@@ -49,11 +56,11 @@ export async function diagnose(opts: {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   run?: Runner;
-  /** 测试里换成假实现；默认用配置里的 forge */
+  /** 测试里换成假实现；默认用配置里的 forge / A fake in tests; defaults to the config's forge */
   forge?: Forge;
-  /** 缺的标签直接建上 */
+  /** 缺的标签直接建上 / Create missing labels */
   fix?: boolean;
-  /** 查最新发布的版本；不给就不查（测试里不连网） */
+  /** 查最新发布的版本；不给就不查（测试里不连网） / Looks up the latest release; not checked when absent (no network in tests) */
   latest?: () => Promise<string | undefined>;
 }): Promise<Check[]> {
   const cwd = opts.cwd ?? process.cwd();
@@ -75,19 +82,19 @@ export async function diagnose(opts: {
     configError = e;
   }
 
-  // ---- 仓库 ----
+  // ---- 仓库 ---- / Repository
   const top = run("git", ["-C", cwd, "rev-parse", "--show-toplevel"]);
   if (!top.ok) add(t("仓库", "Repository"), "fail", t("当前目录不是 git 仓库", "The current directory isn't a git repository"), t("在目标项目的根目录运行", "Run it in the target project's root"));
   else if (realpathSync(top.out.trim()) !== realpathSync(cwd))
     add(t("仓库", "Repository"), "fail", t(`不在仓库根目录（根目录是 ${top.out.trim()}）`, `Not in the repository root (the root is ${top.out.trim()})`), t("cd 到仓库根目录再运行", "cd to the repository root and run again"));
   else add(t("仓库", "Repository"), "ok", cwd);
 
-  // ---- 配置 ----
+  // ---- 配置 ---- / Config
   if (project) add(t("配置", "Config"), "ok", rel(join(dir, "sandcastle.config.ts")));
   else add(t("配置", "Config"), "fail", errText(configError), t("没有配置先跑 sandpipe onboard", "No config yet: run sandpipe onboard first"));
   const forge = opts.forge ?? project?.forge;
 
-  // ---- PROJECT.md 与提示词 ----
+  // ---- PROJECT.md 与提示词 ---- / PROJECT.md and prompts
   try {
     const doc = loadProjectDoc(dir);
     if (project && forge)
@@ -139,6 +146,7 @@ export async function diagnose(opts: {
     const has = (k: string) => k in vars && Boolean(vars[k] || env[k]);
     const missing: string[] = [];
     // 有阶段用 Claude 自家的档案（没设 ANTHROPIC_BASE_URL）才要 Claude 凭据
+    // Claude credentials are only needed when some phase uses a Claude profile (no ANTHROPIC_BASE_URL)
     if ((!models || models.used.some((p) => !p.thirdParty)) && !CLAUDE_KEYS.some(has)) missing.push(CLAUDE_KEYS.join(t(" 或 ", " or ")));
     if (forge && !has(forge.tokenEnv)) missing.push(forge.tokenEnv);
     const ignored = run("git", ["-C", cwd, "check-ignore", "-q", ENV_FILE]).ok;
@@ -162,7 +170,7 @@ export async function diagnose(opts: {
     agentToken = forge ? vars[forge.tokenEnv] || env[forge.tokenEnv] : undefined;
   }
 
-  // ---- 平台与标签 ----
+  // ---- 平台与标签 ---- / Forge and labels
   if (forge && project) {
     let reachable = false;
     try {
@@ -219,7 +227,7 @@ export async function diagnose(opts: {
       );
   }
 
-  // ---- 沙箱镜像 ----
+  // ---- 沙箱镜像 ---- / Sandbox image
   if (project?.customSandbox) {
     add(t("沙箱镜像", "Sandbox image"), "ok", t("配置里自定义了 sandbox，不查 podman", "the config sets its own sandbox; podman not checked"));
   } else if (project) {
@@ -235,7 +243,7 @@ export async function diagnose(opts: {
     else add(S, "ok", t(`${image}（改了 Containerfile 要重建：${build}）`, `${image} (rebuild after changing the Containerfile: ${build})`));
   }
 
-  // ---- 上下文预算 hook ----
+  // ---- 上下文预算 hook ---- / Context budget hook
   const settingsPath = join(cwd, ".claude/settings.json");
   const registered = existsSync(settingsPath) && readFileSync(settingsPath, "utf8").includes(HOOK_FILE);
   const present = existsSync(join(cwd, ".claude/hooks", HOOK_FILE));
@@ -267,6 +275,7 @@ export async function diagnose(opts: {
     );
 
   // ---- 编辑器类型：.sandcastle/tsconfig.json 指向这份工具的声明文件，且不提交 ----
+  // Editor types: .sandcastle/tsconfig.json points at this tool's declarations and isn't committed
   const read = (f: string) => (existsSync(join(cwd, f)) ? readFileSync(join(cwd, f), "utf8") : "");
   const typesIssues = [
     read(".sandcastle/tsconfig.json") !== typesTsconfig() && t("tsconfig.json 缺失或指向别的版本", "tsconfig.json is missing or points at another version"),
@@ -276,7 +285,7 @@ export async function diagnose(opts: {
   if (!typesIssues.length) add(E, "ok", t(".sandcastle/tsconfig.json 指向当前版本的声明文件", ".sandcastle/tsconfig.json points at the current version's declarations"));
   else add(E, "warn", typesIssues.join(t("；", "; ")) + t('：编辑器里 import "sandpipe" 没有类型', ': import "sandpipe" has no types in the editor'), "sandpipe update");
 
-  // ---- .claude/ 里本工具的文件是否是当前版本 ----
+  // ---- .claude/ 里本工具的文件是否是当前版本 ---- / Whether this tool's files in .claude/ are the current version
   const stale = Object.entries(CLAUDE_FILES)
     .filter(([file, src]) => {
       const path = join(cwd, file);
@@ -288,6 +297,7 @@ export async function diagnose(opts: {
   else add(C, "warn", t("和当前版本不一致或缺失：", "Outdated or missing: ") + stale.join(t("、", ", ")), "sandpipe update");
 
   // ---- 沙箱里的 worktree 从远端基础分支建：hook、.gitignore 要已经推上去才生效 ----
+  // The sandbox worktree is created from the remote base branch: the hook and .gitignore only apply once pushed
   if (project) {
     const base = `${project.remote}/${project.baseBranch}`;
     const needed = [".claude/settings.json", `.claude/hooks/${HOOK_FILE}`, ".gitignore"].filter((f) => existsSync(join(cwd, f)));
@@ -309,7 +319,7 @@ export async function diagnose(opts: {
       );
   }
 
-  // ---- 版本 ----
+  // ---- 版本 ---- / Version
   if (opts.latest) {
     const latest = await opts.latest();
     const V = t("版本", "Version");
@@ -321,7 +331,7 @@ export async function diagnose(opts: {
   return checks;
 }
 
-/** models.ts 按 cwd 读 .sandcastle/models.json 与 .env。 */
+/** models.ts 按 cwd 读 .sandcastle/models.json 与 .env。 / models.ts reads .sandcastle/models.json and .env relative to cwd. */
 function withCwd<T>(cwd: string, fn: () => T): T {
   const before = process.cwd();
   if (resolve(before) === resolve(cwd)) return fn();

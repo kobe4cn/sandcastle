@@ -1,5 +1,7 @@
 // onboard 的第一步：只读文件和 git，探测项目的事实（语言、包管理、命令、托管平台、文档、测试、迁移、依赖的服务）。
 // 不调 agent、不联网；结果用来生成 sandcastle.config.ts 与 PROJECT.md 草稿，再交给 agent 补全（onboard.ts）。
+// Step one of onboard: reads only files and git to detect project facts (language, package manager, commands, forge, docs, tests, migrations, services).
+// No agent, no network; the result generates sandcastle.config.ts and the PROJECT.md draft, which the agent then completes (onboard.ts).
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -12,30 +14,30 @@ export interface ProjectFacts {
   root: string;
   name: string;
   language: Language;
-  /** node 的包管理器；其他语言为空 */
+  /** node 的包管理器；其他语言为空 / node's package manager; empty for other languages */
   packageManager?: "pnpm" | "yarn" | "npm" | "bun";
-  /** 沙箱里装依赖的命令 */
+  /** 沙箱里装依赖的命令 / Command that installs dependencies in the sandbox */
   install: string;
-  /** 从宿主机拷进 worktree 的目录（省掉从头安装） */
+  /** 从宿主机拷进 worktree 的目录（省掉从头安装） / Directories copied from the host into the worktree (saves a full install) */
   copyToWorktree: string[];
   commands: { typecheck?: string; lint?: string; test?: string; testFile?: string; format?: string };
-  /** 测试文件路径的正则源码（不带 ^$） */
+  /** 测试文件路径的正则源码（不带 ^$） / Regex source for test file paths (no ^$) */
   testFilePattern: string;
   testDirs: string[];
   forge: { kind: ForgeKind; host?: string; path?: string };
   remote: string;
   baseBranch: string;
-  /** 根目录下存在的给人 / agent 看的文档 */
+  /** 根目录下存在的给人 / agent 看的文档 / Docs in the root meant for humans / agents */
   docs: string[];
-  /** 顶层目录（不含隐藏目录与依赖、构建产物） */
+  /** 顶层目录（不含隐藏目录与依赖、构建产物） / Top-level directories (no hidden dirs, dependencies or build output) */
   topDirs: string[];
-  /** 迁移目录与生成工具 */
+  /** 迁移目录与生成工具 / Migration directory and generator tool */
   migrations?: { dir: string; tool: string };
-  /** docker compose 里的服务镜像（postgres、redis……） */
+  /** docker compose 里的服务镜像（postgres、redis……） / Service images in docker compose (postgres, redis…) */
   services: string[];
-  /** 有网页界面（按依赖判断），可能需要浏览器验收 */
+  /** 有网页界面（按依赖判断），可能需要浏览器验收 / Has a web UI (judged by dependencies), may need a browser check */
   webUi: boolean;
-  /** 最近几条提交的标题，用来判断提交信息的语言与风格 */
+  /** 最近几条提交的标题，用来判断提交信息的语言与风格 / Subjects of the last few commits, used to judge commit message language and style */
   recentCommits: string[];
   commitLanguage: "zh" | "en";
 }
@@ -114,6 +116,7 @@ function nodeFacts(root: string, pkg: Record<string, any>) {
   const fmt = pick("format", "fmt");
   const runner = deps.vitest ? "vitest" : deps.jest ? "jest" : deps.mocha ? "mocha" : undefined;
   // 宿主机（macOS）的 node_modules 缺 linux 原生包，沙箱里按锁文件重装；pnpm 用 package.json 里的版本
+  // The host's (macOS) node_modules lacks linux native packages, so the sandbox reinstalls from the lockfile; pnpm uses the version in package.json
   const pmVersion = pmField.includes("@") ? pmField.split("+")[0] : pm;
   const install =
     pm === "pnpm"
@@ -174,7 +177,7 @@ function otherLanguageFacts(root: string, language: Language) {
       copyToWorktree: [] as string[],
       commands: {
         typecheck: /mypy/.test(pyproject)
-          ? `${prefix}mypy${/\[tool\.mypy\][^[]*\bfiles\s*=/.test(pyproject) ? "" : " ."}` // 项目配了 files 就按它的范围
+          ? `${prefix}mypy${/\[tool\.mypy\][^[]*\bfiles\s*=/.test(pyproject) ? "" : " ."}` // 项目配了 files 就按它的范围 / use the project's files setting when it has one
           : /pyright/.test(pyproject) ? `${prefix}pyright` : undefined,
         lint: /ruff/.test(pyproject) ? `${prefix}ruff check .` : undefined,
         test: `${prefix}pytest`,
@@ -208,7 +211,10 @@ function otherLanguageFacts(root: string, language: Language) {
   return { install: "true", copyToWorktree: [] as string[], commands: {}, testFilePattern: String.raw`\S*test\S*`, migrations: undefined };
 }
 
-/** 根目录与一级子目录（db_script/、docker/、deploy/……）里的 compose 文件用到的服务 */
+/**
+ * 根目录与一级子目录（db_script/、docker/、deploy/……）里的 compose 文件用到的服务
+ * Services used by compose files in the root and first-level subdirectories (db_script/, docker/, deploy/…)
+ */
 function composeServices(root: string): string[] {
   const names = /^(docker-)?compose(\.[\w-]+)?\.ya?ml$/;
   const dirs = [

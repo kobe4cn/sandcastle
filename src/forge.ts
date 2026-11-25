@@ -5,57 +5,71 @@
 // issue 与 PR 的编号一律是字符串（不带 #）；平台自己的写法（GitLab 的 MR 是 `!n`）由实现处理。
 //
 // 新加一个平台：实现这个接口，放进 forges/，在 forges/index.ts 里登记；契约测试见 test/forge-github.test.ts。
+// Forge: every operation Sandcastle needs on a code host (GitHub, GitLab…): issues, labels, PRs / MRs, comments, merging.
+// The pipeline (main.ts) talks to the host only through this interface and never calls gh / glab directly. Every method throws on error
+// (the error carries stderr, like execFileSync); callers that want "warn on failure" wrap it with attempt from shell.ts.
+// Issue and PR numbers are always strings (no #); host-specific notation (GitLab's MR is `!n`) is handled by the implementation.
+// To add a host: implement this interface, put it in forges/, register it in forges/index.ts; the contract tests are in test/forge-github.test.ts.
 
 export type ForgeIssue = {
   number: number;
   title: string;
   body: string;
   labels: string[];
-  /** ISO 时间。prep 靠它判断「issue 自上次 prep 以来有没有变」。 */
+  /** ISO 时间。prep 靠它判断「issue 自上次 prep 以来有没有变」。 / ISO time. prep uses it to tell whether the issue changed since the last prep. */
   updatedAt: string;
 };
 
-/** 一个 PR / MR 在 Sandcastle 里需要知道的东西。 */
+/** 一个 PR / MR 在 Sandcastle 里需要知道的东西。 / What Sandcastle needs to know about a PR / MR. */
 export type ForgePr = {
   id: string;
   open: boolean;
-  /** 源分支名 */
+  /** 源分支名 / Source branch name */
   branch: string;
-  /** 从 fork 开过来的（Sandcastle 不接手） */
+  /** 从 fork 开过来的（Sandcastle 不接手） / Opened from a fork (Sandcastle won't take it over) */
   fromFork: boolean;
-  /** 审查：changesRequested 是平台上的「Request changes」（GitLab 没有时恒为 false，只认 /sandcastle 评论） */
+  /**
+   * 审查：changesRequested 是平台上的「Request changes」（GitLab 没有时恒为 false，只认 /sandcastle 评论）
+   * Review: changesRequested is the host's "Request changes" (always false on GitLab, which only honours /sandcastle comments)
+   */
   reviews: { changesRequested: boolean; body: string; at: string }[];
   comments: { body: string; at: string }[];
-  /** 分支上最新提交的时间（ISO），没有提交时为空串 */
+  /** 分支上最新提交的时间（ISO），没有提交时为空串 / Time of the branch's latest commit (ISO); empty when there are no commits */
   lastCommitAt: string;
 };
 
 export type MergeMethod = "rebase" | "squash" | "merge";
 
 export interface Forge {
-  /** 平台名，打日志用 */
+  /** 平台名，打日志用 / Host name, for logs */
   readonly name: string;
-  /** 沙箱里 agent 操作平台要的 token 变量名（写在 .sandcastle/.env 里），比如 GH_TOKEN。 */
+  /**
+   * 沙箱里 agent 操作平台要的 token 变量名（写在 .sandcastle/.env 里），比如 GH_TOKEN。
+   * Name of the token variable the sandboxed agent uses for the host (in .sandcastle/.env), e.g. GH_TOKEN.
+   */
   readonly tokenEnv: string;
 
   // ---- doctor ----
-  /** 宿主机的 CLI 已登录、能访问当前仓库；返回一行说明（账号、仓库），不行就抛错，错误里写怎么修。 */
+  /**
+   * 宿主机的 CLI 已登录、能访问当前仓库；返回一行说明（账号、仓库），不行就抛错，错误里写怎么修。
+   * The host CLI is logged in and can access the current repo; returns a one-line summary (account, repo), otherwise throws with how to fix it.
+   */
   checkAccess(): string;
   /** 沙箱里 agent 用的 token 能访问当前仓库的 issue 和 PR；返回一行说明，不行就抛错，错误里写缺什么权限。 */
   checkAgentToken(token: string): string;
-  /** 仓库里已有的全部标签名。 */
+  /** 仓库里已有的全部标签名。 / All label names in the repo. */
   listLabels(): string[];
 
   // ---- issue ----
   /** 带全部 labels 的 open issue。必须用实时接口，不能用有延迟的搜索索引（刚打上的标签要立刻查得到）。 */
   listOpenIssues(labels: string[]): ForgeIssue[];
-  /** 带 label 的已关闭 issue 的编号。 */
+  /** 带 label 的已关闭 issue 的编号。 / Numbers of closed issues with the label. */
   listClosedIssueNumbers(label: string): number[];
   /** 正文含 `## Split into`、且不带 withoutLabel 的 open issue（拆过的父票）。 */
   listSplitParents(withoutLabel: string): { number: number; body: string }[];
   issueState(id: string): "open" | "closed";
   issueUpdatedAt(id: string): string;
-  /** 全部评论正文，按时间先后。 */
+  /** 全部评论正文，按时间先后。 / All comment bodies, oldest first. */
   issueComments(id: string): string[];
   createIssue(issue: { title: string; body: string; labels: string[] }): string;
   editIssueBody(id: string, body: string): void;
@@ -63,31 +77,36 @@ export interface Forge {
   closeIssue(id: string, comment: string): void;
   addLabel(id: string, label: string): void;
   removeLabel(id: string, label: string): void;
-  /** 建标签；已存在时抛错（调用方忽略）。 */
+  /** 建标签；已存在时抛错（调用方忽略）。 / Create a label; throws when it exists (callers ignore that). */
   ensureLabel(name: string, color: string, description: string): void;
 
   // ---- PR / MR ----
-  /** 正文里关闭 issue 的写法，比如 `Closes #12`。 */
+  /** 正文里关闭 issue 的写法，比如 `Closes #12`。 / How a body closes an issue, e.g. `Closes #12`. */
   closingRef(issueId: string): string;
-  /** 用「关闭这张 issue」关联起来的 PR 编号（含已关闭的）。 */
+  /** 用「关闭这张 issue」关联起来的 PR 编号（含已关闭的）。 / PR numbers linked by "closes this issue" (including closed ones). */
   linkedPrIds(issueId: string): string[];
-  /** 按编号或分支名查 PR；查不到返回 null。 */
+  /** 按编号或分支名查 PR；查不到返回 null。 / Look up a PR by number or branch; null when not found. */
   viewPr(ref: string): ForgePr | null;
-  /** 某个分支上指定状态的 PR 编号，没有时 undefined。 */
+  /** 某个分支上指定状态的 PR 编号，没有时 undefined。 / Number of the PR in the given state on a branch; undefined when none. */
   findPr(branch: string, state: "open" | "merged"): string | undefined;
   createPr(pr: { base: string; head: string; title: string; body: string; attachments: string[] }): string;
   prBody(id: string): string;
   editPrBody(id: string, body: string): void;
-  /** attachments 是本地图片路径；平台不支持附件时实现可以上传后把链接拼进正文。 */
+  /**
+   * attachments 是本地图片路径；平台不支持附件时实现可以上传后把链接拼进正文。
+   * attachments are local image paths; hosts without attachments may upload them and put the links in the body.
+   */
   commentPr(id: string, body: string, attachments?: string[]): void;
   mergePr(id: string, method: MergeMethod): void;
 
-  // ---- 给 agent 的提示词用 ----
-  /** agent 在沙箱里看 issue 的命令，比如 `gh issue view 12`。 */
+  // ---- 给 agent 的提示词用 ---- / For the agent's prompts
+  /** agent 在沙箱里看 issue 的命令，比如 `gh issue view 12`。 / Command the agent uses in the sandbox to view an issue, e.g. `gh issue view 12`. */
   viewIssueCommand(issueId: string): string;
   /**
    * 注入提示词 {{FORGE}} 的一段 Markdown：agent 在沙箱里操作这个平台的命令清单（看票和评论、评论、改正文、
    * 标签、开票、搜票、看 PR 与行内意见）。提示词模板只说「做什么」，具体命令都在这里。
+   * Markdown injected as {{FORGE}} in prompts: the commands the agent uses on this host in the sandbox (view tickets and comments, comment, edit bodies,
+   * labels, open and search tickets, view PRs and inline comments). Prompt templates only say what to do; the concrete commands live here.
    */
   agentGuide(): string;
 }

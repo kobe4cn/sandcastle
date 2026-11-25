@@ -1,12 +1,17 @@
 // GitHub：用宿主机上已登录的 gh CLI（2.99+，PR 评论的 --attach 要用）。
 // 参数与 duckdb_crm 原来 main.ts 里的调用逐字一致；test/forge-github.test.ts 锁住了每个方法的 argv。
+// GitHub: uses the gh CLI logged in on the host (2.99+, needed for --attach on PR comments).
+// Arguments match the original calls word for word; test/forge-github.test.ts pins every method's argv.
 
 import { basename } from "node:path";
 import type { Forge, ForgePr, ForgeIssue, MergeMethod } from "../forge.ts";
 import { sh } from "../shell.ts";
 import { t } from "../term.ts";
 
-/** 跑一次 gh，返回 trim 过的 stdout；失败抛错。env 给了就整个替换环境变量。测试里换成记录 argv 的假实现。 */
+/**
+ * 跑一次 gh，返回 trim 过的 stdout；失败抛错。env 给了就整个替换环境变量。测试里换成记录 argv 的假实现。
+ * Run gh once and return trimmed stdout; throws on failure. A given env replaces the environment entirely. Tests swap in a fake that records argv.
+ */
 export type GhRunner = (args: string[], env?: NodeJS.ProcessEnv) => string;
 
 type GhPr = {
@@ -30,7 +35,10 @@ const toPr = (pr: GhPr): ForgePr => ({
   lastCommitAt: pr.commits.map((c) => c.committedDate).sort().at(-1) ?? "",
 });
 
-/** 截图附件：gh 2.99+ 的 --attach 上传图片，没在正文里引用的附在末尾 */
+/**
+ * 截图附件：gh 2.99+ 的 --attach 上传图片，没在正文里引用的附在末尾
+ * Screenshot attachments: gh 2.99+ --attach uploads images; ones not referenced in the body are appended at the end
+ */
 const attachArgs = (files: string[]) => files.flatMap((file) => ["--attach", `${file}#${basename(file)}`]);
 
 const GITHUB_AGENT_GUIDE = `平台是 GitHub，用已登录的 \`gh\`。issue 和 PR 都用编号（不带 #）；正文里引用别的票写 \`#<n>\`。
@@ -71,6 +79,8 @@ export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefin
     checkAgentToken(token) {
       // 沙箱里的 agent 只用这个 token：读写 issue、读 PR 与评论。只读探一下，不留痕迹。
       // 去掉宿主机的 GITHUB_TOKEN，免得 gh 用了它而不是要验证的这个。
+      // The agent in the sandbox uses only this token: read/write issues, read PRs and comments. Probe read-only, leaving no trace.
+      // Drop the host's GITHUB_TOKEN so gh doesn't use it instead of the token being checked.
       const { GITHUB_TOKEN: _, ...rest } = process.env;
       const env = { ...rest, GH_TOKEN: token };
       const repo = gh(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]);
@@ -96,6 +106,8 @@ export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefin
     listOpenIssues(labels) {
       // 用 `--label`（issues 列表接口，实时）而不是 `--search`（搜索索引）：索引有延迟，刚打上的标签要过一阵
       // 才查得到。2026-11-05 #393 刚打上 prepped，plan 用 --search 没查到，脚本以为没票可做就退出了。
+      // Use `--label` (the issues list API, real time) rather than `--search` (the search index): the index lags, so a freshly added label
+      // takes a while to show up. On 2026-11-05 #393 had just been labelled prepped, plan's --search missed it, and the script exited thinking there was nothing to do.
       const raw = JSON.parse(
         gh([
           "issue", "list", "--state", "open", "--limit", "200",

@@ -275,6 +275,9 @@ export const TYPES_ENTRY = join(TOOL_ROOT, "dist/types/index.d.ts");
  * .sandcastle/tsconfig.json：编辑器检查 .sandcastle/*.ts 用。项目不用装 sandpipe，paths 把 "sandpipe" 指到
  * 正在运行的这份工具的声明文件。路径因机器和版本而异，所以不提交，升级后由 sandpipe update 重写。
  * 不写 types：Node 项目照常带上自己的 @types/node，别的项目没有也不报错。
+ * .sandcastle/tsconfig.json: lets the editor check .sandcastle/*.ts. The project doesn't install sandpipe; paths points "sandpipe" at
+ * the declarations of the tool that is running. The path depends on the machine and version, so it isn't committed and sandpipe update rewrites it after upgrades.
+ * No types: Node projects still get their own @types/node, and other projects don't error without it.
  */
 export function typesTsconfig(entry = TYPES_ENTRY): string {
   const config = {
@@ -293,7 +296,10 @@ export function typesTsconfig(entry = TYPES_ENTRY): string {
   return `${JSON.stringify(config, null, 2)}\n`;
 }
 
-/** 本机相关、不提交的文件：tsconfig.json 写成当前版本，.sandcastle/.gitignore 补上缺的条目。返回有改动的文件。 */
+/**
+ * 本机相关、不提交的文件：tsconfig.json 写成当前版本，.sandcastle/.gitignore 补上缺的条目。返回有改动的文件。
+ * Machine-specific, uncommitted files: write tsconfig.json for the current version and add missing entries to .sandcastle/.gitignore. Returns the changed files.
+ */
 export function syncLocalFiles(root: string): string[] {
   const changed: string[] = [];
   const write = (file: string, next: string | undefined) => {
@@ -312,7 +318,10 @@ export function syncLocalFiles(root: string): string[] {
 type HookEntry = { matcher: string; hooks: { type: string; command: string }[] };
 type Settings = { hooks?: Record<string, HookEntry[]> } & Record<string, unknown>;
 
-/** 在 .claude/settings.json 里登记上下文预算 hook；已登记的不重复加。 */
+/**
+ * 在 .claude/settings.json 里登记上下文预算 hook；已登记的不重复加。
+ * Register the context budget hook in .claude/settings.json; skips it when already registered.
+ */
 export function mergeSettings(existing: Settings): { settings: Settings; changed: boolean } {
   const command = `node "$CLAUDE_PROJECT_DIR"/.claude/hooks/${HOOK_FILE}`;
   const settings: Settings = structuredClone(existing);
@@ -332,6 +341,7 @@ export function mergeSettings(existing: Settings): { settings: Settings; changed
 
 // ---------------------------------------------------------------------------
 // 写文件
+// Writing files
 // ---------------------------------------------------------------------------
 
 type Outcome = { file: string; status: "written" | "skipped" | "updated" | "unchanged" };
@@ -348,7 +358,10 @@ function writeIfMissing(root: string, file: string, content: string | (() => str
   return { file, status: "written" };
 }
 
-/** 工具里的文件；标签名占位符按默认标签填上（给人和交互式 claude 看的副本）。 */
+/**
+ * 工具里的文件；标签名占位符按默认标签填上（给人和交互式 claude 看的副本）。
+ * A file from the tool, with label placeholders filled with the default labels (copies for humans and interactive claude).
+ */
 export const toolFile = (p: string) =>
   readFileSync(join(TOOL_ROOT, p), "utf8").replace(/\{\{L_([A-Z_]+)\}\}/g, (m, key: string) => {
     const name = key.toLowerCase().replace(/_([a-z])/g, (_, c: string) => c.toUpperCase()) as keyof typeof DEFAULT_LABELS;
@@ -356,7 +369,10 @@ export const toolFile = (p: string) =>
   });
 const tool = toolFile;
 
-/** 本工具拥有的 .claude/ 文件（项目里的路径 → 工具里的路径）：onboard 缺了才装，update 直接覆盖成当前版本。 */
+/**
+ * 本工具拥有的 .claude/ 文件（项目里的路径 → 工具里的路径）：onboard 缺了才装，update 直接覆盖成当前版本。
+ * .claude/ files owned by this tool (project path → tool path): onboard installs missing ones, update overwrites them with the current version.
+ */
 export const CLAUDE_FILES: Record<string, string> = {
   [`.claude/hooks/${HOOK_FILE}`]: `claude/hooks/${HOOK_FILE}`,
   ".claude/agents/screenshot-checker.md": "claude/agents/screenshot-checker.md",
@@ -364,7 +380,10 @@ export const CLAUDE_FILES: Record<string, string> = {
   ".claude/skills/prep-ticket/ticket-sizing.md": "prompts/ticket-sizing.md",
 };
 
-/** 把 CLAUDE_FILES 覆盖成当前版本、同步 tsconfig.json 与 .sandcastle/.gitignore，返回内容有变化的文件。升级工具后跑（sandpipe update）。 */
+/**
+ * 把 CLAUDE_FILES 覆盖成当前版本、同步 tsconfig.json 与 .sandcastle/.gitignore，返回内容有变化的文件。升级工具后跑（sandpipe update）。
+ * Overwrite CLAUDE_FILES with the current version and sync tsconfig.json and .sandcastle/.gitignore; returns files whose content changed. Run after upgrading (sandpipe update).
+ */
 export function updateClaudeFiles(root: string): string[] {
   const changed: string[] = syncLocalFiles(root);
   for (const [file, src] of Object.entries(CLAUDE_FILES)) {
@@ -417,6 +436,7 @@ export function installFiles(root: string, f: ProjectFacts, lang: Language = f.c
 
 // ---------------------------------------------------------------------------
 // agent 补全 PROJECT.md
+// Agent completes PROJECT.md
 // ---------------------------------------------------------------------------
 
 /**
@@ -464,6 +484,7 @@ function runAgent(root: string, f: ProjectFacts, model: string, lang: Language):
 
 // ---------------------------------------------------------------------------
 // 入口
+// Entry point
 // ---------------------------------------------------------------------------
 
 export function onboard(argv: string[], root = process.cwd()) {

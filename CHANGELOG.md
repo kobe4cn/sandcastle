@@ -5,6 +5,7 @@
 - 用户手册中英两份：`README.md`、`docs/config.md`、`docs/onboarding-checklist.md` 是英文，同名的 `.zh-CN.md` 是中文。内部文档移到 `docs/internal/`。
 - onboard 生成的文件（`sandcastle.config.ts`、`.gitignore`、`.env.example`、`Containerfile`）注释都是中英两行。
 - 终端输出（流水线日志、doctor、onboard、`--help`、报错）按项目配置的 `language` 显示中文或英文；没有项目配置时看 `LANG`，`SANDPIPE_LANG=zh|en` 可以强制指定。
+- 代码注释中英对照（声明文件里的说明也是两种语言），`npm test` 会检查。
 - `sandpipe onboard --lang zh|en`：PROJECT.md 草稿（章节标题、待补标记）和配置里的 `language` 按它写，没给时按提交信息判断。
 
 ## 0.1.2
