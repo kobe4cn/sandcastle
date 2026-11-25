@@ -170,13 +170,63 @@ export function containerfileSource(template: string, f: ProjectFacts): string {
 /** 流水线在 worktree 里写、不提交的目录（浏览器验收产物、playwright-cli 会话、验收说明）。 */
 export const WORKSPACE_IGNORES = [".browser-check/", ".playwright-cli/", ".pr-notes/"];
 
-/** 项目根目录 .gitignore 补上流水线的工作目录；已有的不重复加。返回新内容，不用改时返回 undefined。 */
-export function mergeGitignore(existing: string): string | undefined {
+/** 往 .gitignore 内容里补上缺的条目（带一行说明注释）；已有的不重复加。返回新内容，不用改时返回 undefined。 */
+export function mergeIgnore(existing: string, entries: string[], comment: string): string | undefined {
   const have = new Set(existing.split("\n").map((l) => l.trim().replace(/^\//, "")));
-  const missing = WORKSPACE_IGNORES.filter((p) => !have.has(p) && !have.has(p.slice(0, -1)));
+  const missing = entries.filter((p) => !have.has(p) && !(p.endsWith("/") && have.has(p.slice(0, -1))));
   if (!missing.length) return undefined;
   const sep = existing === "" || existing.endsWith("\n\n") ? "" : existing.endsWith("\n") ? "\n" : "\n\n";
-  return `${existing}${sep}# Sandcastle：沙箱里浏览器验收的截图与结论、playwright-cli 会话、验收说明（编排脚本读出后附到 PR，不提交）\n${missing.join("\n")}\n`;
+  return `${existing}${sep}# ${comment}\n${missing.join("\n")}\n`;
+}
+
+/** 项目根目录 .gitignore 补上流水线的工作目录。 */
+export const mergeGitignore = (existing: string) =>
+  mergeIgnore(existing, WORKSPACE_IGNORES, "Sandcastle：沙箱里浏览器验收的截图与结论、playwright-cli 会话、验收说明（编排脚本读出后附到 PR，不提交）");
+
+/** .sandcastle/ 下不提交的文件（和 templates/.sandcastle/gitignore 一致；老项目由 update 补上缺的）。 */
+export const SANDCASTLE_IGNORES = [".env", "logs/", "worktrees/", "tsconfig.json"];
+export const mergeSandcastleIgnore = (existing: string) =>
+  mergeIgnore(existing, SANDCASTLE_IGNORES, "Sandcastle：密钥、日志、worktree，以及指向本机工具路径的 tsconfig.json");
+
+/** 声明文件在工具里的位置（npm run build 生成）。 */
+export const TYPES_ENTRY = join(TOOL_ROOT, "dist/types/index.d.ts");
+
+/**
+ * .sandcastle/tsconfig.json：编辑器检查 .sandcastle/*.ts 用。项目不用装 sandpipe，paths 把 "sandpipe" 指到
+ * 正在运行的这份工具的声明文件。路径因机器和版本而异，所以不提交，升级后由 sandpipe update 重写。
+ * 不写 types：Node 项目照常带上自己的 @types/node，别的项目没有也不报错。
+ */
+export function typesTsconfig(entry = TYPES_ENTRY): string {
+  const config = {
+    compilerOptions: {
+      target: "ES2022",
+      module: "NodeNext",
+      moduleResolution: "NodeNext",
+      strict: true,
+      noEmit: true,
+      allowImportingTsExtensions: true,
+      skipLibCheck: true,
+      paths: { sandpipe: [entry] },
+    },
+    include: ["*.ts"],
+  };
+  return `${JSON.stringify(config, null, 2)}\n`;
+}
+
+/** 本机相关、不提交的文件：tsconfig.json 写成当前版本，.sandcastle/.gitignore 补上缺的条目。返回有改动的文件。 */
+export function syncLocalFiles(root: string): string[] {
+  const changed: string[] = [];
+  const write = (file: string, next: string | undefined) => {
+    const path = join(root, file);
+    if (next === undefined || (existsSync(path) && readFileSync(path, "utf8") === next)) return;
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, next);
+    changed.push(file);
+  };
+  const ignore = join(root, ".sandcastle/.gitignore");
+  write(".sandcastle/.gitignore", mergeSandcastleIgnore(existsSync(ignore) ? readFileSync(ignore, "utf8") : ""));
+  write(".sandcastle/tsconfig.json", typesTsconfig());
+  return changed;
 }
 
 type HookEntry = { matcher: string; hooks: { type: string; command: string }[] };
@@ -230,9 +280,9 @@ export const CLAUDE_FILES: Record<string, string> = {
   ".claude/skills/prep-ticket/ticket-sizing.md": "prompts/ticket-sizing.md",
 };
 
-/** 把 CLAUDE_FILES 覆盖成当前版本，返回内容有变化的文件。升级工具后跑（sandpipe update）。 */
+/** 把 CLAUDE_FILES 覆盖成当前版本、同步 tsconfig.json 与 .sandcastle/.gitignore，返回内容有变化的文件。升级工具后跑（sandpipe update）。 */
 export function updateClaudeFiles(root: string): string[] {
-  const changed: string[] = [];
+  const changed: string[] = syncLocalFiles(root);
   for (const [file, src] of Object.entries(CLAUDE_FILES)) {
     const path = join(root, file);
     const next = tool(src);
@@ -256,6 +306,11 @@ export function installFiles(root: string, f: ProjectFacts): Outcome[] {
     writeIfMissing(root, ".sandcastle/Containerfile", () => containerfileSource(tool("templates/.sandcastle/Containerfile"), f)),
     ...Object.entries(CLAUDE_FILES).map(([file, src]) => writeIfMissing(root, file, () => tool(src))),
   ];
+  for (const file of syncLocalFiles(root)) {
+    const o = out.find((x) => x.file === file);
+    if (o) o.status = o.status === "写入" ? "写入" : "已更新";
+    else out.push({ file, status: "写入" });
+  }
   const settingsPath = join(root, ".claude/settings.json");
   const existing = existsSync(settingsPath) ? (JSON.parse(readFileSync(settingsPath, "utf8")) as Settings) : {};
   const { settings, changed } = mergeSettings(existing);

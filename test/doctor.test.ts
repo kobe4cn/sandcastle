@@ -64,6 +64,7 @@ describe("diagnose", () => {
       标签: "fail",
       远端分支: "ok",
       沙箱镜像: "fail",
+      编辑器类型: "ok",
       "上下文 hook": "ok",
       ".gitignore": "ok",
       "Claude 文件": "ok",

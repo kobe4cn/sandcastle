@@ -1,3 +1,5 @@
 .env
 logs/
 worktrees/
+# 指向本机 sandpipe 声明文件的绝对路径，因机器而异（sandpipe update 重写）
+tsconfig.json

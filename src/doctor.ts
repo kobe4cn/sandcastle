@@ -9,7 +9,7 @@ import { parseEnv } from "node:util";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import type { Forge } from "./forge.ts";
 import { inspectModels } from "./models.ts";
-import { CLAUDE_FILES, HOOK_FILE, mergeGitignore, toolFile } from "./onboard.ts";
+import { CLAUDE_FILES, HOOK_FILE, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
 import { configDir, loadProject, type Labels, type Project } from "./profile.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { trySh, type TryResult } from "./shell.ts";
@@ -211,6 +211,15 @@ export async function diagnose(opts: {
   if (mergeGitignore(existsSync(ignorePath) ? readFileSync(ignorePath, "utf8") : "") === undefined)
     add(".gitignore", "ok", "流水线的工作目录都已忽略");
   else add(".gitignore", "warn", "缺 .browser-check/ 等工作目录：implementer 的 git add -A 会把截图和验收说明提交进去", "跑 onboard 补上");
+
+  // ---- 编辑器类型：.sandcastle/tsconfig.json 指向这份工具的声明文件，且不提交 ----
+  const read = (f: string) => (existsSync(join(cwd, f)) ? readFileSync(join(cwd, f), "utf8") : "");
+  const typesIssues = [
+    read(".sandcastle/tsconfig.json") !== typesTsconfig() && "tsconfig.json 缺失或指向别的版本",
+    mergeSandcastleIgnore(read(".sandcastle/.gitignore")) !== undefined && ".sandcastle/.gitignore 缺条目",
+  ].filter(Boolean);
+  if (!typesIssues.length) add("编辑器类型", "ok", ".sandcastle/tsconfig.json 指向当前版本的声明文件");
+  else add("编辑器类型", "warn", `${typesIssues.join("；")}：编辑器里 import "sandpipe" 没有类型`, "sandpipe update");
 
   // ---- .claude/ 里本工具的文件是否是当前版本 ----
   const stale = Object.entries(CLAUDE_FILES)

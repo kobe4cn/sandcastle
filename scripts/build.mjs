@@ -1,7 +1,9 @@
 // 打包：src/cli.ts（命令行）与 src/index.ts（给项目配置 import 的接口）→ dist/，压缩、共享模块拆成 chunk。
 // 依赖（@ai-hero/sandcastle）不打进来，安装时从 npm 装。运行时按 import.meta.url 找 ../prompts、../templates 等，
 // 所以 dist/ 必须是平铺的一层。
+// 类型声明（tsc）放 dist/types/：package.json 的 types 和目标项目 .sandcastle/tsconfig.json 的 paths 指向它。
 import { build } from "esbuild";
+import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
 
 rmSync("dist", { recursive: true, force: true });
@@ -19,3 +21,4 @@ await build({
   legalComments: "none",
   logLevel: "info",
 });
+execFileSync(process.execPath, ["node_modules/typescript/bin/tsc", "-p", "tsconfig.build.json"], { stdio: "inherit" });

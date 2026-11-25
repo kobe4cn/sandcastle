@@ -10,8 +10,12 @@
   "engines": {
     "node": ">=22.18"
   },
+  "types": "./dist/types/index.d.ts",
   "exports": {
-    ".": "./dist/index.js"
+    ".": {
+      "types": "./dist/types/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
   "bin": {
     "sandpipe": "./dist/cli.js"

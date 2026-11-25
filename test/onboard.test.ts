@@ -1,9 +1,9 @@
 // onboard：探测项目事实、生成配置与 PROJECT.md 草稿、登记 hook。生成的文件要能被流水线直接加载。
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { containerfileSource, installFiles, mergeGitignore, mergeSettings, onboardPrompt, updateClaudeFiles } from "../src/onboard.ts";
+import { containerfileSource, installFiles, mergeGitignore, mergeSettings, onboardPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { parseProjectDoc } from "../src/project-doc.ts";
 import { nodeRepo, pythonRepo } from "./fixtures.ts";
@@ -104,6 +104,26 @@ describe("updateClaudeFiles", () => {
     expect(readFileSync(skill, "utf8")).toBe(original);
     expect(updateClaudeFiles(root)).toEqual([]);
     expect(readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8")).toBe("人改过");
+  });
+});
+
+describe("编辑器类型", () => {
+  it("onboard 写 .sandcastle/tsconfig.json（paths 指向本工具的声明文件）并忽略它；老项目由 update 补上", () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    const tsconfigPath = join(root, ".sandcastle/tsconfig.json");
+    const tsconfig = JSON.parse(readFileSync(tsconfigPath, "utf8"));
+    expect(tsconfig.compilerOptions.paths).toEqual({ sandpipe: [TYPES_ENTRY] });
+    expect(tsconfig.compilerOptions.types).toBeUndefined();
+    const ignorePath = join(root, ".sandcastle/.gitignore");
+    expect(readFileSync(ignorePath, "utf8").split("\n")).toContain("tsconfig.json");
+
+    // 老项目：没有 tsconfig.json，.gitignore 是旧模板
+    rmSync(tsconfigPath);
+    writeFileSync(ignorePath, ".env\nlogs/\nworktrees/\n");
+    expect(updateClaudeFiles(root)).toEqual([".sandcastle/.gitignore", ".sandcastle/tsconfig.json"]);
+    expect(readFileSync(ignorePath, "utf8")).toMatch(/^\.env\nlogs\/\nworktrees\/\n\n# Sandcastle.*\ntsconfig\.json\n$/);
+    expect(updateClaudeFiles(root)).toEqual([]);
   });
 });
 

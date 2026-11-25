@@ -1,0 +1,15 @@
+{
+  "//": "只生成公开接口（src/index.ts）的类型声明，见 scripts/build.mjs。",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rewriteRelativeImportExtensions": true,
+    "outDir": "dist/types",
+    "rootDir": "src",
+    "paths": {}
+  },
+  "include": [],
+  "files": ["src/index.ts"]
+}
