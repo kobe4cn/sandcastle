@@ -1,11 +1,13 @@
 # 更新记录
 
-## 未发布
+## 0.1.2
 
 - 新增配置 `language: "zh" | "en"`（默认 `zh`）：issue、PR、评论用什么语言写。onboard 按提交历史判断并写进配置。
 - `sandpipe --help` 打印用法。
 - prep 提示词说明宿主机工作目录里有未提交改动和被忽略的文件，指引以基线分支为准；进度评论第一行写 `模型档案：<档案名>`。
 - 带类型声明（`dist/types/`，package.json 的 `types`）。onboard 和 update 生成 `.sandcastle/tsconfig.json`，用 paths 把 `sandpipe` 指到本机装的这份工具，不是 Node 的项目也不用装任何依赖，编辑器里有类型提示，也没有告警。这个文件含本机路径，所以加进了 `.sandcastle/.gitignore`（老项目跑 `sandpipe update` 补上）；doctor 会检查它是不是指向当前版本。
+- PROJECT.md 的章节标题中英文都认（`## Overview`、`## Commands`、`## Testing`、`## Commits`……），同一节只能写一次。
+- 门槛用时不到一分钟时按秒显示。
 
 ## 0.1.1
 

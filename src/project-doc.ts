@@ -31,6 +31,28 @@ export const SECTIONS = {
 } as const;
 export type SectionKey = keyof typeof SECTIONS;
 
+/** 英文项目用的同一组章节标题（language: en 时 onboard 按这套写）；两套都认，同一节只能写一次。 */
+export const SECTIONS_EN: Record<SectionKey, string> = {
+  overview: "Overview",
+  environment: "Environment",
+  commands: "Commands",
+  testing: "Testing",
+  standards: "Coding standards",
+  domain: "Domain and docs",
+  redLines: "Stop and ask",
+  conflicts: "Merge conflicts",
+  browser: "Browser check",
+  humanCheck: "Human check",
+  commit: "Commits",
+};
+
+const keyOfTitle = new Map<string, SectionKey>(
+  (Object.keys(SECTIONS) as SectionKey[]).flatMap((k) => [
+    [SECTIONS[k], k],
+    [SECTIONS_EN[k], k],
+  ]),
+);
+
 const REQUIRED: SectionKey[] = ["overview", "commands", "testing", "commit"];
 
 /** 可选章节没写时填进提示词的话。 */
@@ -52,22 +74,24 @@ export type ProjectDoc = Record<SectionKey, string> & { hasBrowser: boolean };
 
 /** 按 `## 标题` 切成章节；代码块里的 `## ` 不算标题。未知标题报错，防止写错字后整节静默丢失。 */
 export function parseProjectDoc(md: string, file = PROJECT_DOC): ProjectDoc {
-  const byTitle = new Map<string, string[]>();
+  const byKey = new Map<SectionKey, string[]>();
+  const unknown: string[] = [];
   let current: string[] | undefined;
   let fenced = false;
   for (const line of md.split("\n")) {
     if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
     const heading = !fenced && /^## (.+?)\s*$/.exec(line);
     if (heading) {
-      if (byTitle.has(heading[1])) throw new Error(`${file}：章节「${heading[1]}」写了两次`);
+      const key = keyOfTitle.get(heading[1]);
       current = [];
-      byTitle.set(heading[1], current);
+      if (!key) unknown.push(heading[1]);
+      else if (byKey.has(key)) throw new Error(`${file}：章节「${heading[1]}」写了两次（中英文标题算同一节）`);
+      else byKey.set(key, current);
     } else {
       current?.push(line);
     }
   }
-  const known = new Set<string>(Object.values(SECTIONS));
-  const unknown = [...byTitle.keys()].filter((t) => !known.has(t));
+  const known = [...keyOfTitle.keys()];
   if (unknown.length > 0) {
     throw new Error(
       `${file}：不认识的章节${unknown.map((t) => `「${t}」`).join("、")}；只能用 ${[...known].map((t) => `「${t}」`).join("、")}`,
@@ -77,7 +101,7 @@ export function parseProjectDoc(md: string, file = PROJECT_DOC): ProjectDoc {
   const missing: string[] = [];
   for (const [key, title] of Object.entries(SECTIONS) as [SectionKey, string][]) {
     // HTML 注释是模板里给人看的填写说明，不进提示词
-    const body = (byTitle.get(title) ?? [])
+    const body = (byKey.get(key) ?? [])
       .join("\n")
       .replace(/<!--[\s\S]*?-->/g, "")
       .trim();

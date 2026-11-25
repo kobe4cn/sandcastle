@@ -59,3 +59,17 @@ describe("language", () => {
     expect(english.review).toContain("`### How to verify`");
   });
 });
+
+describe("PROJECT.md 英文标题", () => {
+  const en = ["## Overview", "x", "## Commands", "`make`", "## Testing", "`make test`", "## Commits", "English"];
+  it("英文标题和中文标题解析成同一组章节", () => {
+    const doc = parseProjectDoc([...en, "## Browser check", "open it"].join("\n"));
+    expect(doc.overview).toBe("x");
+    expect(doc.commit).toBe("English");
+    expect(doc.hasBrowser).toBe(true);
+  });
+  it("同一节用中英文各写一次算重复；不认识的标题报错", () => {
+    expect(() => parseProjectDoc([...en, "## 概况", "y"].join("\n"))).toThrow(/写了两次/);
+    expect(() => parseProjectDoc([...en, "## Overveiw", "y"].join("\n"))).toThrow(/不认识的章节「Overveiw」/);
+  });
+});
