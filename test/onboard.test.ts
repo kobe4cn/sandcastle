@@ -30,7 +30,8 @@ describe("detectProject", () => {
       name: "shop",
       language: "node",
       packageManager: "pnpm",
-      install: "npx -y pnpm@10.4.1 install --frozen-lockfile",
+      packageManagerSpec: "pnpm@10.4.1",
+      install: "pnpm install --frozen-lockfile",
       commands: { typecheck: "pnpm typecheck", lint: "pnpm lint", test: "pnpm test", testFile: "npx vitest run <file>" },
       forge: { kind: "github", path: "acme/shop" },
       baseBranch: "main",
@@ -152,11 +153,16 @@ describe("mergeGitignore", () => {
 describe("containerfileSource", () => {
   it("没有网页界面去掉浏览器那段；python 加工具链", () => {
     const base = detectProject(nodeRepo());
-    expect(containerfileSource(containerTemplate, base)).toContain("playwright");
-    const py = containerfileSource(containerTemplate, { ...base, webUi: false, language: "python" });
+    const node = containerfileSource(containerTemplate, base);
+    expect(node).toContain("playwright");
+    // pnpm 装进镜像，而且在切到 agent 用户之前（全局装要 root）
+    expect(node.indexOf("RUN npm install -g pnpm@10.4.1")).toBeGreaterThan(-1);
+    expect(node.indexOf("RUN npm install -g pnpm@10.4.1")).toBeLessThan(node.indexOf("USER "));
+    const py = containerfileSource(containerTemplate, { ...base, webUi: false, language: "python", packageManagerSpec: undefined });
     expect(py).not.toContain("playwright");
     expect(py).toContain("python3-venv");
     expect(py).toContain("ENTRYPOINT");
+    expect(py).not.toContain("pnpm");
   });
 });
 

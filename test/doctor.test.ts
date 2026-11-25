@@ -57,6 +57,7 @@ describe("diagnose", () => {
     expect(levels(first)).toEqual({
       仓库: "ok",
       配置: "ok",
+      宿主机依赖: "ok",
       "PROJECT.md": "warn",
       "models.json": "ok",
       ".env": "fail",

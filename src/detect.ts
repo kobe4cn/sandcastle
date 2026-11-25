@@ -16,6 +16,8 @@ export interface ProjectFacts {
   language: Language;
   /** node 的包管理器；其他语言为空 / node's package manager; empty for other languages */
   packageManager?: "pnpm" | "yarn" | "npm" | "bun";
+  /** 镜像里要全局装的包管理器（pnpm@10.4.1）；npm、yarn（node 镜像自带，berry 走 yarnPath）与 bun 不用 / Package manager to install globally in the image (pnpm@10.4.1); not needed for npm, yarn (bundled in the node image, berry goes through yarnPath) or bun */
+  packageManagerSpec?: string;
   /** 沙箱里装依赖的命令 / Command that installs dependencies in the sandbox */
   install: string;
   /** 从宿主机拷进 worktree 的目录（省掉从头安装） / Directories copied from the host into the worktree (saves a full install) */
@@ -115,21 +117,22 @@ function nodeFacts(root: string, pkg: Record<string, any>) {
   const test = pick("test", "test:unit");
   const fmt = pick("format", "fmt");
   const runner = deps.vitest ? "vitest" : deps.jest ? "jest" : deps.mocha ? "mocha" : undefined;
-  // 宿主机（macOS）的 node_modules 缺 linux 原生包，沙箱里按锁文件重装；pnpm 用 package.json 里的版本
-  // The host's (macOS) node_modules lacks linux native packages, so the sandbox reinstalls from the lockfile; pnpm uses the version in package.json
+  // 宿主机（macOS）的 node_modules 缺 linux 原生包，沙箱里按锁文件重装。pnpm 由镜像全局装好 package.json 里的版本，yarn 是 node 镜像自带的，
+  // 门槛和 agent 也直接用 pnpm / yarn 命令。
+  // The host's (macOS) node_modules lacks linux native packages, so the sandbox reinstalls from the lockfile. The image installs pnpm globally at the version in package.json and yarn comes with the node image,
+  // so the gate and the agent call pnpm / yarn directly too.
   const pmVersion = pmField.includes("@") ? pmField.split("+")[0] : pm;
   const install =
-    pm === "pnpm"
-      ? `npx -y ${pmVersion} install --frozen-lockfile`
-      : pm === "yarn"
-        ? `npx -y ${pmVersion} install --frozen-lockfile`
-        : pm === "bun"
+    pm === "pnpm" || pm === "yarn"
+      ? `${pm} install --frozen-lockfile`
+      : pm === "bun"
           ? "bun install --frozen-lockfile"
           : existsSync(join(root, "package-lock.json"))
             ? "npm ci"
             : "npm install";
   return {
     packageManager: pm,
+    packageManagerSpec: pm === "pnpm" ? pmVersion : undefined,
     install,
     copyToWorktree: ["node_modules"],
     commands: {
@@ -247,7 +250,7 @@ export function detectProject(root = process.cwd()): ProjectFacts {
           : "other";
   const pkg = pkgText ? JSON.parse(pkgText) : {};
   const lang =
-    language === "node" ? nodeFacts(root, pkg) : { ...otherLanguageFacts(root, language), webUi: false, packageManager: undefined };
+    language === "node" ? nodeFacts(root, pkg) : { ...otherLanguageFacts(root, language), webUi: false, packageManager: undefined, packageManagerSpec: undefined };
 
   const git = (args: string[]) => trySh("git", ["-C", root, ...args]);
   const remote = git(["remote"]).out.split("\n").includes("origin") ? "origin" : git(["remote"]).out.split("\n")[0] || "origin";
@@ -276,6 +279,7 @@ export function detectProject(root = process.cwd()): ProjectFacts {
     name: pkg.name ?? root.split("/").filter(Boolean).pop() ?? "project",
     language,
     packageManager: lang.packageManager,
+    packageManagerSpec: lang.packageManagerSpec,
     install: lang.install,
     copyToWorktree: lang.copyToWorktree,
     commands: lang.commands,

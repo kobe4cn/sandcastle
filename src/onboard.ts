@@ -226,6 +226,10 @@ export function containerfileSource(template: string, f: ProjectFacts): string {
     go: 'RUN curl -fsSL https://go.dev/dl/go1.24.0.linux-$(dpkg --print-architecture).tar.gz | tar -C /usr/local -xz\nENV PATH="/usr/local/go/bin:$PATH"\n\n',
     rust: "RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*\n\n",
   };
+  // pnpm 不在 node 镜像里：以 root 全局装上 package.json 声明的版本，安装命令、门槛和 agent 都直接用。
+  // pnpm isn't in the node image: install the version declared in package.json globally as root, so the install command, the gate and the agent can use it directly.
+  if (f.packageManagerSpec)
+    out = out.replace(/^# 对齐 UID\/GID/m, (m) => `# 包管理器\n# Package manager\nRUN npm install -g ${f.packageManagerSpec}\n\n${m}`);
   const extra = toolchain[f.language];
   if (extra) out = out.replace(/^# 对齐 UID\/GID/m, (m) => `# ${f.language} 工具链\n# ${f.language} toolchain\n${extra}${m}`);
   if (f.forge.kind === "gitlab")

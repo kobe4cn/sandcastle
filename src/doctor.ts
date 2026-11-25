@@ -92,6 +92,22 @@ export async function diagnose(opts: {
   // ---- 配置 ---- / Config
   if (project) add(t("配置", "Config"), "ok", rel(join(dir, "sandcastle.config.ts")));
   else add(t("配置", "Config"), "fail", errText(configError), t("没有配置先跑 sandpipe onboard", "No config yet: run sandpipe onboard first"));
+
+  // ---- 宿主机依赖 ---- / Host dependencies
+  // copyToWorktree 从宿主机拷，cleanup 也在宿主机跑：刚 clone 的仓库没装依赖，沙箱拿不到 node_modules，回收脚本也起不来。
+  // copyToWorktree copies from the host and cleanup runs on the host: a fresh clone without dependencies gives the sandbox no node_modules and the cleanup script can't start.
+  if (project?.install.copyToWorktree?.length) {
+    const paths = project.install.copyToWorktree;
+    const missing = paths.filter((p) => !existsSync(join(cwd, p)));
+    if (missing.length)
+      add(
+        t("宿主机依赖", "Host dependencies"),
+        "warn",
+        t(`copyToWorktree 里的 ${missing.join("、")} 在宿主机上不存在`, `${missing.join(", ")} from copyToWorktree don't exist on the host`),
+        t("先在宿主机装一次依赖（比如 pnpm install）", "Install dependencies on the host first (e.g. pnpm install)"),
+      );
+    else add(t("宿主机依赖", "Host dependencies"), "ok", paths.join(t("、", ", ")));
+  }
   const forge = opts.forge ?? project?.forge;
 
   // ---- PROJECT.md 与提示词 ---- / PROJECT.md and prompts
