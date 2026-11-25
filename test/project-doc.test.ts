@@ -100,6 +100,7 @@ describe("用 duckdb_crm 的 PROJECT.md 渲染", () => {
     expect(out.prep).toContain("docs/adr/README.md");
     expect(out.prep).toContain('gh issue edit <n> --add-label "<label>"');
     expect(out.prep).toContain("`sandcastle:prepped`");
+    expect(out.prep).toContain("/fill-project-docs");
   });
 });
 
