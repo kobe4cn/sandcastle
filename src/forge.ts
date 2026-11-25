@@ -41,6 +41,8 @@ export interface Forge {
   // ---- doctor ----
   /** 宿主机的 CLI 已登录、能访问当前仓库；返回一行说明（账号、仓库），不行就抛错，错误里写怎么修。 */
   checkAccess(): string;
+  /** 沙箱里 agent 用的 token 能访问当前仓库的 issue 和 PR；返回一行说明，不行就抛错，错误里写缺什么权限。 */
+  checkAgentToken(token: string): string;
   /** 仓库里已有的全部标签名。 */
   listLabels(): string[];
 

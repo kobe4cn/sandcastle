@@ -25,10 +25,16 @@ const runner =
     return trySh(cmd, args);
   };
 
-function fakeGh(labels: string[], created: string[][]) {
-  return githubForge((args) => {
+/** tokenOk=false 时用 .env 的 token 调 gh api 返回 403（模拟 token 没给 Pull requests 权限）。 */
+function fakeGh(labels: string[], created: string[][], tokenOk = true) {
+  return githubForge((args, env) => {
     if (args[0] === "auth") return "";
-    if (args[0] === "repo") return "acme/shop WRITE";
+    if (args[0] === "repo") return args.includes(".nameWithOwner") ? "acme/shop" : "acme/shop WRITE";
+    if (args[0] === "api") {
+      if (env?.GH_TOKEN !== "x" && env?.GH_TOKEN !== "y") throw new Error(`没用 .env 的 token：${env?.GH_TOKEN}`);
+      if (!tokenOk && args[1]!.includes("/pulls")) throw Object.assign(new Error("gh"), { stderr: "HTTP 403: Resource not accessible by personal access token" });
+      return "";
+    }
     if (args[0] === "label" && args[1] === "list") return labels.join("\n");
     if (args[0] === "label" && args[1] === "create") {
       created.push(args);
@@ -116,6 +122,12 @@ describe("diagnose 的出错分支", () => {
     const root = readyRepo();
     const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
     expect(checks.filter((c) => c.level !== "ok")).toEqual([]);
+  });
+
+  it(".env 的 GH_TOKEN 读不了 PR：不通过，说明缺什么权限", async () => {
+    const root = readyRepo();
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, [], false) });
+    expect(check(checks, "GH_TOKEN")).toMatchObject({ level: "fail", detail: expect.stringMatching(/PR.*403.*Pull requests/) });
   });
 
   it("在子目录运行、没有配置：仓库和配置都不通过", async () => {

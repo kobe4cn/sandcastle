@@ -107,6 +107,7 @@ export async function diagnose(opts: {
   }
 
   // ---- .env ----
+  let agentToken: string | undefined;
   const envPath = join(cwd, ENV_FILE);
   if (!existsSync(envPath)) {
     add(".env", "fail", `没有 ${ENV_FILE}`, `cp ${ENV_FILE}.example ${ENV_FILE}，填 token`);
@@ -127,6 +128,7 @@ export async function diagnose(opts: {
         "Claude 订阅的 token 用 claude setup-token 生成",
       );
     else add(".env", "ok", "token 齐全，已被 git 忽略");
+    agentToken = forge ? vars[forge.tokenEnv] || env[forge.tokenEnv] : undefined;
   }
 
   // ---- 平台与标签 ----
@@ -137,6 +139,13 @@ export async function diagnose(opts: {
       reachable = true;
     } catch (e) {
       add(`平台（${forge.name}）`, "fail", errText(e));
+    }
+    if (reachable && agentToken) {
+      try {
+        add(`${forge.tokenEnv}`, "ok", forge.checkAgentToken(agentToken));
+      } catch (e) {
+        add(`${forge.tokenEnv}`, "fail", errText(e), `重新生成 token，填进 ${ENV_FILE}`);
+      }
     }
     if (reachable) {
       try {

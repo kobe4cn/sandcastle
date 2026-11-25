@@ -5,8 +5,8 @@ import { basename } from "node:path";
 import type { Forge, ForgePr, ForgeIssue, MergeMethod } from "../forge.ts";
 import { sh } from "../shell.ts";
 
-/** 跑一次 gh，返回 trim 过的 stdout；失败抛错。测试里换成记录 argv 的假实现。 */
-export type GhRunner = (args: string[]) => string;
+/** 跑一次 gh，返回 trim 过的 stdout；失败抛错。env 给了就整个替换环境变量。测试里换成记录 argv 的假实现。 */
+export type GhRunner = (args: string[], env?: NodeJS.ProcessEnv) => string;
 
 type GhPr = {
   number: number;
@@ -44,7 +44,7 @@ const GITHUB_AGENT_GUIDE = `平台是 GitHub，用已登录的 \`gh\`。issue �
 
 const lines = (out: string) => out.split("\n").filter(Boolean);
 
-export function githubForge(gh: GhRunner = (args) => sh("gh", args)): Forge {
+export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefined, env)): Forge {
   return {
     name: "github",
     tokenEnv: "GH_TOKEN",
@@ -61,6 +61,24 @@ export function githubForge(gh: GhRunner = (args) => sh("gh", args)): Forge {
         throw new Error(`对 ${name} 只有 ${permission} 权限：流水线要推分支、改标签、合并 PR，至少要 WRITE`);
       }
       return `gh 已登录，仓库 ${name}（${permission}）`;
+    },
+    checkAgentToken(token) {
+      // 沙箱里的 agent 只用这个 token：读写 issue、读 PR 与评论。只读探一下，不留痕迹。
+      // 去掉宿主机的 GITHUB_TOKEN，免得 gh 用了它而不是要验证的这个。
+      const { GITHUB_TOKEN: _, ...rest } = process.env;
+      const env = { ...rest, GH_TOKEN: token };
+      const repo = gh(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]);
+      const probe = (what: string, path: string) => {
+        try {
+          gh(["api", `repos/${repo}/${path}?per_page=1`, "--silent"], env);
+        } catch (e) {
+          const msg = String((e as { stderr?: unknown }).stderr || (e as Error).message).split("\n").find(Boolean) ?? "";
+          throw new Error(`GH_TOKEN 读不了 ${repo} 的 ${what}（${msg.trim()}）：fine-grained token 要给这个仓库 Issues 读写、Pull requests 只读`);
+        }
+      };
+      probe("issue", "issues");
+      probe("PR", "pulls");
+      return `GH_TOKEN 能读 ${repo} 的 issue 和 PR（写权限要等实际改标签时才知道）`;
     },
     listLabels: () => lines(gh(["label", "list", "--limit", "1000", "--json", "name", "-q", ".[].name"])),
 
