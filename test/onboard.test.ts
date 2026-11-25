@@ -46,6 +46,42 @@ describe("detectProject", () => {
     expect(f.docs).toContain("CLAUDE.md");
   });
 
+  it("扫 env 文件里指向本机的变量：多个库、各种中间件都算，数据库类的要加后缀，其他变量不碰", () => {
+    const root = nodeRepo();
+    writeFileSync(
+      join(root, ".env.example"),
+      [
+        "DATABASE_URL=postgres://u:p@localhost:5432/app",
+        "ANALYTICS_DATABASE_URL=postgresql+asyncpg://u:p@127.0.0.1:5433/analytics",
+        "MONGO_URL=mongodb://localhost:27017/crm",
+        "REDIS_URL=redis://localhost:6379/0",
+        "KAFKA_BROKERS=localhost:9092",
+        "S3_ENDPOINT=http://localhost:9000",
+        "REPORT_DB_HOST=localhost",
+        "REPORT_DB_NAME=report",
+        "REDIS_DB=0",
+        "STRIPE_KEY=sk_test",
+        "",
+      ].join("\n"),
+    );
+    writeFileSync(join(root, ".env"), "DATABASE_URL=postgres://u:p@localhost:5432/app\nES_URL=http://localhost:9200\n");
+    const f = detectProject(root);
+    const byKey = (a: { key: string }, b: { key: string }) => a.key.localeCompare(b.key);
+    expect([...f.serviceEnv].sort(byKey)).toEqual([
+      { key: "DATABASE_URL", perTicketDb: true },
+      { key: "ANALYTICS_DATABASE_URL", perTicketDb: true },
+      { key: "MONGO_URL", perTicketDb: true },
+      { key: "REDIS_URL", perTicketDb: false },
+      { key: "KAFKA_BROKERS", perTicketDb: false },
+      { key: "S3_ENDPOINT", perTicketDb: false },
+      { key: "REPORT_DB_HOST", perTicketDb: false },
+      { key: "REPORT_DB_NAME", perTicketDb: true },
+      { key: "ES_URL", perTicketDb: false },
+    ].sort(byKey));
+    expect(f.serviceEnvFrom).toEqual([".env.example", ".env"]);
+    expect(detectProject(nodeRepo())).toMatchObject({ serviceEnv: [], serviceEnvFrom: [] });
+  });
+
   it("有 GLOSSARY.md 的仓库，文档列表里有它", () => {
     const root = nodeRepo();
     writeFileSync(join(root, "GLOSSARY.md"), "# 术语表\n");
@@ -127,13 +163,42 @@ describe("configSource", () => {
     );
   });
 
-  it("有服务：按服务猜键名、去重（postgres 和 mysql 都是 DATABASE_URL），只给要分库的加后缀", () => {
+  it("env 文件里没扫到：按服务猜键名，惯例键名撞了改用 <服务>_URL，不丢服务；只给数据库加后缀", () => {
     const src = configSource({ ...detectProject(nodeRepo()), services: ["postgres", "mysql", "redis"] }, "sandpipe");
     expect(src).toContain('import { defineProject, readHostEnv, toContainerHost, withDbSuffix } from "sandpipe";');
-    expect(src.match(/env\.DATABASE_URL = /g)).toHaveLength(1);
     expect(src).toContain("if (host.DATABASE_URL) env.DATABASE_URL = withDbSuffix(toContainerHost(host.DATABASE_URL), suffix);");
+    expect(src).toContain("if (host.MYSQL_URL) env.MYSQL_URL = withDbSuffix(toContainerHost(host.MYSQL_URL), suffix);");
     expect(src).toContain("if (host.REDIS_URL) env.REDIS_URL = toContainerHost(host.REDIS_URL);");
     expect(src).toContain("runHostScript");
+  });
+
+  it("env 文件里有多个库和中间件：生成的配置逐个换主机，数据库各自加 _i<runId>", async () => {
+    const root = nodeRepo();
+    writeFileSync(
+      join(root, ".env.example"),
+      "DATABASE_URL=postgres://u:p@localhost:5432/app\nANALYTICS_DB_URL=mysql://u:p@localhost:3306/stats\nKAFKA_BROKERS=localhost:9092\nSTRIPE_KEY=x\n",
+    );
+    const f = detectProject(root);
+    const src = configSource(f, "sandpipe");
+    expect(src).toContain(".env.example");
+    expect(src).not.toContain("REDIS_URL");
+    installFiles(root, f);
+    const project = await loadProject(join(root, ".sandcastle"));
+    writeFileSync(
+      join(root, ".env"),
+      "DATABASE_URL=postgres://u:p@localhost:5432/app\nANALYTICS_DB_URL=mysql://u:p@127.0.0.1:3306/stats\nKAFKA_BROKERS=localhost:9092\nSTRIPE_KEY=x\n",
+    );
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(root);
+    try {
+      expect(project.isolation.env("7")).toEqual({
+        SANDCASTLE_RUN_ID: "7",
+        DATABASE_URL: "postgres://u:p@host.containers.internal:5432/app_i7",
+        ANALYTICS_DB_URL: "mysql://u:p@host.containers.internal:3306/stats_i7",
+        KAFKA_BROKERS: "host.containers.internal:9092",
+      });
+    } finally {
+      cwd.mockRestore();
+    }
   });
 });
 

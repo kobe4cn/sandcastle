@@ -24,7 +24,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { askChoice, type ClaudeResolution, type Decide, resolveClaudeFile } from "./claude-conflict.ts";
-import { detectProject, type ProjectFacts } from "./detect.ts";
+import { detectProject, type ProjectFacts, type ServiceEnvKey } from "./detect.ts";
 import type { Language } from "./i18n.ts";
 import { DEFAULT_LABELS } from "./profile.ts";
 import { OPEN_QUESTIONS, readOpenQuestions, unknownSectionTargets } from "./open-questions.ts";
@@ -49,10 +49,10 @@ const note = (indent: string, zh: string, en: string) => [`${indent}// ${zh}`, `
 export const manual = (name: "config" | "onboarding-checklist", lang: Language) => `docs/${name}${lang === "en" ? "" : ".zh-CN"}.md`;
 
 /**
- * 探测到的服务 → 宿主机 .env 里按惯例的键名；perTicketDb 表示要加库名后缀（每张票独立的库），否则只换主机。
- * Detected service → conventional key in the host's .env; perTicketDb means add a database-name suffix (one database per ticket), otherwise only swap the host.
+ * env 文件里没扫到时的兜底：探测到的服务 → 按惯例的键名；perTicketDb 表示要加库名后缀（每张票独立的库），否则只换主机。
+ * Fallback when the env files yield nothing: detected service → conventional key; perTicketDb means add a database-name suffix (one database per ticket), otherwise only swap the host.
  */
-const SERVICE_ENV_KEYS: Record<string, { key: string; perTicketDb: boolean }> = {
+const SERVICE_ENV_KEYS: Record<string, ServiceEnvKey> = {
   postgres: { key: "DATABASE_URL", perTicketDb: true },
   mysql: { key: "DATABASE_URL", perTicketDb: true },
   mongodb: { key: "MONGODB_URI", perTicketDb: true },
@@ -64,9 +64,19 @@ const SERVICE_ENV_KEYS: Record<string, { key: string; perTicketDb: boolean }> = 
   clickhouse: { key: "CLICKHOUSE_URL", perTicketDb: false },
 };
 
-/** 按服务顺序取键名，同名只留第一个。 / Keys in service order, keeping the first of each name. */
-const serviceEnvKeys = (services: string[]) =>
-  services.flatMap((s) => SERVICE_ENV_KEYS[s] ?? []).filter((k, i, all) => all.findIndex((x) => x.key === k.key) === i);
+/**
+ * 按服务顺序猜键名；惯例键名已被前面的服务占用时（postgres 和 mysql 都是 DATABASE_URL）改用 <服务>_URL，不丢服务。
+ * Guess keys in service order; when the conventional key is already taken (postgres and mysql both use DATABASE_URL), use <SERVICE>_URL so no service is dropped.
+ */
+const guessServiceEnv = (services: string[]) =>
+  services.reduce<ServiceEnvKey[]>((keys, s) => {
+    const k = SERVICE_ENV_KEYS[s];
+    if (!k) return keys;
+    return [...keys, keys.some((x) => x.key === k.key) ? { ...k, key: `${s.toUpperCase()}_URL` } : k];
+  }, []);
+
+/** 生成代码里取 env 的属性：合法标识符用点，否则用方括号。 / Property access in generated code: dot for valid identifiers, brackets otherwise. */
+const prop = (obj: string, key: string) => (/^[A-Za-z_$][\w$]*$/.test(key) ? `${obj}.${key}` : `${obj}[${q(key)}]`);
 
 export function configSource(f: ProjectFacts, importFrom: string, lang: Language = f.commitLanguage): string {
   const gateSteps = [f.commands.typecheck, f.commands.lint, f.commands.test].filter(Boolean) as string[];
@@ -75,29 +85,36 @@ export function configSource(f: ProjectFacts, importFrom: string, lang: Language
     f.forge.kind === "gitlab"
       ? note("  ", "forge: gitlabForge(),  远端是 GitLab：GitLab Forge 还没做，接入前先别跑", "forge: gitlabForge(),  the remote is GitLab: the GitLab forge isn't done yet, don't run it")
       : note("  ", "forge: githubForge(),  默认 GitHub（宿主机的 gh）", "forge: githubForge(),  GitHub by default (the host's gh)");
-  const keys = serviceEnvKeys(f.services);
+  const scanned = f.serviceEnv.length > 0;
+  const keys = scanned ? f.serviceEnv : guessServiceEnv(f.services);
+  const listed = keys.map((k) => k.key);
   const isolation = keys.length
     ? [
         "  isolation: {",
+        ...(scanned
+          ? note(
+              "    ",
+              `从 ${f.serviceEnvFrom.join("、")} 里找到指向本机服务的变量：${listed.join("、")}。少了的照着加一行，不该进沙箱的删掉。`,
+              `Variables pointing at local services found in ${f.serviceEnvFrom.join(", ")}: ${listed.join(", ")}. Add a line for any that are missing; delete any that shouldn't reach the sandbox.`,
+            )
+          : note(
+              "    ",
+              `探测到 docker compose 里的服务：${f.services.join("、")}，env 文件里没找到连接串，下面的键名是按惯例猜的，改成项目实际用的（看代码里读的变量），有几个库、几个中间件就写几行。`,
+              `Services found in docker compose: ${f.services.join(", ")}. No connection strings were found in env files, so the key names below are guesses by convention; change them to what the project actually uses (see the variables the code reads), one line per database or middleware.`,
+            )),
         ...note(
           "    ",
-          `探测到 docker compose 里的服务：${f.services.join("、")}。每次运行从项目根的 .env 读连接串，localhost 换成 host.containers.internal（沙箱经它访问宿主机），要分库的加 _i<runId> 后缀，并行的沙箱才不会互相清表。`,
-          `Services found in docker compose: ${f.services.join(", ")}. Each run reads the connection strings from the project root's .env, swaps localhost for host.containers.internal (how the sandbox reaches the host) and adds an _i<runId> suffix where a database is shared, so parallel sandboxes don't wipe each other's tables.`,
-        ),
-        ...note(
-          "    ",
-          "下面的键名是按惯例猜的，改成项目实际用的（看 .env.example 和代码里读的变量）；URL 没写库名时 withDbSuffix 会报错，宁可停下也不让测试打到开发库。",
-          "The key names below are guesses by convention; change them to what the project actually uses (see .env.example and the variables the code reads). withDbSuffix throws when a URL has no database name, so tests stop rather than hit the dev database.",
+          "每次运行从项目根的 .env 读这些变量，localhost 换成 host.containers.internal（沙箱经它访问宿主机），数据库各自加 _i<runId> 后缀，并行的沙箱才不会互相清表；URL 没写库名时 withDbSuffix 会报错，宁可停下也不让测试打到开发库。",
+          "Each run reads these from the project root's .env, swaps localhost for host.containers.internal (how the sandbox reaches the host) and adds an _i<runId> suffix to each database so parallel sandboxes don't wipe each other's tables. withDbSuffix throws when a URL has no database name, so tests stop rather than hit the dev database.",
         ),
         "    env: (runId) => {",
         '      const host = readHostEnv(".env");',
         "      const suffix = `_i${runId}`;",
         "      const env: Record<string, string> = { SANDCASTLE_RUN_ID: runId };",
-        ...keys.map(({ key, perTicketDb }) =>
-          perTicketDb
-            ? `      if (host.${key}) env.${key} = withDbSuffix(toContainerHost(host.${key}), suffix);`
-            : `      if (host.${key}) env.${key} = toContainerHost(host.${key});`,
-        ),
+        ...keys.map(({ key, perTicketDb }) => {
+          const [h, e] = [prop("host", key), prop("env", key)];
+          return perTicketDb ? `      if (${h}) ${e} = withDbSuffix(toContainerHost(${h}), suffix);` : `      if (${h}) ${e} = toContainerHost(${h});`;
+        }),
         "      return env;",
         "    },",
         ...note(

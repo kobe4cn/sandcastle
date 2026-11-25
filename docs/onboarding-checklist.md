@@ -12,7 +12,7 @@ Run every command in the target project's root; if the config lives elsewhere, f
 - [ ] A human reads `sandcastle.config.ts`:
   - `install.onSandboxReady` installs dependencies in a linux container
   - `isolation.env` gives each ticket its own database name or prefix (so parallel tickets don't wipe each other's tables); set `cleanup` when there are external services
-    - When compose services were detected, onboard already generated a draft: it reads connection strings from the project root's `.env`, swaps the host and adds `_i<runId>` to databases; its key names (`DATABASE_URL`, `REDIS_URL`…) are conventional guesses, change them to what the project actually uses
+    - onboard already generated a draft from the variables in `.env.example` / `.env` that point at local services (guessing key names from compose services when there are none): at run time it reads them from the project root's `.env`, swaps the host and adds `_i<runId>` to each database; check for missing databases or middleware and for anything that shouldn't reach the sandbox
     - When the config reads `.env` / `.env.test` from the project root, list them in `isolation.hostEnvFiles` and make sure they exist on the host (they're usually gitignored, so a fresh clone lacks them; `sandpipe doctor` warns)
   - `gate.script` is a gate you're willing to merge on; consider `integrity` if there are migrations
   - Keep the `autoMerge: false` and `maxParallel: 1` that onboard generated

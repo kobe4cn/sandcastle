@@ -5,6 +5,7 @@
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { parseEnv } from "node:util";
 import { trySh } from "./shell.ts";
 
 export type Language = "node" | "python" | "go" | "rust" | "other";
@@ -37,6 +38,13 @@ export interface ProjectFacts {
   migrations?: { dir: string; tool: string };
   /** docker compose 里的服务镜像（postgres、redis……） / Service images in docker compose (postgres, redis…) */
   services: string[];
+  /**
+   * env 文件里指向本机服务的变量（值里有 localhost / 127.0.0.1，或是 *_DB_NAME 这类库名变量），perTicketDb 表示要加库名后缀
+   * Variables in env files that point at local services (value contains localhost / 127.0.0.1, or a db-name variable like *_DB_NAME); perTicketDb means add a db-name suffix
+   */
+  serviceEnv: ServiceEnvKey[];
+  /** serviceEnv 是从哪些 env 文件扫出来的 / Which env files serviceEnv was scanned from */
+  serviceEnvFrom: string[];
   /** 有网页界面（按依赖判断），可能需要浏览器验收 / Has a web UI (judged by dependencies), may need a browser check */
   webUi: boolean;
   /** 最近几条提交的标题，用来判断提交信息的语言与风格 / Subjects of the last few commits, used to judge commit message language and style */
@@ -238,6 +246,52 @@ function composeServices(root: string): string[] {
   return [...new Set(images.flatMap((img) => SERVICE_IMAGES.filter(([re]) => re.test(img.toLowerCase())).map(([, name]) => name)))];
 }
 
+export type ServiceEnvKey = { key: string; perTicketDb: boolean };
+
+/**
+ * 要扫的 env 文件：只扫 .env 和它的示例，因为生成的配置运行时只读 .env。
+ * Env files to scan: only .env and its examples, since the generated config reads only .env at run time.
+ */
+const ENV_FILES = [".env.example", ".env.sample", ".env.template", ".env"];
+/** 这些 scheme 的 URL 带库名，每张票要独立的库（scheme 里 + 后面的驱动名不算）。 / URLs with these schemes carry a db name that must differ per ticket (a +driver part of the scheme is ignored). */
+const DB_SCHEMES = new Set(["postgres", "postgresql", "mysql", "mariadb", "mongodb", "mssql", "sqlserver", "cockroachdb"]);
+const LOCAL_HOST = /\b(localhost|127\.0\.0\.1)\b/;
+/** 库名单独一个变量（DB_NAME、REPORT_DATABASE……）。 / The db name in its own variable (DB_NAME, REPORT_DATABASE…). */
+const DB_NAME_KEY = /(^|_)(DB|DATABASE|DB_NAME|DBNAME|DATABASE_NAME)$/;
+
+/**
+ * 判断一个 env 变量是否指向本机服务、要不要按票加库名后缀；不相关的返回 undefined。
+ * Decides whether an env variable points at a local service and whether it needs a per-ticket db suffix; returns undefined for unrelated ones.
+ */
+export function classifyEnvEntry(key: string, value: string): ServiceEnvKey | undefined {
+  const scheme = /^([a-z][\w.+-]*):\/\//i.exec(value)?.[1].toLowerCase().split("+")[0];
+  if (LOCAL_HOST.test(value)) return { key, perTicketDb: scheme !== undefined && DB_SCHEMES.has(scheme) };
+  if (DB_NAME_KEY.test(key) && value !== "" && !/^\d+$/.test(value) && scheme === undefined) return { key, perTicketDb: true };
+  return undefined;
+}
+
+/**
+ * 扫根目录的 env 文件，找出指向本机服务的变量（同名只留第一次）。
+ * Scans the root's env files for variables pointing at local services (keeping the first of each name).
+ */
+function scanServiceEnv(root: string): { serviceEnv: ServiceEnvKey[]; serviceEnvFrom: string[] } {
+  const serviceEnv: ServiceEnvKey[] = [];
+  const serviceEnvFrom: string[] = [];
+  for (const file of ENV_FILES) {
+    const text = read(root, file);
+    if (text === undefined) continue;
+    let found = false;
+    for (const [key, value] of Object.entries(parseEnv(text))) {
+      const entry = value === undefined ? undefined : classifyEnvEntry(key, value);
+      if (!entry) continue;
+      found = true;
+      if (!serviceEnv.some((e) => e.key === key)) serviceEnv.push(entry);
+    }
+    if (found) serviceEnvFrom.push(file);
+  }
+  return { serviceEnv, serviceEnvFrom };
+}
+
 export function detectProject(root = process.cwd()): ProjectFacts {
   const pkgText = read(root, "package.json");
   const language: Language = pkgText
@@ -293,6 +347,7 @@ export function detectProject(root = process.cwd()): ProjectFacts {
     topDirs,
     migrations,
     services: composeServices(root),
+    ...scanServiceEnv(root),
     webUi: lang.webUi,
     recentCommits,
     commitLanguage: cjk * 2 >= recentCommits.length && cjk > 0 ? "zh" : "en",
