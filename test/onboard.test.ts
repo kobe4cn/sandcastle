@@ -2,7 +2,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
 import { agentWritable, configSource, containerfileSource, hasGlobalSkill, installFiles, installGlobalSkill, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
@@ -95,8 +95,55 @@ describe("installFiles", () => {
   });
 });
 
+const overwrite = async () => "overwrite" as const;
+
 describe("updateClaudeFiles", () => {
-  it("onboard 装上 prep-ticket skill；update 只覆盖改过的，再跑没有改动；不碰 .sandcastle/", () => {
+  it("改过的 CLAUDE_FILES 按选择处理：选另存时不算改动、留下 .new；tsconfig 照旧直接刷新", async () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    const skill = join(root, ".claude/skills/prep-ticket/SKILL.md");
+    const original = readFileSync(skill, "utf8");
+    writeFileSync(skill, "旧版");
+    rmSync(join(root, ".sandcastle/tsconfig.json"));
+    const asked: string[] = [];
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(
+      await updateClaudeFiles(root, async (file) => {
+        asked.push(file);
+        return "new";
+      }),
+    ).toEqual([".sandcastle/tsconfig.json"]);
+    expect(warn.mock.calls.flat().join("\n")).toContain(".claude/skills/prep-ticket/SKILL.md.new");
+    warn.mockRestore();
+    expect(asked).toEqual([".claude/skills/prep-ticket/SKILL.md"]);
+    expect(readFileSync(skill, "utf8")).toBe("旧版");
+    expect(readFileSync(`${skill}.new`, "utf8")).toBe(original);
+  });
+
+  it("onboard 遇到已存在且不同的 CLAUDE_FILES 会询问；相同的不问；.sandcastle/ 下的照旧跳过", async () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    const agent = join(root, ".claude/agents/screenshot-checker.md");
+    writeFileSync(agent, "旧版");
+    writeFileSync(join(root, ".sandcastle/PROJECT.md"), "人改过");
+    const asked: string[] = [];
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await onboard(["--no-agent"], root, async (file) => {
+      asked.push(file);
+      return "keep";
+    });
+    const out = log.mock.calls.flat().join("\n");
+    log.mockRestore();
+    warn.mockRestore();
+    expect(asked).toEqual([".claude/agents/screenshot-checker.md"]);
+    expect(readFileSync(agent, "utf8")).toBe("旧版");
+    expect(existsSync(`${agent}.new`)).toBe(false);
+    expect(readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8")).toBe("人改过");
+    expect(out).toMatch(/· \.claude\/agents\/screenshot-checker\.md：已存在，保留|· \.claude\/agents\/screenshot-checker\.md: kept existing/);
+  });
+
+  it("onboard 装上 prep-ticket skill；update 只覆盖改过的，再跑没有改动；不碰 .sandcastle/", async () => {
     const root = nodeRepo();
     installFiles(root, detectProject(root));
     const skill = join(root, ".claude/skills/prep-ticket/SKILL.md");
@@ -108,13 +155,13 @@ describe("updateClaudeFiles", () => {
     expect(sizing).not.toMatch(/\{\{/);
     writeFileSync(skill, "旧版");
     writeFileSync(join(root, ".sandcastle/PROJECT.md"), "人改过");
-    expect(updateClaudeFiles(root)).toEqual([".claude/skills/prep-ticket/SKILL.md"]);
+    expect(await updateClaudeFiles(root, overwrite)).toEqual([".claude/skills/prep-ticket/SKILL.md"]);
     expect(readFileSync(skill, "utf8")).toBe(original);
-    expect(updateClaudeFiles(root)).toEqual([]);
+    expect(await updateClaudeFiles(root, overwrite)).toEqual([]);
     expect(readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8")).toBe("人改过");
   });
 
-  it("onboard 装上 fill-project-docs skill 和 NOTICE；update 只覆盖改过的，再跑没有改动", () => {
+  it("onboard 装上 fill-project-docs skill 和 NOTICE；update 只覆盖改过的，再跑没有改动", async () => {
     const root = nodeRepo();
     installFiles(root, detectProject(root));
     const skill = join(root, ".claude/skills/fill-project-docs/SKILL.md");
@@ -124,9 +171,9 @@ describe("updateClaudeFiles", () => {
     expect(notice).toContain("Matt Pocock");
     expect(notice).toContain("MIT");
     writeFileSync(skill, "旧版");
-    expect(updateClaudeFiles(root)).toEqual([".claude/skills/fill-project-docs/SKILL.md"]);
+    expect(await updateClaudeFiles(root, overwrite)).toEqual([".claude/skills/fill-project-docs/SKILL.md"]);
     expect(readFileSync(skill, "utf8")).toBe(original);
-    expect(updateClaudeFiles(root)).toEqual([]);
+    expect(await updateClaudeFiles(root, overwrite)).toEqual([]);
   });
 
   it("fill-project-docs：description 写明何时用，正文涵盖清单、答案写到哪和自检", () => {
@@ -171,7 +218,7 @@ describe("全局 prep-ticket skill", () => {
 });
 
 describe("编辑器类型", () => {
-  it("onboard 写 .sandcastle/tsconfig.json（paths 指向本工具的声明文件）并忽略它；老项目由 update 补上", () => {
+  it("onboard 写 .sandcastle/tsconfig.json（paths 指向本工具的声明文件）并忽略它；老项目由 update 补上", async () => {
     const root = nodeRepo();
     installFiles(root, detectProject(root));
     const tsconfigPath = join(root, ".sandcastle/tsconfig.json");
@@ -184,9 +231,9 @@ describe("编辑器类型", () => {
     // 老项目：没有 tsconfig.json，.gitignore 是旧模板
     rmSync(tsconfigPath);
     writeFileSync(ignorePath, ".env\nlogs/\nworktrees/\n");
-    expect(updateClaudeFiles(root)).toEqual([".sandcastle/.gitignore", ".sandcastle/tsconfig.json"]);
+    expect(await updateClaudeFiles(root, overwrite)).toEqual([".sandcastle/.gitignore", ".sandcastle/tsconfig.json"]);
     expect(readFileSync(ignorePath, "utf8")).toMatch(/^\.env\nlogs\/\nworktrees\/\n\n# Sandcastle：.*\n# Sandcastle: .*\ntsconfig\.json\n$/);
-    expect(updateClaudeFiles(root)).toEqual([]);
+    expect(await updateClaudeFiles(root, overwrite)).toEqual([]);
   });
 });
 
@@ -338,27 +385,27 @@ describe("questionsPrompt / --questions-only", () => {
     expect(questionsOnlyPrecheck(root)).toContain("OPEN-QUESTIONS.md");
   });
 
-  it("onboard --questions-only：清单已存在时不生成也不改动任何文件", () => {
+  it("onboard --questions-only：清单已存在时不生成也不改动任何文件", async () => {
     const root = nodeRepo();
     mkdirSync(join(root, ".sandcastle"), { recursive: true });
     writeFileSync(join(root, ".sandcastle/PROJECT.md"), projectMd);
     writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "# 缺口清单\n");
     const before = files(root);
-    onboard(["--questions-only"], root);
+    await onboard(["--questions-only"], root);
     expect(files(root)).toEqual(before);
     expect(existsSync(join(root, ".gitignore"))).toBe(false);
     expect(existsSync(join(root, ".claude"))).toBe(false);
   });
 
-  it("onboard --questions-only：没有 PROJECT.md 时也不生成任何文件", () => {
+  it("onboard --questions-only：没有 PROJECT.md 时也不生成任何文件", async () => {
     const root = nodeRepo();
     const before = files(root);
-    onboard(["--questions-only"], root);
+    await onboard(["--questions-only"], root);
     expect(files(root)).toEqual(before);
   });
 
-  it("--questions-only 和 --no-agent 不能同时给", () => {
-    expect(() => onboard(["--questions-only", "--no-agent"], nodeRepo())).toThrow("--questions-only");
+  it("--questions-only 和 --no-agent 不能同时给", async () => {
+    await expect(onboard(["--questions-only", "--no-agent"], nodeRepo())).rejects.toThrow("--questions-only");
   });
 });
 

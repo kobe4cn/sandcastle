@@ -13,6 +13,7 @@
 - 中英文 README 新增「前提」一节：产出质量取决于写下来的意图，缺的部分 onboard 会带你补；用一张表列出事实、规范、意图三类项目知识能否从代码推出、由谁补，并说明只涉及事实的票（修 bug、照已有的样子加字段）没有这些文档也能做。中英文接入清单在 doctor 和门槛基线之间加「补文档（建议）」一步：看 doctor 的「项目知识」检查（老项目先跑 `sandpipe onboard --questions-only`），运行 `/fill-project-docs`，把术语表和 ADR 推到 main；原来的第 2–5 步顺延为第 3–6 步（closes #8）。
 - 门槛长时间运行时有进度了：每次门槛开始打印 `📄 #<票号> 门槛输出实时写进 <路径>`，输出逐行实时写进 `.sandcastle/logs/gate-<票号>-<时间戳>.log`（同一张票重跑另开新文件），运行中每 5 分钟打印一次心跳 `⏳ #<票号> 门槛已跑 X 分钟，输出见 <路径>`（日志写不进时警告一次，门槛照跑）。baseline、run（含修复后重跑、rebase 补救）和 main 兜底都生效。档位（`GATE_TIER`）、`GATE_FLAKY`、`GATE_TIME` 仍按完整输出判断（closes #10）。
 - config 新增可选字段 `isolation.hostEnvFiles`：声明 config 从宿主机读的 env 文件（比如 `.env`、`.env.test`）。`sandpipe doctor` 新增「宿主机 env 文件」检查，其中有文件在项目根下不存在时警告并提示从 `.env.example` 复制或向同事要，都在时通过；没声明时扫 config 源码里引号包着的 `.env` / `.env.*` 路径（不算 `.sandcastle/` 下的和 `*.example` / `*.sample`），已有的 config 不改也能报出缺失；什么都没找到时不出现这一项（closes #11）。
+- `sandpipe onboard` 遇到 `.claude/` 下已存在、内容和模板不同的本工具文件（hook、子代理、skill 及附属文件）不再静默跳过：显示 `git diff --no-index --stat`，让人选 `[k]` 保留 / `[o]` 覆盖 / `[n]` 另存为 `<文件>.new` / `[d]` 看完整 diff；内容相同的显示「无需改动」不问；非交互时一律另存 `.new` 并警告，提示合并后删掉。`sandpipe update` 对这些文件按同一规则处理，不再静默覆盖；全局 skill 和 `.sandcastle/tsconfig.json`、`.sandcastle/.gitignore` 照旧直接刷新（closes #12）。
 
 ## 0.1.4
 

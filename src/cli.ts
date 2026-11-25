@@ -14,7 +14,7 @@ const help = () =>
   sandpipe doctor      跑之前的检查：配置、PROJECT.md、项目知识、models.json、.env、平台登录、标签、镜像、hook
                       [--fix] 缺的标签直接建上
   sandpipe baseline    在沙箱里对 origin/main 跑一次完整门槛，只报告不开票（接入新项目时，见 docs/onboarding-checklist.zh-CN.md）
-  sandpipe update      把项目 .claude/ 里本工具的 hook、子代理、skill 刷成当前版本，重写 .sandcastle/tsconfig.json（升级后跑）
+  sandpipe update      把项目 .claude/ 里本工具的 hook、子代理、skill 刷成当前版本（内容和模板不同的会询问），重写 .sandcastle/tsconfig.json（升级后跑）
   sandpipe skill       把 prep-ticket skill 装到 ~/.claude/skills/，任何仓库都能用 /prep-ticket（装过的话 update 会顺带刷新）
   sandpipe upgrade     装 npm 上的最新版本（按安装方式用 npm 或 pnpm）
   sandpipe --version
@@ -30,7 +30,7 @@ const help = () =>
   sandpipe doctor      pre-run checks: config, PROJECT.md, project knowledge, models.json, .env, forge login, labels, image, hook
                       [--fix] create missing labels
   sandpipe baseline    run the full gate once against origin/main in a sandbox, report only (when onboarding, see docs/onboarding-checklist.md)
-  sandpipe update      refresh this tool's hook, subagent and skill under .claude/ and rewrite .sandcastle/tsconfig.json (run after upgrading)
+  sandpipe update      refresh this tool's hook, subagent and skill under .claude/ (asks about files that differ from the template) and rewrite .sandcastle/tsconfig.json (run after upgrading)
   sandpipe skill       install the prep-ticket skill into ~/.claude/skills/ so /prep-ticket works in any repo (update refreshes it once installed)
   sandpipe upgrade     install the latest version from npm (with npm or pnpm, matching how it was installed)
   sandpipe --version
@@ -52,14 +52,14 @@ if (cmd === "run") await import("./main.ts");
 else if (cmd === "baseline") {
   process.env.SANDCASTLE_BASELINE = "1";
   await import("./main.ts");
-} else if (cmd === "onboard") (await import("./onboard.ts")).onboard(rest);
+} else if (cmd === "onboard") await (await import("./onboard.ts")).onboard(rest);
 else if (cmd === "doctor") await (await import("./doctor.ts")).doctor(rest);
 else if (cmd === "update") {
   const { updateClaudeFiles, hasGlobalSkill, installGlobalSkill } = await import("./onboard.ts");
   // 全局 skill 盖过项目里的同名 skill，装过就一起刷新，免得项目里用到旧版
   // The global skill shadows the project's copy, so refresh it too once installed, or projects would use an old version
-  const changed = [...updateClaudeFiles(process.cwd()), ...(hasGlobalSkill() ? installGlobalSkill() : [])];
-  console.log(changed.length ? changed.map((f) => `✓ ${f}`).join("\n") : t("都是当前版本，没有改动。", "Everything is current; nothing changed."));
+  const changed = [...(await updateClaudeFiles(process.cwd())), ...(hasGlobalSkill() ? installGlobalSkill() : [])];
+  console.log(changed.length ? changed.map((f) => `✓ ${f}`).join("\n") : t("没有文件被改动。", "No files changed."));
 } else if (cmd === "skill") {
   const changed = (await import("./onboard.ts")).installGlobalSkill();
   console.log(changed.length ? changed.map((f) => `✓ ${f}`).join("\n") : t("全局 skill 已是当前版本。", "The global skill is already current."));

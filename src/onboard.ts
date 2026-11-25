@@ -3,8 +3,10 @@
 //
 // 1. 探测（detect.ts，只读文件和 git）：语言、包管理、命令、托管平台、文档、测试、迁移、依赖的服务。
 //    Detect (detect.ts, reads files and git only): language, package manager, commands, forge, docs, tests, migrations, services.
-// 2. 生成文件，已存在的一律跳过、不覆盖。注释都是中英两行；PROJECT.md 草稿和配置的 language 按 --lang（没给时按提交信息的语言）：
-//    Generate files, skipping any that exist. Comments are always a Chinese line plus an English line; the PROJECT.md draft and the config's language follow --lang (default: the commit message language):
+// 2. 生成文件，.sandcastle/ 下已存在的一律跳过、不覆盖；.claude/ 下本工具的文件已存在且和模板不同时，问保留 / 覆盖 / 另存 .new（claude-conflict.ts）。
+//    注释都是中英两行；PROJECT.md 草稿和配置的 language 按 --lang（没给时按提交信息的语言）：
+//    Generate files, skipping existing ones under .sandcastle/; for this tool's .claude/ files that exist but differ from the template, ask keep / overwrite / save as .new (claude-conflict.ts).
+//    Comments are always a Chinese line plus an English line; the PROJECT.md draft and the config's language follow --lang (default: the commit message language):
 //      .sandcastle/sandcastle.config.ts  怎么跑（安装、隔离、门槛） / how to run (install, isolation, gate)
 //      .sandcastle/PROJECT.md            项目知识草稿 / project knowledge draft
 //      .sandcastle/models.json、.env.example、.gitignore、Containerfile
@@ -21,6 +23,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { askChoice, type ClaudeResolution, type Decide, resolveClaudeFile } from "./claude-conflict.ts";
 import { detectProject, type ProjectFacts } from "./detect.ts";
 import type { Language } from "./i18n.ts";
 import { DEFAULT_LABELS } from "./profile.ts";
@@ -353,11 +356,18 @@ export function mergeSettings(existing: Settings): { settings: Settings; changed
 // Writing files
 // ---------------------------------------------------------------------------
 
-type Outcome = { file: string; status: "written" | "skipped" | "updated" | "unchanged" };
+type Outcome = { file: string; status: "skipped" | ClaudeResolution };
 
 /** 终端上显示的状态。 / How a status is shown in the terminal. */
 const statusText = (s: Outcome["status"]) =>
-  ({ written: t("写入", "written"), skipped: t("已存在，跳过", "exists, skipped"), updated: t("已更新", "updated"), unchanged: t("无需改动", "unchanged") })[s];
+  ({
+    written: t("写入", "written"),
+    skipped: t("已存在，跳过", "exists, skipped"),
+    updated: t("已更新", "updated"),
+    unchanged: t("无需改动", "unchanged"),
+    kept: t("已存在，保留", "kept existing"),
+    "saved-new": t("新版另存为 .new", "new version saved as .new"),
+  })[s];
 
 function writeIfMissing(root: string, file: string, content: string | (() => string)): Outcome {
   const path = join(root, file);
@@ -379,8 +389,8 @@ export const toolFile = (p: string) =>
 const tool = toolFile;
 
 /**
- * 本工具拥有的 .claude/ 文件（项目里的路径 → 工具里的路径）：onboard 缺了才装，update 直接覆盖成当前版本。
- * .claude/ files owned by this tool (project path → tool path): onboard installs missing ones, update overwrites them with the current version.
+ * 本工具拥有的 .claude/ 文件（项目里的路径 → 工具里的路径）：onboard 和 update 都是缺了就装、相同不动，已存在且和模板不同时问保留 / 覆盖 / 另存 .new（resolveClaudeFile）。
+ * .claude/ files owned by this tool (project path → tool path): onboard and update both install missing ones and leave identical ones alone; existing ones that differ from the template prompt for keep / overwrite / save as .new (resolveClaudeFile).
  */
 export const CLAUDE_FILES: Record<string, string> = {
   [`.claude/hooks/${HOOK_FILE}`]: `claude/hooks/${HOOK_FILE}`,
@@ -392,18 +402,17 @@ export const CLAUDE_FILES: Record<string, string> = {
 };
 
 /**
- * 把 CLAUDE_FILES 覆盖成当前版本、同步 tsconfig.json 与 .sandcastle/.gitignore，返回内容有变化的文件。升级工具后跑（sandpipe update）。
- * Overwrite CLAUDE_FILES with the current version and sync tsconfig.json and .sandcastle/.gitignore; returns files whose content changed. Run after upgrading (sandpipe update).
+ * 同步 tsconfig.json 与 .sandcastle/.gitignore（直接刷新），CLAUDE_FILES 逐个按 resolveClaudeFile 处理，返回内容有变化的文件；
+ * 另存了 .new 的不算变化，另外警告。升级工具后跑（sandpipe update）。
+ * Sync tsconfig.json and .sandcastle/.gitignore (refreshed directly) and handle each CLAUDE_FILES entry with resolveClaudeFile; returns files whose content changed.
+ * Files saved as .new don't count as changed and get a separate warning. Run after upgrading (sandpipe update).
  */
-export function updateClaudeFiles(root: string): string[] {
+export async function updateClaudeFiles(root: string, decide: Decide = askChoice): Promise<string[]> {
   const changed: string[] = syncLocalFiles(root);
   for (const [file, src] of Object.entries(CLAUDE_FILES)) {
-    const path = join(root, file);
-    const next = tool(src);
-    if (existsSync(path) && readFileSync(path, "utf8") === next) continue;
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, next);
-    changed.push(file);
+    const result = await resolveClaudeFile(root, file, tool(src), decide);
+    if (result === "written" || result === "updated") changed.push(file);
+    else if (result === "saved-new") console.warn(`⚠ ${file}.new`);
   }
   return changed;
 }
@@ -450,8 +459,8 @@ export function installGlobalSkill(claudeDir = userClaudeDir()): string[] {
 }
 
 /**
- * 装文件，已存在的跳过。lang 定 PROJECT.md 草稿的语言和配置里的 language。
- * Install the files, skipping existing ones. lang sets the PROJECT.md draft language and the config's language.
+ * 装文件，已存在的跳过（.claude/ 下已存在的由 onboard 另行用 resolveClaudeFile 处理）。lang 定 PROJECT.md 草稿的语言和配置里的 language。
+ * Install the files, skipping existing ones (onboard handles existing .claude/ files separately with resolveClaudeFile). lang sets the PROJECT.md draft language and the config's language.
  */
 export function installFiles(root: string, f: ProjectFacts, lang: Language = f.commitLanguage): Outcome[] {
   const out: Outcome[] = [
@@ -690,7 +699,7 @@ function reportOpenQuestions(root: string): number {
 export const fillDocsHint = (remaining: number) =>
   t(`在 Claude Code 里运行 /fill-project-docs，补完缺口清单（还剩 ${remaining} 条）`, `Run /fill-project-docs in Claude Code to work through the open questions (${remaining} left)`);
 
-export function onboard(argv: string[], root = process.cwd()) {
+export async function onboard(argv: string[], root = process.cwd(), decide: Decide = askChoice) {
   const noAgent = argv.includes("--no-agent");
   const questionsOnly = argv.includes("--questions-only");
   if (questionsOnly && noAgent)
@@ -734,8 +743,10 @@ export function onboard(argv: string[], root = process.cwd()) {
   // 在生成文件和 agent 之前算：清单已存在就不让 agent 碰。
   // Computed before generating files and running the agent: an existing open questions list is off limits.
   const writable = agentWritable(root);
-  for (const o of installFiles(root, f, lang))
-    console.log(`  ${o.status === "skipped" || o.status === "unchanged" ? "·" : "✓"} ${o.file}${t("：", ": ")}${statusText(o.status)}`);
+  for (const o of installFiles(root, f, lang)) {
+    if (o.status === "skipped" && o.file in CLAUDE_FILES) o.status = await resolveClaudeFile(root, o.file, tool(CLAUDE_FILES[o.file]), decide);
+    console.log(`  ${o.status === "skipped" || o.status === "unchanged" || o.status === "kept" ? "·" : "✓"} ${o.file}${t("：", ": ")}${statusText(o.status)}`);
+  }
 
   if (noAgent || docExisted) {
     if (docExisted) console.log(t("PROJECT.md 已存在，不再让 agent 重写。", "PROJECT.md already exists; not asking the agent to rewrite it."));
