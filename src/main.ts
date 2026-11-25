@@ -20,7 +20,7 @@
 //                    门槛（脚本自己跑 typecheck + 完整测试，失败时让 implementer 修一次）。
 //                    最多 MAX_PARALLEL 张并行，每个沙箱用独立的测试库与前缀。
 //   Phase 3 (Land):  在宿主机上 push、开 PR（`Closes #n`）。reviewer 说 merge 且门槛通过
-//                    → `gh pr merge --rebase`，issue 自动关闭；否则打 sandcastle:pr-open 等人审。
+//                    → `gh pr merge --rebase`，issue 自动关闭；否则（或配置 autoMerge: false）打 sandcastle:pr-open 等人审。
 //                    合并不了（先合并的票造成冲突，或项目配置的一致性检查没过，如迁移链分叉）时，rebase 到
 //                    最新的 origin/main（冲突与迁移交给 agent，prompts/rebase.md），重跑门槛后再合并一次。
 //   每次调度开头：等人审的 PR 上有晚于分支最新提交的打回信号（`/sandcastle` 开头的评论或 review，
@@ -37,10 +37,11 @@
 //
 // Usage（在目标项目根目录）: npx tsx <本仓库>/src/main.ts
 //        SANDCASTLE_ONLY=328,329 npx tsx <本仓库>/src/main.ts   只处理这几张票（试跑、单独补跑）
+//        SANDCASTLE_BASELINE=1 …（即 sandcastle-pipeline baseline）   对 origin/main 跑一次完整门槛就退出
 
-import { cpSync, existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, loadavg, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import * as sandcastle from "@ai-hero/sandcastle";
 import {
   AllProfilesLimited, CLAUDE_LIMIT_PATTERN, agentFor, limitResetAt, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
@@ -1041,6 +1042,13 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     console.log(`  ◐ #${issue.id} 验收说明${result.notes === undefined ? "缺失" : "格式不对"}，留 PR #${pr}`);
     return;
   }
+  // 试跑期（autoMerge: false）：全程都过了也只留 PR，人看过再合并。
+  if (!project.autoMerge) {
+    const rebaseNote = await rebaseIfConflicting(issue, pr, host);
+    leaveForHuman(issue, pr, `项目配置 autoMerge: false（试跑期），reviewer 和门槛都通过，等人合并。${rebaseNote}`);
+    console.log(`  ◐ #${issue.id} 全部通过，autoMerge 关着，留 PR #${pr} 等人合并`);
+    return;
+  }
   // 先合并的票可能让这张冲突：rebase 到最新的 origin/main（冲突交给 agent）、重跑门槛，再合并一次。
   // 一致性检查要先在宿主机上查：没有文本冲突时平台会照样合并，坏掉的状态就进了 main。
   await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
@@ -1080,7 +1088,10 @@ const readMainCheck = (): MainCheckState => {
     return { lastPass: null, selectedSince: 0 };
   }
 };
-const writeMainCheck = (s: MainCheckState) => writeFileSync(MAIN_CHECK_FILE, `${JSON.stringify(s)}\n`);
+const writeMainCheck = (s: MainCheckState) => {
+  mkdirSync(dirname(MAIN_CHECK_FILE), { recursive: true });
+  writeFileSync(MAIN_CHECK_FILE, `${JSON.stringify(s)}\n`);
+};
 let mainCheckRunning = false;
 
 /** 票合并后记一笔；按依赖选测试的票攒够 MAIN_CHECK_EVERY 张就在后台开跑兜底（不等它，不占宿主机锁）。 */
@@ -1095,19 +1106,15 @@ function noteMerged(tier: GateTier) {
     .finally(() => (mainCheckRunning = false));
 }
 
-async function runMainFullCheck() {
-  const sha = sh("git", ["rev-parse", BASE_REF]);
-  const short = sha.slice(0, 8);
-  const counted = readMainCheck().selectedSince;
+/** 在沙箱里对 sha 跑一次完整门槛（GATE_FULL=1），跑完扔掉 worktree、分支和测试资源。 */
+async function fullGateAt(sha: string): Promise<ExecResult> {
   // 本地分支先指到这个提交：createSandbox 从本地分支建 worktree（本地没有才从 main 新建，那时的 main 可能又变了）。
-  const branch = `sandcastle/main-check-${short}`;
+  const branch = `sandcastle/main-check-${sha.slice(0, 8)}`;
   sh("git", ["branch", "-f", branch, sha]);
-  console.log(`  🛡 main 兜底完整测试排队：${short}（上次通过以来合并了 ${counted} 张按依赖选测试的票）`);
   const env = testEnv(MAIN_CHECK_ID);
-  let gate: ExecResult;
   const sandbox = await sandcastle.createSandbox({ branch, baseBranch: BASE_REF, sandbox: sandboxFor(env), hooks, copyToWorktree });
   try {
-    gate = await runGate((c) => sandbox.exec(c), MAIN_CHECK_ID, { ...env, GATE_FULL: "1" });
+    return await runGate((c) => sandbox.exec(c), MAIN_CHECK_ID, { ...env, GATE_FULL: "1" });
   } finally {
     await sandbox.close();
     await dropTestResources(MAIN_CHECK_ID);
@@ -1115,6 +1122,34 @@ async function runMainFullCheck() {
     trySh("git", ["worktree", "remove", "--force", sandbox.worktreePath]);
     trySh("git", ["branch", "-D", branch]);
   }
+}
+
+/**
+ * 接入新项目时的门槛基线（sandcastle-pipeline baseline）：对 origin/main 跑一次完整门槛，只报告、不开票。
+ * 通过时记为兜底完整测试的起点；失败说明门槛本身或 main 有问题，先修好再让 Sandcastle 做票。
+ */
+async function runBaseline(): Promise<boolean> {
+  await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
+  const sha = sh("git", ["rev-parse", BASE_REF]);
+  console.log(`门槛基线：在沙箱里对 ${BASE_REF}（${sha.slice(0, 8)}）跑一次完整门槛……`);
+  const gate = await fullGateAt(sha);
+  const flaky = gate.stdout.includes("GATE_FLAKY");
+  console.log(`\n${gate.stdout.slice(-3000)}\n`);
+  if (gate.exitCode !== 0) {
+    console.log("✗ 门槛基线没过：先修好 main 或 gate.script（见上面的输出），再让 Sandcastle 做票。");
+    return false;
+  }
+  writeMainCheck({ lastPass: sha, selectedSince: 0 });
+  console.log(`✓ 门槛基线通过${flaky ? "，但有偶发失败（重跑才过）：把 GATE_FLAKY 那几个文件记下来，先修或在门槛里排除" : ""}。`);
+  return true;
+}
+
+async function runMainFullCheck() {
+  const sha = sh("git", ["rev-parse", BASE_REF]);
+  const short = sha.slice(0, 8);
+  const counted = readMainCheck().selectedSince;
+  console.log(`  🛡 main 兜底完整测试排队：${short}（上次通过以来合并了 ${counted} 张按依赖选测试的票）`);
+  const gate = await fullGateAt(sha);
   // 跑的期间又合并进来的票留给下一次兜底。
   const now = readMainCheck();
   const rest = Math.max(0, now.selectedSince - counted);
@@ -1331,6 +1366,9 @@ async function schedule(): Promise<ScheduleResult> {
 // 有空位就调度一次；然后等「有票做完」或「过了 POLL_INTERVAL_MS」，先到哪个算哪个。
 // 等人审的 PR 合入、blocker 关闭、人去掉 stuck 之后，下一次轮询就能开工，不用等正在做的票做完。
 // 没有票在做、也开不出新票时算一次空转；连续 MAX_ITERATIONS 次空转就结束运行。
+if (process.env.SANDCASTLE_BASELINE === "1") {
+  process.exitCode = (await runBaseline()) ? 0 : 1;
+} else {
 let idlePolls = 0;
 for (let pass = 1; ; pass++) {
   if (running.size < MAX_PARALLEL) {
@@ -1360,3 +1398,4 @@ for (let pass = 1; ; pass++) {
 await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
 syncHostBase();
 console.log(`\nAll done. 本地 main 已快进到 ${BASE_REF}（不在 main 上时除外，见上面的警告）；带 ${LABEL.prOpen} 的票在 ${forge.name} 上等你审。`);
+}

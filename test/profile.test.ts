@@ -14,7 +14,7 @@ describe("resolveProject", () => {
   it("只给必填项时其余取默认值", () => {
     const p = resolveProject(minimal);
     expect(p.forge.name).toBe("github");
-    expect([p.remote, p.baseBranch, p.mergeMethod, p.maxParallel, p.reviseMax, p.contextBudget]).toEqual(["origin", "main", "rebase", 2, 2, 150_000]);
+    expect([p.remote, p.baseBranch, p.mergeMethod, p.autoMerge, p.maxParallel, p.reviseMax, p.contextBudget]).toEqual(["origin", "main", "rebase", true, 2, 2, 150_000]);
     expect(p.labels).toEqual(DEFAULT_LABELS);
     expect(p.gate.rerunMax).toBe(3);
     expect(p.install.copyToWorktree).toEqual([]);

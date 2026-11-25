@@ -8,7 +8,7 @@
 
 | 路径 | 内容 |
 |---|---|
-| `src/cli.ts` | 命令行入口：`run`（默认）、`onboard`、`doctor` |
+| `src/cli.ts` | 命令行入口：`run`（默认）、`onboard`、`doctor`、`baseline` |
 | `src/doctor.ts` | 跑之前的检查：配置、PROJECT.md、models.json、.env、平台登录与权限、标签、远端分支、镜像、hook、.gitignore |
 | `src/main.ts` | 编排（调度、build、land）。不含项目细节，不直接调 gh |
 | `src/detect.ts` `src/onboard.ts` `prompts/onboard.md` | 接入新项目：探测、生成配置、agent 补全 PROJECT.md |
@@ -34,7 +34,9 @@
      拿不准的点和 `sandcastle.config.ts` 的建议打印出来，并存进 `.sandcastle/logs/onboard.md`。
 2. 看一遍 `PROJECT.md`（项目知识，给 agent 看）与 `sandcastle.config.ts`（怎么跑：测试隔离、门槛），填 `.sandcastle/.env`，建镜像。
 3. `npx tsx <本仓库>/src/cli.ts doctor`：逐项给出 ✓ / ⚠ / ✗ 和修法，有 ✗ 退出码为 1；`--fix` 把缺的标签建上（只有这一项会写东西）。
-4. 跑：`npx tsx <本仓库>/src/cli.ts`（`SANDCASTLE_ONLY=12,13` 只做这几张票）。
+4. `npx tsx <本仓库>/src/cli.ts baseline`：在沙箱里对 `origin/main` 跑一次完整门槛，只报告、不开票。
+5. 跑：`npx tsx <本仓库>/src/cli.ts`（`SANDCASTLE_ONLY=12,13` 只做这几张票）。onboard 生成的配置是 `autoMerge: false`、`maxParallel: 1`：
+   全部通过的票也只留 PR。金丝雀票、真实小票都没问题后再放开，完整步骤见 [docs/onboarding-checklist.md](docs/onboarding-checklist.md)。
 
 不想往项目里放 `PROJECT.md` / `sandcastle.config.ts`（试用、配置放别处）时，设 `SANDCASTLE_PROJECT_DIR=<配置目录>`，例如 `SANDCASTLE_PROJECT_DIR=<本仓库>/examples/duckdb_crm`。`models.json`、`.env`、`logs/` 仍在项目的 `.sandcastle/` 里。
 
@@ -62,5 +64,5 @@ npm test
 - 第 1、2 步已完成：抽出 Forge 与 ProjectProfile，duckdb_crm 的项目差异全在 `examples/duckdb_crm/sandcastle.config.ts`。
 - 第 4 步已完成：提示词通用化，项目知识收进 `PROJECT.md`（duckdb_crm 的见 `examples/duckdb_crm/PROJECT.md`）。
 - `docs/` 与 `claude/skills/prep-ticket` 仍是 duckdb_crm 的写法，打包成插件时再改。
-- 第 6、7 步已完成：`onboard`、`doctor`。
+- 第 6、7、8 步已完成：`onboard`、`doctor`、接入检查清单（`baseline` 命令与 `autoMerge` 开关）。
 - 还没有 GitLab Forge。

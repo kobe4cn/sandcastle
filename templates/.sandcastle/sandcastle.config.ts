@@ -4,7 +4,8 @@ import { defineProject } from "sandcastle-pipeline";
 
 export default defineProject({
   // forge: githubForge(),          // 默认 GitHub（宿主机的 gh）
-  // maxParallel: 2,                // 同时实现几张票：受测试依赖的服务与机器负载限制
+  autoMerge: false,                 // 试跑期只开 PR 不合并；走完 docs/onboarding-checklist.md 再打开
+  maxParallel: 1,                   // 同时实现几张票：受测试依赖的服务与机器负载限制
 
   install: {
     // 沙箱建好后装依赖（容器是 linux，宿主机拷进来的原生包可能用不了）

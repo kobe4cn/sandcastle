@@ -78,6 +78,11 @@ export interface ProjectProfile {
   remote?: string;
   baseBranch?: string;
   mergeMethod?: MergeMethod;
+  /**
+   * reviewer 给 merge、门槛也过了时是否自动合并。默认 true；关掉时照样跑完全程，只是留 PR 等人合并
+   * （新项目试跑期用，见 docs/onboarding-checklist.md）。
+   */
+  autoMerge?: boolean;
 
   /** 同时实现的票数，受测试依赖的服务（数据库连接数等）与机器负载限制。默认 2。 */
   maxParallel?: number;
@@ -170,7 +175,7 @@ export const defineProject = (profile: ProjectProfile): ProjectProfile => profil
 export type Project = Required<
   Pick<
     ProjectProfile,
-    | "forge" | "remote" | "baseBranch" | "mergeMethod" | "maxParallel" | "agentIdleTimeoutS" | "pollIntervalMs"
+    | "forge" | "remote" | "baseBranch" | "mergeMethod" | "autoMerge" | "maxParallel" | "agentIdleTimeoutS" | "pollIntervalMs"
     | "maxIdlePolls" | "implementMaxSessions" | "reviseMax" | "contextBudget" | "mainCheckEvery" | "sandbox"
     | "install" | "isolation" | "appendOnlyFiles"
   >
@@ -191,6 +196,7 @@ export function resolveProject(p: ProjectProfile): Project {
     remote: p.remote ?? "origin",
     baseBranch: p.baseBranch ?? "main",
     mergeMethod: p.mergeMethod ?? "rebase",
+    autoMerge: p.autoMerge ?? true,
     maxParallel: p.maxParallel ?? 2,
     agentIdleTimeoutS: p.agentIdleTimeoutS ?? 40 * 60,
     pollIntervalMs: p.pollIntervalMs ?? 10 * 60_000,
