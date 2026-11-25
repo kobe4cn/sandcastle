@@ -16,6 +16,7 @@
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detectProject, type ProjectFacts } from "./detect.ts";
@@ -398,6 +399,47 @@ export function updateClaudeFiles(root: string): string[] {
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, next);
     changed.push(file);
+  }
+  return changed;
+}
+
+/**
+ * 全局 skill（~/.claude/skills/ 下，项目路径 → 工具路径）：任何仓库都能用 /prep-ticket，不必先 onboard。
+ * 同名时个人级 skill 盖过项目级，所以装了全局的以后，sandcastle 项目里用的也是这一份；update 会顺带刷新它。
+ * Global skills (under ~/.claude/skills/, path → tool path): /prep-ticket works in any repo without onboarding.
+ * A personal skill shadows a project skill of the same name, so once installed this copy is used in sandcastle projects too; update refreshes it as well.
+ */
+export const GLOBAL_SKILL_FILES: Record<string, string> = {
+  "skills/prep-ticket/SKILL.md": "claude/skills/prep-ticket/SKILL.md",
+  "skills/prep-ticket/ticket-sizing.md": "prompts/ticket-sizing.md",
+};
+
+/** ~/.claude（测试里传临时目录）。 / ~/.claude (tests pass a temp dir). */
+export const userClaudeDir = () => join(homedir(), ".claude");
+
+/** 全局 skill 是否装过（有任一文件就算）。 / Whether the global skill is installed (any file counts). */
+export const hasGlobalSkill = (claudeDir = userClaudeDir()) =>
+  Object.keys(GLOBAL_SKILL_FILES).some((f) => existsSync(join(claudeDir, f)));
+
+/** 和当前版本不一致或缺失的全局 skill 文件。 / Global skill files that are outdated or missing. */
+export const staleGlobalSkillFiles = (claudeDir = userClaudeDir()) =>
+  Object.entries(GLOBAL_SKILL_FILES)
+    .filter(([file, src]) => {
+      const path = join(claudeDir, file);
+      return !existsSync(path) || readFileSync(path, "utf8") !== tool(src);
+    })
+    .map(([file]) => join(claudeDir, file));
+
+/**
+ * 把全局 skill 写成当前版本（sandpipe skill），返回内容有变化的文件。
+ * Write the global skill at the current version (sandpipe skill); returns files whose content changed.
+ */
+export function installGlobalSkill(claudeDir = userClaudeDir()): string[] {
+  const changed = staleGlobalSkillFiles(claudeDir);
+  for (const path of changed) {
+    const file = Object.keys(GLOBAL_SKILL_FILES).find((f) => join(claudeDir, f) === path)!;
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, tool(GLOBAL_SKILL_FILES[file]));
   }
   return changed;
 }

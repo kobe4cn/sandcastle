@@ -70,7 +70,8 @@ New projects only open PRs by default and don't auto-merge (`autoMerge: false`),
 | `sandpipe onboard [--no-agent] [--model <name>] [--lang zh\|en]` | Onboard a new project; existing files are not overwritten |
 | `sandpipe doctor [--fix]` | Pre-run checks; exit code 1 when anything shows ✗ |
 | `sandpipe baseline` | Run the full gate once against `origin/main`, report only |
-| `sandpipe update` | Refresh this tool's files under `.claude/` to the current version |
+| `sandpipe update` | Refresh this tool's files under `.claude/` to the current version, plus the global skill if installed |
+| `sandpipe skill` | Install `/prep-ticket` into `~/.claude/skills/` so it works in repos without sandcastle (it shadows the project copy; `update` refreshes it too) |
 | `sandpipe upgrade` | Install the latest version |
 | `sandpipe --version` | |
 

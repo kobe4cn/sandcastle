@@ -70,7 +70,8 @@ SANDCASTLE_ONLY=12 sandpipe    # 只做 #12；不设就处理全部带标签的�
 | `sandpipe onboard [--no-agent] [--model <名>] [--lang zh\|en]` | 接入新项目，已有的文件不覆盖 |
 | `sandpipe doctor [--fix]` | 跑之前的检查；有 ✗ 时退出码为 1 |
 | `sandpipe baseline` | 对 `origin/main` 跑一次完整门槛，只报告 |
-| `sandpipe update` | 把 `.claude/` 下本工具的文件刷成当前版本 |
+| `sandpipe update` | 把 `.claude/` 下本工具的文件刷成当前版本；装过全局 skill 的话一起刷新 |
+| `sandpipe skill` | 把 `/prep-ticket` 装到 `~/.claude/skills/`，没接入 sandcastle 的仓库也能用（同名时它盖过项目里的那份，`update` 会顺带刷新） |
 | `sandpipe upgrade` | 安装最新版本 |
 | `sandpipe --version` | |
 

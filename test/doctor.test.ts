@@ -1,11 +1,12 @@
 // doctor：在 onboard 刚生成的项目上跑，逐项给出结论；--fix 补建缺的标签。
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectProject } from "../src/detect.ts";
 import { type Check, diagnose, formatChecks, type Runner } from "../src/doctor.ts";
 import { githubForge } from "../src/forges/github.ts";
-import { installFiles } from "../src/onboard.ts";
+import { installFiles, installGlobalSkill } from "../src/onboard.ts";
 import { VERSION } from "../src/version.ts";
 import { DEFAULT_LABELS } from "../src/profile.ts";
 import { trySh } from "../src/shell.ts";
@@ -216,6 +217,18 @@ describe("diagnose：.claude/ 文件与版本", () => {
     const ok = await diagnose({ ...base, latest: async () => VERSION });
     expect(check(ok, "版本")?.level).toBe("ok");
     expect(check(await diagnose(base), "版本")).toBeUndefined();
+  });
+
+  it("全局 skill 装过但不是当前版本：警告（它会盖过项目里的）；没装或已是当前版本：不提", async () => {
+    const root = readyRepo();
+    const home = mkdtempSync(join(tmpdir(), "home-"));
+    const base = { cwd: root, env: { HOME: home }, run: runner({ image: true }), forge: fakeGh(allLabels, []) };
+    const globalWarn = (cs: Check[]) => cs.filter((c) => c.name === "Claude 文件" && c.detail.includes("全局"));
+    expect(globalWarn(await diagnose(base))).toEqual([]);
+    installGlobalSkill(join(home, ".claude"));
+    expect(globalWarn(await diagnose(base))).toEqual([]);
+    writeFileSync(join(home, ".claude/skills/prep-ticket/SKILL.md"), "旧版");
+    expect(globalWarn(await diagnose(base))).toMatchObject([{ level: "warn", fix: "sandpipe update" }]);
   });
 });
 

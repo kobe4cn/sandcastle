@@ -14,6 +14,7 @@ const help = () =>
                       [--fix] 缺的标签直接建上
   sandpipe baseline    在沙箱里对 origin/main 跑一次完整门槛，只报告不开票（接入新项目时，见 docs/onboarding-checklist.zh-CN.md）
   sandpipe update      把项目 .claude/ 里本工具的 hook、子代理、skill 刷成当前版本，重写 .sandcastle/tsconfig.json（升级后跑）
+  sandpipe skill       把 prep-ticket skill 装到 ~/.claude/skills/，任何仓库都能用 /prep-ticket（装过的话 update 会顺带刷新）
   sandpipe upgrade     装 npm 上的最新版本（按安装方式用 npm 或 pnpm）
   sandpipe --version
   sandpipe --help
@@ -28,6 +29,7 @@ const help = () =>
                       [--fix] create missing labels
   sandpipe baseline    run the full gate once against origin/main in a sandbox, report only (when onboarding, see docs/onboarding-checklist.md)
   sandpipe update      refresh this tool's hook, subagent and skill under .claude/ and rewrite .sandcastle/tsconfig.json (run after upgrading)
+  sandpipe skill       install the prep-ticket skill into ~/.claude/skills/ so /prep-ticket works in any repo (update refreshes it once installed)
   sandpipe upgrade     install the latest version from npm (with npm or pnpm, matching how it was installed)
   sandpipe --version
   sandpipe --help
@@ -51,8 +53,15 @@ else if (cmd === "baseline") {
 } else if (cmd === "onboard") (await import("./onboard.ts")).onboard(rest);
 else if (cmd === "doctor") await (await import("./doctor.ts")).doctor(rest);
 else if (cmd === "update") {
-  const changed = (await import("./onboard.ts")).updateClaudeFiles(process.cwd());
+  const { updateClaudeFiles, hasGlobalSkill, installGlobalSkill } = await import("./onboard.ts");
+  // 全局 skill 盖过项目里的同名 skill，装过就一起刷新，免得项目里用到旧版
+  // The global skill shadows the project's copy, so refresh it too once installed, or projects would use an old version
+  const changed = [...updateClaudeFiles(process.cwd()), ...(hasGlobalSkill() ? installGlobalSkill() : [])];
   console.log(changed.length ? changed.map((f) => `✓ ${f}`).join("\n") : t("都是当前版本，没有改动。", "Everything is current; nothing changed."));
+} else if (cmd === "skill") {
+  const changed = (await import("./onboard.ts")).installGlobalSkill();
+  console.log(changed.length ? changed.map((f) => `✓ ${f}`).join("\n") : t("全局 skill 已是当前版本。", "The global skill is already current."));
+  console.log(t("新开一个 Claude Code 会话就能用 /prep-ticket。", "Start a new Claude Code session to use /prep-ticket."));
 } else if (cmd === "upgrade") {
   const command = (await import("./version.ts")).upgradeCommand();
   const { execSync } = await import("node:child_process");

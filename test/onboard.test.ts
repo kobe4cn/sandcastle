@@ -1,9 +1,10 @@
 // onboard：探测项目事实、生成配置与 PROJECT.md 草稿、登记 hook。生成的文件要能被流水线直接加载。
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { configSource, containerfileSource, installFiles, projectDocDraft, mergeGitignore, mergeSettings, onboardPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
+import { configSource, containerfileSource, hasGlobalSkill, installFiles, installGlobalSkill, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboardPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { parseProjectDoc } from "../src/project-doc.ts";
 import { nodeRepo, pythonRepo } from "./fixtures.ts";
@@ -105,6 +106,34 @@ describe("updateClaudeFiles", () => {
     expect(readFileSync(skill, "utf8")).toBe(original);
     expect(updateClaudeFiles(root)).toEqual([]);
     expect(readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8")).toBe("人改过");
+  });
+});
+
+describe("全局 prep-ticket skill", () => {
+  it("sandpipe skill 装到 ~/.claude/skills/：标签已填、带拆票规则；再装没有改动；改过的会被刷回", () => {
+    const claudeDir = mkdtempSync(join(tmpdir(), "claude-home-"));
+    expect(hasGlobalSkill(claudeDir)).toBe(false);
+    expect(installGlobalSkill(claudeDir)).toHaveLength(2);
+    expect(hasGlobalSkill(claudeDir)).toBe(true);
+    const skill = readFileSync(join(claudeDir, "skills/prep-ticket/SKILL.md"), "utf8");
+    expect(skill).toContain("ready-for-agent");
+    expect(skill).not.toMatch(/\{\{/);
+    expect(existsSync(join(claudeDir, "skills/prep-ticket/ticket-sizing.md"))).toBe(true);
+    expect(installGlobalSkill(claudeDir)).toEqual([]);
+    writeFileSync(join(claudeDir, "skills/prep-ticket/SKILL.md"), "旧版");
+    expect(staleGlobalSkillFiles(claudeDir)).toEqual([join(claudeDir, "skills/prep-ticket/SKILL.md")]);
+    expect(installGlobalSkill(claudeDir)).toEqual([join(claudeDir, "skills/prep-ticket/SKILL.md")]);
+    expect(readFileSync(join(claudeDir, "skills/prep-ticket/SKILL.md"), "utf8")).toBe(skill);
+    rmSync(claudeDir, { recursive: true });
+  });
+
+  it("没接 sandcastle 的仓库也能用：没有 PROJECT.md 时退到 CLAUDE.md / AGENTS.md / README，标签名会看项目配置", () => {
+    const skill = readFileSync(new URL("../claude/skills/prep-ticket/SKILL.md", import.meta.url), "utf8");
+    expect(skill).toMatch(/If `\.sandcastle\/PROJECT\.md` exists/);
+    expect(skill).toMatch(/CLAUDE\.md`, `AGENTS\.md`, `README\.md`/);
+    expect(skill).toContain("labels.readyForAgent");
+    // 标签名只在一处出现（占位符），其余都说「ready label」，项目改了标签名也不会漏
+    expect(skill.match(/ready-for-agent|\{\{L_READY_FOR_AGENT\}\}/g)).toHaveLength(1);
   });
 });
 

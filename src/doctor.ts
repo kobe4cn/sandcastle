@@ -14,7 +14,7 @@ import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import type { Forge } from "./forge.ts";
 import { inspectModels } from "./models.ts";
 import { setTermLanguage, t } from "./term.ts";
-import { CLAUDE_FILES, HOOK_FILE, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
+import { CLAUDE_FILES, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
 import { configDir, loadProject, type Labels, type Project } from "./profile.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { trySh, type TryResult } from "./shell.ts";
@@ -311,6 +311,13 @@ export async function diagnose(opts: {
   const C = t("Claude 文件", "Claude files");
   if (!stale.length) add(C, "ok", t("hook、子代理、skill 都是当前版本", "hook, subagent and skill are current"));
   else add(C, "warn", t("和当前版本不一致或缺失：", "Outdated or missing: ") + stale.join(t("、", ", ")), "sandpipe update");
+  // 全局 skill 盖过项目里的同名 skill：装过的话它也得是当前版本
+  // The global skill shadows the project's copy: if installed, it must be current too
+  // 按 env.HOME 找（测试传的 env 没有 HOME，就不看本机的 ~/.claude）
+  // Located via env.HOME (tests pass an env without HOME, so the machine's ~/.claude is not read)
+  const claudeDir = env.HOME ? join(env.HOME, ".claude") : undefined;
+  const staleGlobal = claudeDir && hasGlobalSkill(claudeDir) ? staleGlobalSkillFiles(claudeDir) : [];
+  if (staleGlobal.length) add(C, "warn", t("全局 skill 不是当前版本（会盖过项目里的）：", "Global skill is outdated (it shadows the project's copy): ") + staleGlobal.join(t("、", ", ")), "sandpipe update");
 
   // ---- 沙箱里的 worktree 从远端基础分支建：hook、.gitignore 要已经推上去才生效 ----
   // The sandbox worktree is created from the remote base branch: the hook and .gitignore only apply once pushed
