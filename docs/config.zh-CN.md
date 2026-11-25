@@ -33,6 +33,7 @@ export default defineProject({
 | `install.copyToWorktree` | 可选。从宿主机拷进 worktree 的路径，省掉从头安装 |
 | `isolation.env(runId)` | 进沙箱的环境变量：独立的测试库、key 前缀等 |
 | `isolation.cleanup(runId)` | 可选。关沙箱后回收这张票的测试资源 |
+| `isolation.hostEnvFiles` | 可选。config 从宿主机读的 env 文件（相对项目根，比如 `[".env", ".env.test"]`），`sandpipe doctor` 检查它们存在，缺了警告。不写时 doctor 扫 config 源码里引号包着的 `.env` / `.env.*` 路径（不算 `.sandcastle/` 下的和 `*.example` / `*.sample`） |
 | `gate.script({ baseRef })` | 合并门槛，在沙箱里用 `sh -c` 跑，退出码 0 算通过 |
 | `gate.testFile` | 测试文件路径的正则，用来从门槛输出里认出失败的文件 |
 | `gate.typecheck` | 等人审的 PR rebase 之后只跑这条命令 |

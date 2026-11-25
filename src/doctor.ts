@@ -1,9 +1,9 @@
 // doctor：跑流水线之前把能在宿主机上查的都查一遍，每项给出结论和修法。
-// 查：仓库根目录、配置能加载、PROJECT.md 与提示词能渲染、项目知识（缺口清单）、models.json、.env 的 token、平台登录与权限、
+// 查：仓库根目录、配置能加载、宿主机依赖与 env 文件、PROJECT.md 与提示词能渲染、项目知识（缺口清单）、models.json、.env 的 token、平台登录与权限、
 // 标签（--fix 时补建）、远端基础分支、沙箱镜像、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
 // 有一项 ✗ 退出码就是 1。
 // doctor: before running the pipeline, check everything that can be checked on the host, giving a verdict and a fix for each.
-// Checks: repository root, config loads, PROJECT.md and prompts render, project knowledge (open questions list), models.json, .env tokens, forge login and permissions,
+// Checks: repository root, config loads, host dependencies and env files, PROJECT.md and prompts render, project knowledge (open questions list), models.json, .env tokens, forge login and permissions,
 // labels (created with --fix), remote base branch, sandbox image, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
 // Exit code 1 if any check is ✗.
 
@@ -16,7 +16,7 @@ import { inspectModels } from "./models.ts";
 import { setTermLanguage, t } from "./term.ts";
 import { CLAUDE_FILES, fillDocsHint, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
 import { OPEN_QUESTIONS, readOpenQuestions } from "./open-questions.ts";
-import { configDir, loadProject, type Labels, type Project } from "./profile.ts";
+import { CONFIG_FILE, configDir, loadProject, type Labels, type Project } from "./profile.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { trySh, type TryResult } from "./shell.ts";
 import { latestVersion, newer, VERSION } from "./version.ts";
@@ -52,6 +52,21 @@ const AUTO_LABELS: (keyof Labels)[] = ["flaky", "mainBroken"];
 
 const firstLine = (s: string) => s.trim().split("\n")[0] ?? "";
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/**
+ * 没声明 hostEnvFiles 时的启发式：取 config 源码里引号包着的 .env 或 .env.<后缀> 路径（.envrc 这类不算），去掉 .sandcastle/ 下的和示例文件；读不了源码就当没有。
+ * Heuristic used when hostEnvFiles isn't declared: take quoted .env or .env.<suffix> paths from the config source (not .envrc and the like), dropping ones under .sandcastle/ and example files; an unreadable source counts as none.
+ */
+function scanEnvFiles(configFile: string): string[] {
+  let source: string;
+  try {
+    source = readFileSync(configFile, "utf8");
+  } catch {
+    return [];
+  }
+  const found = [...source.matchAll(/["'`](\.env(?:\.[\w.-]+)?)["'`]/g)].map((m) => m[1]!);
+  return [...new Set(found)].filter((p) => !p.startsWith(".sandcastle/") && !p.endsWith(".example") && !p.endsWith(".sample"));
+}
 
 export async function diagnose(opts: {
   cwd?: string;
@@ -108,6 +123,25 @@ export async function diagnose(opts: {
         t("先在宿主机装一次依赖（比如 pnpm install）", "Install dependencies on the host first (e.g. pnpm install)"),
       );
     else add(t("宿主机依赖", "Host dependencies"), "ok", paths.join(t("、", ", ")));
+  }
+
+  // ---- 宿主机 env 文件 ---- / Host env files
+  // isolation.env 常在宿主机读项目根的 .env / .env.test；新克隆的仓库没有它们（被 gitignore），config 不报错，只是悄悄少注入变量。
+  // isolation.env often reads .env / .env.test from the project root on the host; a fresh clone lacks them (gitignored), and the config doesn't fail, it just silently injects fewer variables.
+  if (project) {
+    const envFiles = project.isolation.hostEnvFiles ?? scanEnvFiles(join(dir, CONFIG_FILE));
+    const missing = envFiles.filter((p) => !existsSync(join(cwd, p)));
+    if (missing.length)
+      add(
+        t("宿主机 env 文件", "Host env files"),
+        "warn",
+        t(
+          `config 读取的 ${missing.join("、")} 在宿主机上不存在，进沙箱的环境变量会悄悄变少`,
+          `${missing.join(", ")} read by the config don't exist on the host, so the sandbox silently gets fewer environment variables`,
+        ),
+        t("从 .env.example 复制一份或向同事要，再重跑 doctor", "Copy them from .env.example or ask a teammate, then run doctor again"),
+      );
+    else if (envFiles.length) add(t("宿主机 env 文件", "Host env files"), "ok", envFiles.join(t("、", ", ")));
   }
   const forge = opts.forge ?? project?.forge;
 

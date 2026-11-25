@@ -18,7 +18,7 @@
 | 路径 | 内容 |
 |---|---|
 | `src/cli.ts` | 命令行入口：`run`（默认）、`onboard`、`doctor`、`baseline` |
-| `src/doctor.ts` | 跑之前的检查：配置、PROJECT.md、缺口清单、models.json、.env、平台登录与权限、标签、远端分支、镜像、hook、.gitignore |
+| `src/doctor.ts` | 跑之前的检查：配置、宿主机 env 文件、PROJECT.md、缺口清单、models.json、.env、平台登录与权限、标签、远端分支、镜像、hook、.gitignore |
 | `src/main.ts` | 编排（调度、build、land）。不含项目细节，不直接调 gh |
 | `src/detect.ts` `src/onboard.ts` `src/open-questions.ts` `prompts/onboard.md` | 接入新项目：探测、生成配置、agent 补全 PROJECT.md 并写缺口清单，校验清单格式和「写到哪」的节名 |
 | `src/forge.ts` | **Forge** 接口：托管平台上的 issue / 标签 / PR / 合并 |

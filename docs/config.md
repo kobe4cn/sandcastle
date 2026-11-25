@@ -33,6 +33,7 @@ export default defineProject({
 | `install.copyToWorktree` | Optional. Paths copied from the host into the worktree to avoid installing from scratch |
 | `isolation.env(runId)` | Environment variables passed into the sandbox: a separate test database, key prefixes, etc. |
 | `isolation.cleanup(runId)` | Optional. Reclaims this ticket's test resources after the sandbox closes |
+| `isolation.hostEnvFiles` | Optional. Env files the config reads on the host (relative to the project root, e.g. `[".env", ".env.test"]`); `sandpipe doctor` warns when any is missing. When absent, doctor scans the config source for quoted `.env` / `.env.*` paths (ignoring ones under `.sandcastle/` and `*.example` / `*.sample`) |
 | `gate.script({ baseRef })` | The merge gate, run in the sandbox with `sh -c`; exit code 0 means pass |
 | `gate.testFile` | Regex for test file paths, used to pick failing files out of the gate output |
 | `gate.typecheck` | The only command run after rebasing a PR that is waiting for review |

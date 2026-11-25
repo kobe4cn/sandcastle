@@ -228,6 +228,35 @@ describe("diagnose 的出错分支", () => {
     expect(check(checks, "沙箱镜像")).toMatchObject({ level: "ok", detail: expect.stringContaining("自定义") });
   });
 
+  it("config 声明了 hostEnvFiles：缺的文件警告并给修法，补上后通过", async () => {
+    const root = readyRepo();
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(config, readFileSync(config, "utf8").replace("  isolation: {", '  isolation: {\n    hostEnvFiles: [".env.test"],'));
+    const base = { cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) };
+    expect(check(await diagnose(base), "宿主机 env 文件")).toMatchObject({
+      level: "warn",
+      detail: expect.stringContaining(".env.test"),
+      fix: expect.stringContaining(".env.example"),
+    });
+
+    writeFileSync(join(root, ".env.test"), "TEST_DB=x\n");
+    expect(check(await diagnose(base), "宿主机 env 文件")).toMatchObject({ level: "ok", detail: ".env.test" });
+  });
+
+  it("没声明 hostEnvFiles：扫 config 源码里的 .env 字面量，排除 .sandcastle/ 下的、示例文件和 .envrc", async () => {
+    const root = readyRepo();
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(
+      config,
+      `import { existsSync } from "node:fs";\nconst files = [".env", '.sandcastle/.env', \`.env.example\`, ".env.sample", ".envrc"].filter(existsSync);\n` +
+        readFileSync(config, "utf8"),
+    );
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+    const host = check(checks, "宿主机 env 文件");
+    expect(host?.level).toBe("warn");
+    expect(host?.detail).toMatch(/读取的 \.env 在宿主机上不存在/);
+  });
+
   it("只缺 flaky / main-broken（用到时自动建）：通过；gh 没登录：平台不通过、不再查标签", async () => {
     const root = readyRepo();
     const labels = allLabels.filter((l) => l !== DEFAULT_LABELS.flaky && l !== DEFAULT_LABELS.mainBroken);

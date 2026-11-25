@@ -165,6 +165,11 @@ export interface ProjectProfile {
     env(runId: string): Record<string, string>;
     /** 关沙箱后回收这张票的测试资源。失败只打日志，不抛错。 / Reclaim this ticket's test resources after the sandbox closes. Failures are only logged, never thrown. */
     cleanup?(runId: string): Promise<void>;
+    /**
+     * config 从宿主机读的 env 文件（相对项目根，比如 .env、.env.test），doctor 检查它们存在；不写就由 doctor 扫 config 源码里的 .env 字面量猜。
+     * Env files the config reads on the host (relative to the project root, e.g. .env, .env.test); doctor checks they exist. When absent, doctor guesses by scanning the config source for .env literals.
+     */
+    hostEnvFiles?: string[];
   };
 
   gate: GateConfig;
