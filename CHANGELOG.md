@@ -1,5 +1,11 @@
 # 更新记录
 
+## 0.1.1
+
+- 改名为 `sandpipe`，发布到 npm：`npm i -g sandpipe` 或 `pnpm add -g sandpipe`。`upgrade` 按安装方式用 npm 或 pnpm 升级。
+- `doctor` 新增两项检查：`.claude/`、`.gitignore` 是否已推送到主分支；`GH_TOKEN` 能否读写本仓库的 issue、读 PR。
+- Python 项目：`[tool.mypy]` 配了 `files` 时，类型检查命令不再加 ` .`。
+
 ## 0.1.0
 
 第一个发布版本。

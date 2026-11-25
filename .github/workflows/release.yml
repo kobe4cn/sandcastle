@@ -1,9 +1,15 @@
-# 推 v* 标签时：类型检查、测试、打包，把 sandcastle-pipeline.tgz 发到公开的 releases 仓库（package.json 的 sandcastle.releases）。
-# 需要仓库 secret RELEASES_TOKEN：对 releases 仓库有 Contents 读写权限的 fine-grained token。
+# 推 v* 标签时：类型检查、测试、打包，把同一个包发到 npm 和公开的 releases 仓库（package.json 的 sandcastle.releases）。
+# 需要：
+#   仓库 secret RELEASES_TOKEN：对 releases 仓库有 Contents 读写权限的 fine-grained token
+#   npm 上这个包配好 Trusted Publisher（GitHub Actions，本仓库，workflow 文件 release.yml），走 OIDC，不用 npm token
 name: release
 on:
   push:
     tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # npm Trusted Publishing 用 OIDC 换发布凭据
 
 jobs:
   release:
@@ -14,6 +20,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          registry-url: https://registry.npmjs.org
+      - name: secret 已设置
+        env:
+          RELEASES_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: test -n "$RELEASES_TOKEN" || { echo "RELEASES_TOKEN 是空的：pbpaste | gh secret set RELEASES_TOKEN"; exit 1; }
       - run: npm ci
       - name: 标签和 package.json 的版本一致
         run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
@@ -22,7 +33,8 @@ jobs:
       - name: 打包
         run: |
           npm pack
-          mv sandcastle-pipeline-*.tgz sandcastle-pipeline.tgz
+          name=$(node -p 'require("./package.json").name')
+          mv "$name"-*.tgz "$name".tgz
       - name: 发布说明取 CHANGELOG.md 里这个版本的一节
         run: |
           v="${GITHUB_REF_NAME#v}"
@@ -33,5 +45,14 @@ jobs:
           GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
         run: |
           repo=$(node -p 'require("./package.json").sandcastle.releases')
-          gh release create "$GITHUB_REF_NAME" sandcastle-pipeline.tgz \
+          # 重跑时已经发过就跳过（另一步失败后 rerun）
+          if gh release view "$GITHUB_REF_NAME" --repo "$repo" > /dev/null 2>&1; then echo "已发过"; exit 0; fi
+          gh release create "$GITHUB_REF_NAME" "$(node -p 'require("./package.json").name').tgz" \
             --repo "$repo" --title "$GITHUB_REF_NAME" --notes-file notes.md
+      - name: 发到 npm（Trusted Publishing 要 npm ≥ 11.5.1，Node 22 自带的是 10）
+        run: |
+          name=$(node -p 'require("./package.json").name')
+          v="${GITHUB_REF_NAME#v}"
+          if [ "$(npm view "$name@$v" version 2>/dev/null)" = "$v" ]; then echo "已发过"; exit 0; fi
+          npm install -g npm@latest
+          npm publish "$name.tgz" --access public

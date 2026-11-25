@@ -1,4 +1,4 @@
-# sandcastle-pipeline：开发说明
+# sandpipe：开发说明
 
 使用说明见 README.md（会随安装包发布）。这份只在私有仓库里。
 
@@ -68,7 +68,7 @@ npm run build      # esbuild 打包、压缩到 dist/（npm pack 前自动跑）
 
 1. 改 `package.json` 的 `version`，在 `CHANGELOG.md` 加一节 `## <版本>`。
 2. 提交，`git tag v<版本> && git push --tags`。
-3. `.github/workflows/release.yml` 跑类型检查和测试，`npm pack` 后把 `sandcastle-pipeline.tgz` 发到公开仓库 `package.json` 的 `sandcastle.releases`。
+3. `.github/workflows/release.yml` 跑类型检查和测试，`npm pack` 后把 `sandpipe.tgz` 发到公开仓库 `package.json` 的 `sandcastle.releases`。
 
 公开的只有安装包（压缩过的 JS、提示词、模板、`docs/config.md`、`docs/onboarding-checklist.md`），见 `package.json` 的 `files`。
 `examples/`、其余 `docs/`、测试和源码都不发布。往这些发布的文件里写东西时，不要写进具体项目（比如 duckdb_crm）的内部信息。

@@ -1,4 +1,4 @@
-// sandcastle-pipeline onboard：把 Sandcastle 装进一个新项目（在项目根目录运行）。
+// sandpipe onboard：把 Sandcastle 装进一个新项目（在项目根目录运行）。
 //
 // 1. 探测（detect.ts，只读文件和 git）：语言、包管理、命令、托管平台、文档、测试、迁移、依赖的服务。
 // 2. 生成文件，已存在的一律跳过、不覆盖：
@@ -44,8 +44,8 @@ export function configSource(f: ProjectFacts, importFrom: string): string {
       ]
     : ["      // 测试依赖外部服务（数据库、缓存、对象存储）时，在这里给每张票独立的库名 / 前缀（加 runId）。"];
   return [
-    "// Sandcastle 项目配置：编排脚本里随项目变的部分（由 sandcastle-pipeline onboard 生成，按需修改）。",
-    "// 字段说明见 sandcastle-pipeline 的 docs/config.md。",
+    "// Sandcastle 项目配置：编排脚本里随项目变的部分（由 sandpipe onboard 生成，按需修改）。",
+    "// 字段说明见 sandpipe 的 docs/config.md。",
     `import { defineProject } from ${q(importFrom)};`,
     "",
     "export default defineProject({",
@@ -107,7 +107,7 @@ export function projectDocDraft(f: ProjectFacts): string {
   const sections = [
     `# PROJECT.md（${f.name}）`,
     "",
-    "<!-- 由 sandcastle-pipeline onboard 生成的草稿。章节规则见 sandcastle-pipeline 的 templates/.sandcastle/PROJECT.md。 -->",
+    "<!-- 由 sandpipe onboard 生成的草稿。章节规则见 sandpipe 的 templates/.sandcastle/PROJECT.md。 -->",
     "",
     "## 概况",
     "",
@@ -228,7 +228,7 @@ export const CLAUDE_FILES: Record<string, string> = {
   ".claude/skills/prep-ticket/ticket-sizing.md": "prompts/ticket-sizing.md",
 };
 
-/** 把 CLAUDE_FILES 覆盖成当前版本，返回内容有变化的文件。升级工具后跑（sandcastle-pipeline update）。 */
+/** 把 CLAUDE_FILES 覆盖成当前版本，返回内容有变化的文件。升级工具后跑（sandpipe update）。 */
 export function updateClaudeFiles(root: string): string[] {
   const changed: string[] = [];
   for (const [file, src] of Object.entries(CLAUDE_FILES)) {
@@ -244,7 +244,7 @@ export function updateClaudeFiles(root: string): string[] {
 
 export function installFiles(root: string, f: ProjectFacts): Outcome[] {
   const out: Outcome[] = [
-    writeIfMissing(root, ".sandcastle/sandcastle.config.ts", () => configSource(f, "sandcastle-pipeline")),
+    writeIfMissing(root, ".sandcastle/sandcastle.config.ts", () => configSource(f, "sandpipe")),
     writeIfMissing(root, ".sandcastle/PROJECT.md", () => projectDocDraft(f)),
     // 让 Node 把 .sandcastle/ 下的 .ts 当 ESM 加载（项目可能没有 package.json，或者是 CommonJS）
     writeIfMissing(root, ".sandcastle/package.json", '{ "type": "module" }\n'),
@@ -367,7 +367,7 @@ export function onboard(argv: string[], root = process.cwd()) {
       "  1. 看一遍 .sandcastle/PROJECT.md 和 sandcastle.config.ts（门槛、测试隔离），改成符合项目实际的样子",
       "  2. cp .sandcastle/.env.example .sandcastle/.env，填 token",
       `  3. 建镜像：podman build -t ${defaultImageName(root)} -f .sandcastle/Containerfile .sandcastle`,
-      "  4. sandcastle-pipeline doctor --fix 检查一遍（顺带建好标签）",
+      "  4. sandpipe doctor --fix 检查一遍（顺带建好标签）",
       `  5. 之后按 ${join(TOOL_ROOT, "docs/onboarding-checklist.md")}：baseline 跑一次完整门槛 → 金丝雀票 → 真实小票 → 打开自动合并`,
     ].join("\n"),
   );

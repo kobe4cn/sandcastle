@@ -1,7 +1,10 @@
 {
-  "name": "sandcastle-pipeline",
-  "version": "0.1.0",
-  "private": true,
+  "name": "sandpipe",
+  "version": "0.1.1",
+  "license": "UNLICENSED",
+  "publishConfig": {
+    "access": "public"
+  },
   "description": "在 @ai-hero/sandcastle 之上的 issue → PR → 合并流水线：prep 拆票、确定性排期、implement + review、测试门槛、自动合并。项目差异在目标项目的 .sandcastle/sandcastle.config.ts。",
   "type": "module",
   "engines": {
@@ -11,7 +14,7 @@
     ".": "./dist/index.js"
   },
   "bin": {
-    "sandcastle-pipeline": "./dist/cli.js"
+    "sandpipe": "./dist/cli.js"
   },
   "files": [
     "dist",

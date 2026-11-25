@@ -60,8 +60,8 @@
 ## H. 升级
 
 - [ ] H1 修完问题后发 v0.1.1；装着 0.1.0 时 doctor 提示有新版本
-- [ ] H2 `sandcastle-pipeline upgrade` 升到 0.1.1
-- [ ] H3 `sandcastle-pipeline update` 刷新 `.claude/` 下的文件
+- [ ] H2 `sandpipe upgrade` 升到 0.1.1
+- [ ] H3 `sandpipe update` 刷新 `.claude/` 下的文件
 
 ## 不在本次范围
 

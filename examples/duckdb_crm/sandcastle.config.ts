@@ -4,7 +4,7 @@
 import { execFile } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { parseEnv, promisify } from "node:util";
-import { defineProject, trySh } from "sandcastle-pipeline";
+import { defineProject, trySh } from "sandpipe";
 
 // ---------------------------------------------------------------------------
 // 测试依赖的服务：宿主机 apple container 里的 PG / MySQL / MongoDB / SeaweedFS，

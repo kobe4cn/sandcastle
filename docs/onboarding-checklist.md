@@ -5,7 +5,7 @@
 
 ## 0. 生成配置
 
-- [ ] `sandcastle-pipeline onboard`，生成 `.sandcastle/`，agent 补全 PROJECT.md
+- [ ] `sandpipe onboard`，生成 `.sandcastle/`，agent 补全 PROJECT.md
 - [ ] 人看一遍 `PROJECT.md`：去掉所有 `<!-- 待补` 标记，命令、目录、约定都和项目实际一致
 - [ ] 人看一遍 `sandcastle.config.ts`：
   - `install.onSandboxReady` 在 linux 容器里能装好依赖
@@ -17,11 +17,11 @@
 
 ## 1. doctor 全过
 
-- [ ] `sandcastle-pipeline doctor --fix`：没有 ✗。⚠ 要逐条看过，确认可以接受
+- [ ] `sandpipe doctor --fix`：没有 ✗。⚠ 要逐条看过，确认可以接受
 
 ## 2. 门槛基线
 
-- [ ] `sandcastle-pipeline baseline`：在沙箱里对 `origin/main` 跑一次完整门槛，必须通过
+- [ ] `sandpipe baseline`：在沙箱里对 `origin/main` 跑一次完整门槛，必须通过
   - 没过：要么 main 本来就坏，要么 `gate.script` / `isolation` / `install` 在沙箱里不对。修好再跑，不要带着红的基线做票
   - 通过但提示有偶发失败：记下 `GATE_FLAKY` 列出的文件，先修，或者暂时从门槛里排除
 - [ ] 记下这次门槛用了多久（输出里的 `GATE_TIME`），作为之后判断门槛是否变慢的参照
@@ -29,7 +29,7 @@
 ## 3. 金丝雀票（只开 PR）
 
 - [ ] 开一张几乎不会失败的小票，比如改一处文案或补一条注释，打上 `Sandcastle` 标签
-- [ ] `SANDCASTLE_ONLY=<票号> sandcastle-pipeline`
+- [ ] `SANDCASTLE_ONLY=<票号> sandpipe`
 - [ ] 核对：
   - prep 写了 `## Implementation guide`，标签按状态机走（见 docs/config.md 的「标签」）
   - PR 正文有 Review、Gate、用量；改了页面时有验收说明

@@ -208,7 +208,7 @@ describe("diagnose：.claude/ 文件与版本", () => {
     writeFileSync(join(root, ".claude/skills/prep-ticket/SKILL.md"), "旧版");
     const base = { cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) };
     const checks = await diagnose({ ...base, latest: async () => "99.0.0" });
-    expect(check(checks, "Claude 文件")).toMatchObject({ level: "warn", fix: "sandcastle-pipeline update" });
+    expect(check(checks, "Claude 文件")).toMatchObject({ level: "warn", fix: "sandpipe update" });
     expect(check(checks, "版本")).toMatchObject({ level: "warn", fix: expect.stringContaining("upgrade") });
 
     const ok = await diagnose({ ...base, latest: async () => VERSION });

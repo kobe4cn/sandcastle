@@ -225,7 +225,7 @@ const INDEX_URL = new URL(import.meta.url.endsWith(".ts") ? "./index.ts" : "./in
 let resolverRegistered = false;
 
 /**
- * 配置里 `import … from "sandcastle-pipeline"` 一律指向正在运行的这份工具：
+ * 配置里 `import … from "sandpipe"` 一律指向正在运行的这份工具：
  * 全局安装时项目目录下解析不到这个包，也不该让 Python、Go 项目为它装 node_modules。
  */
 function registerSelfResolver() {
@@ -233,7 +233,7 @@ function registerSelfResolver() {
   resolverRegistered = true;
   registerHooks({
     resolve: (specifier, context, next) =>
-      specifier === "sandcastle-pipeline" ? { url: INDEX_URL, shortCircuit: true } : next(specifier, context),
+      specifier === "sandpipe" ? { url: INDEX_URL, shortCircuit: true } : next(specifier, context),
   });
 }
 

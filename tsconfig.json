@@ -11,7 +11,7 @@
       "node"
     ],
     "paths": {
-      "sandcastle-pipeline": [
+      "sandpipe": [
         "./src/index.ts"
       ]
     }

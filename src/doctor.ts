@@ -73,7 +73,7 @@ export async function diagnose(opts: {
     project = await loadProject(dir);
     add("配置", "ok", rel(join(dir, "sandcastle.config.ts")));
   } catch (e) {
-    add("配置", "fail", errText(e), "没有配置先跑 sandcastle-pipeline onboard");
+    add("配置", "fail", errText(e), "没有配置先跑 sandpipe onboard");
   }
   const forge = opts.forge ?? project?.forge;
 
@@ -159,7 +159,7 @@ export async function diagnose(opts: {
           for (const k of missing) forge.ensureLabel(project.labels[k], ...LABEL_META[k]);
           add("标签", "ok", `补建了 ${names(missing)}`);
         } else if (required.length) {
-          add("标签", "fail", `缺 ${names(required)}：给票打标签会失败${later}`, "sandcastle-pipeline doctor --fix 补建");
+          add("标签", "fail", `缺 ${names(required)}：给票打标签会失败${later}`, "sandpipe doctor --fix 补建");
         } else add("标签", "ok", `都在${later}`);
       } catch (e) {
         add("标签", "fail", errText(e));
@@ -220,7 +220,7 @@ export async function diagnose(opts: {
     })
     .map(([file]) => file);
   if (!stale.length) add("Claude 文件", "ok", "hook、子代理、skill 都是当前版本");
-  else add("Claude 文件", "warn", `和当前版本不一致或缺失：${stale.join("、")}`, "sandcastle-pipeline update");
+  else add("Claude 文件", "warn", `和当前版本不一致或缺失：${stale.join("、")}`, "sandpipe update");
 
   // ---- 沙箱里的 worktree 从远端基础分支建：hook、.gitignore 要已经推上去才生效 ----
   if (project) {
@@ -244,7 +244,7 @@ export async function diagnose(opts: {
   if (opts.latest) {
     const latest = await opts.latest();
     if (!latest) add("版本", "warn", `${VERSION}；查不到最新版本（网络或还没发版）`);
-    else if (newer(latest, VERSION)) add("版本", "warn", `${VERSION}，最新是 ${latest}`, `sandcastle-pipeline upgrade，然后 sandcastle-pipeline update`);
+    else if (newer(latest, VERSION)) add("版本", "warn", `${VERSION}，最新是 ${latest}`, `sandpipe upgrade，然后 sandpipe update`);
     else add("版本", "ok", `${VERSION} 是最新`);
   }
 

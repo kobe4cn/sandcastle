@@ -37,7 +37,7 @@
 //
 // Usage（在目标项目根目录）: npx tsx <本仓库>/src/main.ts
 //        SANDCASTLE_ONLY=328,329 npx tsx <本仓库>/src/main.ts   只处理这几张票（试跑、单独补跑）
-//        SANDCASTLE_BASELINE=1 …（即 sandcastle-pipeline baseline）   对 origin/main 跑一次完整门槛就退出
+//        SANDCASTLE_BASELINE=1 …（即 sandpipe baseline）   对 origin/main 跑一次完整门槛就退出
 
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, loadavg, tmpdir } from "node:os";
@@ -1125,7 +1125,7 @@ async function fullGateAt(sha: string): Promise<ExecResult> {
 }
 
 /**
- * 接入新项目时的门槛基线（sandcastle-pipeline baseline）：对 origin/main 跑一次完整门槛，只报告、不开票。
+ * 接入新项目时的门槛基线（sandpipe baseline）：对 origin/main 跑一次完整门槛，只报告、不开票。
  * 通过时记为兜底完整测试的起点；失败说明门槛本身或 main 有问题，先修好再让 Sandcastle 做票。
  */
 async function runBaseline(): Promise<boolean> {

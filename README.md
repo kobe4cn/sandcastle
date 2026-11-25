@@ -1,4 +1,4 @@
-# sandcastle-pipeline
+# sandpipe
 
 把 GitHub issue 无人值守地做成 PR、过测试后合并的流水线，基于 [`@ai-hero/sandcastle`](https://github.com/mattpocock/sandcastle)。
 
@@ -20,27 +20,31 @@
 ## 安装
 
 ```bash
-npm i -g https://github.com/kobe4cn/sandcastle-releases/releases/latest/download/sandcastle-pipeline.tgz
+npm i -g sandpipe
+# 或
+pnpm add -g sandpipe
 ```
 
-以后升级：`sandcastle-pipeline upgrade`，然后在各项目里跑 `sandcastle-pipeline update`。
+也可以直接装 GitHub Release 上的包：`npm i -g https://github.com/kobe4cn/sandcastle-releases/releases/latest/download/sandpipe.tgz`。
+
+以后升级：`sandpipe upgrade`，然后在各项目里跑 `sandpipe update`。
 
 ## 接入一个项目
 
 在项目根目录：
 
 ```bash
-sandcastle-pipeline onboard          # 探测项目，生成 .sandcastle/，让 claude 读代码写好 PROJECT.md
+sandpipe onboard          # 探测项目，生成 .sandcastle/，让 claude 读代码写好 PROJECT.md
 cp .sandcastle/.env.example .sandcastle/.env    # 填 token
 podman build -t sandcastle:<项目名> -f .sandcastle/Containerfile .sandcastle   # onboard 最后会打印准确的命令
-sandcastle-pipeline doctor --fix     # 逐项检查，顺带建好标签
-sandcastle-pipeline baseline         # 在沙箱里对 main 跑一次完整门槛
+sandpipe doctor --fix     # 逐项检查，顺带建好标签
+sandpipe baseline         # 在沙箱里对 main 跑一次完整门槛
 ```
 
 然后给 issue 打上 `Sandcastle` 标签，运行：
 
 ```bash
-SANDCASTLE_ONLY=12 sandcastle-pipeline    # 只做 #12；不设就处理全部带标签的票
+SANDCASTLE_ONLY=12 sandpipe    # 只做 #12；不设就处理全部带标签的票
 ```
 
 新项目默认只开 PR、不自动合并（`autoMerge: false`），一次只做一张票。按 [docs/onboarding-checklist.md](docs/onboarding-checklist.md) 走完金丝雀票、真实小票，确认没问题后再放开。
@@ -60,12 +64,12 @@ SANDCASTLE_ONLY=12 sandcastle-pipeline    # 只做 #12；不设就处理全部�
 
 | 命令 | 作用 |
 |---|---|
-| `sandcastle-pipeline [run]` | 跑流水线 |
-| `sandcastle-pipeline onboard [--no-agent] [--model <名>]` | 接入新项目，已有的文件不覆盖 |
-| `sandcastle-pipeline doctor [--fix]` | 跑之前的检查；有 ✗ 时退出码为 1 |
-| `sandcastle-pipeline baseline` | 对 `origin/main` 跑一次完整门槛，只报告 |
-| `sandcastle-pipeline update` | 把 `.claude/` 下本工具的文件刷成当前版本 |
-| `sandcastle-pipeline upgrade` | 安装最新版本 |
-| `sandcastle-pipeline --version` | |
+| `sandpipe [run]` | 跑流水线 |
+| `sandpipe onboard [--no-agent] [--model <名>]` | 接入新项目，已有的文件不覆盖 |
+| `sandpipe doctor [--fix]` | 跑之前的检查；有 ✗ 时退出码为 1 |
+| `sandpipe baseline` | 对 `origin/main` 跑一次完整门槛，只报告 |
+| `sandpipe update` | 把 `.claude/` 下本工具的文件刷成当前版本 |
+| `sandpipe upgrade` | 安装最新版本 |
+| `sandpipe --version` | |
 
 现在只支持 GitHub，GitLab 还没做。

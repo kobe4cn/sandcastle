@@ -3,7 +3,7 @@
 `onboard` 按探测结果生成。必填的只有 `install`、`isolation`、`gate`，其余都有默认值。
 
 ```ts
-import { defineProject } from "sandcastle-pipeline";
+import { defineProject } from "sandpipe";
 
 export default defineProject({
   install: { onSandboxReady: "pnpm install --frozen-lockfile" },
@@ -21,7 +21,7 @@ export default defineProject({
 });
 ```
 
-`import "sandcastle-pipeline"` 不需要项目里装这个包，运行时会指向你装的 `sandcastle-pipeline`。
+`import "sandpipe"` 不需要项目里装这个包，运行时会指向你装的 `sandpipe`。
 
 ## 必填
 
@@ -76,4 +76,4 @@ export default defineProject({
 | `sandcastle:main-broken` | main 上的兜底完整测试失败，流水线自动开票，排在最前 |
 | `ready-for-agent` / `ready-for-human` | 拆票后的分流 |
 
-`sandcastle-pipeline doctor --fix` 会建好缺的标签。
+`sandpipe doctor --fix` 会建好缺的标签。
