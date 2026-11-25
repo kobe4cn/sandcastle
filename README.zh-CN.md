@@ -19,6 +19,20 @@
 - podman（macOS 上还要 `podman machine start`）
 - Claude Code 的凭据：订阅用户可用 `claude setup-token` 生成
 
+## 前提
+
+Sandcastle 的产出质量取决于你的意图有多少写了下来。不用事先备齐：缺的部分 onboard 会带你补。它把找到的缺口写进缺口清单（早于清单接入的项目用 `onboard --questions-only` 补一份），你再用 `/fill-project-docs` 逐条回答。
+
+项目知识分三类：
+
+| 类别 | 能否从代码推出 | 由谁补 | 例子 |
+|---|---|---|---|
+| 事实 | 能 | onboard 的 agent 写进 PROJECT.md | 目录结构、命令、测试框架、测试依赖的服务 |
+| 规范 | 部分能 | agent 起草，人确认 | 代码风格、测试写法、提交约定 |
+| 意图 | 不能 | 人在 `/fill-project-docs` 里回答 | 业务规则、领域术语、红线、设计原因 |
+
+只涉及事实的票（修 bug、照已有的样子加字段）没有这些文档也能做。需要的意图没写下来的票会停下来，等人补上。
+
 ## 安装
 
 ```bash

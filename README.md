@@ -19,6 +19,20 @@ The pipeline runs these steps in order:
 - podman (on macOS also `podman machine start`)
 - Claude Code credentials: subscribers can generate one with `claude setup-token`
 
+## Before you start
+
+How good Sandcastle's output is depends on how much of your intent is written down. You don't need to have it all ready: onboard helps you fill in what's missing. It writes the gaps it finds to an open questions list (projects onboarded before the list existed get one with `onboard --questions-only`), and you answer them with `/fill-project-docs`.
+
+Project knowledge comes in three kinds:
+
+| Kind | Can it be read from the code? | Who fills it in | Examples |
+|---|---|---|---|
+| Fact | Yes | The onboard agent writes it into PROJECT.md | Directory layout, commands, test framework, services the tests depend on |
+| Convention | Partly | The agent drafts it, a human confirms | Code style, how tests are written, commit conventions |
+| Intent | No | A human, answering in `/fill-project-docs` | Business rules, domain terms, red lines, reasons behind a design |
+
+Tickets that only touch facts (fixing a bug, adding a field the way existing ones are added) work without these docs. Tickets that need intent that isn't written down stop and wait for a human to fill it in.
+
 ## Install
 
 ```bash

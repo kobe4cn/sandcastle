@@ -10,6 +10,7 @@
 - 新增 `/fill-project-docs` skill（装在 `.claude/skills/fill-project-docs/`，附 NOTICE）：在 Claude Code 里和人逐条补完缺口清单，一次问一个问题，能从代码查到的事实不问人；答案按类别写进 PROJECT.md 对应的节、术语表（`CONTEXT.md` / `GLOSSARY.md`，都没有就新建 `GLOSSARY.md`）或 ADR，写完从清单删掉这一条；之后可选梳理核心术语，跑 `sandpipe doctor` 自检，人确认后提交。已接入的项目要跑 `sandpipe update` 才装得上；`sandpipe doctor` 会在它缺失或被改过时警告。
 - 缺口清单的「写到哪」不再指向 PROJECT.md 里不存在的节：onboard（含 `--questions-only`）的提示词列出可用的节名（中文项目列中文那套，英文项目列英文那套），写明不能新建节，放不进的写最接近的那一节，清单示例也按项目语言给（英文项目的示例用英文类别和节名）；onboard 写完校验清单时，目标节名不认识的条目打印警告并给出行号（只警告，不算格式错误）。
 - prep 遇到缺意图信息的票（业务规则、领域术语、红线、设计原因在票、注入的项目知识和代码里都找不到）不再猜着做：打 `sandcastle:stuck` + `ready-for-human`，评论写明缺什么、应该写进哪份文档（PROJECT.md 的哪一节、术语表或 ADR），提示在 Claude Code 里运行 `/fill-project-docs` 补上后去掉标签。不新增标签，缺口清单不注入提示词（closes #7）。
+- 中英文 README 新增「前提」一节：产出质量取决于写下来的意图，缺的部分 onboard 会带你补；用一张表列出事实、规范、意图三类项目知识能否从代码推出、由谁补，并说明只涉及事实的票（修 bug、照已有的样子加字段）没有这些文档也能做。中英文接入清单在 doctor 和门槛基线之间加「补文档（建议）」一步：看 doctor 的「项目知识」检查（老项目先跑 `sandpipe onboard --questions-only`），运行 `/fill-project-docs`，把术语表和 ADR 推到 main；原来的第 2–5 步顺延为第 3–6 步（closes #8）。
 
 ## 0.1.4
 
