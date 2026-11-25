@@ -6,6 +6,11 @@
     "access": "public"
   },
   "description": "在 @ai-hero/sandcastle 之上的 issue → PR → 合并流水线：prep 拆票、确定性排期、implement + review、测试门槛、自动合并。项目差异在目标项目的 .sandcastle/sandcastle.config.ts。",
+  "homepage": "https://github.com/kobe4cn/sandcastle-releases#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kobe4cn/sandcastle-releases.git"
+  },
   "type": "module",
   "engines": {
     "node": ">=22.18"

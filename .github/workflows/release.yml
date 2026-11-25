@@ -49,6 +49,20 @@ jobs:
           if gh release view "$GITHUB_REF_NAME" --repo "$repo" > /dev/null 2>&1; then echo "已发过"; exit 0; fi
           gh release create "$GITHUB_REF_NAME" "$(node -p 'require("./package.json").name').tgz" \
             --repo "$repo" --title "$GITHUB_REF_NAME" --notes-file notes.md
+      - name: 把 README 和文档同步到 releases 仓库（源码仓库私有，npm 页面上的相对链接按 package.json 的 repository 指到这里）
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          repo=$(node -p 'require("./package.json").sandcastle.releases')
+          git clone -q --depth 1 "https://x-access-token:$GH_TOKEN@github.com/$repo.git" releases-repo
+          mkdir -p releases-repo/docs
+          cp README.md README.zh-CN.md CHANGELOG.md releases-repo/
+          cp docs/config.md docs/config.zh-CN.md docs/onboarding-checklist.md docs/onboarding-checklist.zh-CN.md releases-repo/docs/
+          cd releases-repo
+          git add -A
+          if git diff --cached --quiet; then echo "文档没变"; exit 0; fi
+          git -c user.name=github-actions -c user.email=41898282+github-actions[bot]@users.noreply.github.com commit -qm "docs: $GITHUB_REF_NAME"
+          git push -q
       - name: 发到 npm（Trusted Publishing 要 npm ≥ 11.5.1，Node 22 自带的是 10）
         run: |
           name=$(node -p 'require("./package.json").name')
