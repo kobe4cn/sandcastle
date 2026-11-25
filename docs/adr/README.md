@@ -1,0 +1,5 @@
+# ADR 索引
+
+按编号只追加。
+
+- [0001 补项目知识只在 onboard 阶段做](0001-project-docs-only-at-onboard.md)
