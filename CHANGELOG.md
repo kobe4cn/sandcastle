@@ -1,5 +1,10 @@
 # 更新记录
 
+## 0.1.4
+
+- npm 页面上 README 的相对链接（中文版、配置说明、接入清单）不再 404：`package.json` 的 `repository` 指向公开的 releases 仓库，发版时把 README 和文档同步过去。
+- 发版 workflow 的 `actions/checkout`、`actions/setup-node` 升到 v7（不再跑在已弃用的 Node 20 上）。
+
 ## 0.1.3
 
 - 用户手册中英两份：`README.md`、`docs/config.md`、`docs/onboarding-checklist.md` 是英文，同名的 `.zh-CN.md` 是中文。内部文档移到 `docs/internal/`。
