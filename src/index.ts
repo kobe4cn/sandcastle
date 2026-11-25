@@ -3,3 +3,4 @@ export { defineProject, DEFAULT_LABELS, DEFAULT_TEXTS, defaultTexts, type Projec
 export type { Forge, ForgeIssue, ForgePr, MergeMethod } from "./forge.ts";
 export { githubForge } from "./forges/github.ts";
 export { sh, trySh, attempt } from "./shell.ts";
+export { readHostEnv, toContainerHost, withDbSuffix, runHostScript, CONTAINER_HOST } from "./isolation.ts";

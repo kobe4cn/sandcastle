@@ -5,15 +5,20 @@
 `onboard` generates it from what it detects. Only `install`, `isolation` and `gate` are required; everything else has a default.
 
 ```ts
-import { defineProject } from "sandpipe";
+import { defineProject, readHostEnv, runHostScript, toContainerHost, withDbSuffix } from "sandpipe";
 
 export default defineProject({
   install: { onSandboxReady: "pnpm install --frozen-lockfile" },
   isolation: {
     // A separate test database or prefix per ticket, so parallel tickets don't wipe each other's tables. runId is the ticket number; the fallback check on main uses "main"
-    env: (runId) => ({ DATABASE_URL: `postgres://test@host.containers.internal/shop_test_${runId}` }),
+    // .env has DATABASE_URL=postgres://test@localhost/shop_test; the sandbox gets postgres://test@host.containers.internal/shop_test_i<runId>
+    env: (runId) => ({
+      DATABASE_URL: withDbSuffix(toContainerHost(readHostEnv(".env").DATABASE_URL ?? "postgres://test@localhost/shop_test"), `_i${runId}`),
+    }),
     // Reclaim this ticket's resources on the host after the sandbox closes (drop databases etc.). Failures are only logged
-    cleanup: async (runId) => {},
+    cleanup: async (runId) => {
+      await runHostScript("node", ["scripts/drop-test-db.js", `_i${runId}`], `#${runId} cleanup failed`);
+    },
   },
   gate: {
     script: ({ baseRef }) => "pnpm typecheck && pnpm lint && pnpm test",
@@ -43,6 +48,17 @@ Gate script output conventions (optional; used to select tests by dependency and
 - Print a line `GATE_TIER: selected …` to say only dependency-selected tests ran; without it the run counts as the full suite.
 - When the environment variable `GATE_FULL=1` is set, the full suite must run (`baseline` and the fallback check on main set it).
 - When failing files pass on a solo rerun, print `GATE_FLAKY`. List the rerun files before it and the summary of the first failure after it. The pipeline opens `flaky` tickets for those files.
+
+## Isolation helpers
+
+Exported from `sandpipe` for `isolation.env` / `cleanup`. The config is imported on the host, so they run on the host; relative paths resolve against the project root.
+
+| Function | What it does |
+|---|---|
+| `readHostEnv(files, projectRoot?)` | Reads one or more host env files (e.g. `[".env", ".env.test"]`) and merges them, later files overriding earlier ones. Missing files are skipped, never an error |
+| `toContainerHost(value)` | Replaces `localhost` / `127.0.0.1` with `host.containers.internal`, so the sandbox can reach services on the host |
+| `withDbSuffix(url, suffix)` | Appends a suffix (e.g. `` `_i${runId}` ``) to the database name or prefix. Keeps the query (`?authSource=admin`) and a trailing `/`; values without `://` are concatenated as is. Throws when the URL has no database name, instead of letting tests hit the dev database |
+| `runHostScript(command, args, label)` | Runs a cleanup script on the host. Returns stdout on success; on failure logs one warning (`label` plus the first 500 characters of stderr) and returns `undefined`. Never throws |
 
 ## Optional
 

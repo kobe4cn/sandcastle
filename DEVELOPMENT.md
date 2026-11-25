@@ -25,6 +25,7 @@
 | `src/forge.ts` | **Forge** 接口：托管平台上的 issue / 标签 / PR / 合并 |
 | `src/forges/github.ts` | GitHub 实现（gh CLI） |
 | `src/profile.ts` | **ProjectProfile**：项目配置（测试隔离、门槛、安装、一致性检查、文案）与默认值 |
+| `src/isolation.ts` | 给 config 的 `isolation.env` / `cleanup` 用的辅助函数（从包入口导出）：读宿主机 env 文件、换宿主机地址、加库名后缀、跑回收脚本 |
 | `src/project-doc.ts` | 解析 `.sandcastle/PROJECT.md`、渲染提示词 |
 | `prompts/` | 通用提示词模板（implement / review / prep / rebase）与共享片段（设计决定、编码规范、票的大小） |
 | `src/gate-progress.ts` | 门槛进度：输出实时写进 `.sandcastle/logs/gate-*.log`、心跳、用时文案 |

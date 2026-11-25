@@ -14,6 +14,7 @@
 - 门槛长时间运行时有进度了：每次门槛开始打印 `📄 #<票号> 门槛输出实时写进 <路径>`，输出逐行实时写进 `.sandcastle/logs/gate-<票号>-<时间戳>.log`（同一张票重跑另开新文件），运行中每 5 分钟打印一次心跳 `⏳ #<票号> 门槛已跑 X 分钟，输出见 <路径>`（日志写不进时警告一次，门槛照跑）。baseline、run（含修复后重跑、rebase 补救）和 main 兜底都生效。档位（`GATE_TIER`）、`GATE_FLAKY`、`GATE_TIME` 仍按完整输出判断（closes #10）。
 - config 新增可选字段 `isolation.hostEnvFiles`：声明 config 从宿主机读的 env 文件（比如 `.env`、`.env.test`）。`sandpipe doctor` 新增「宿主机 env 文件」检查，其中有文件在项目根下不存在时警告并提示从 `.env.example` 复制或向同事要，都在时通过；没声明时扫 config 源码里引号包着的 `.env` / `.env.*` 路径（不算 `.sandcastle/` 下的和 `*.example` / `*.sample`），已有的 config 不改也能报出缺失；什么都没找到时不出现这一项（closes #11）。
 - `sandpipe onboard` 遇到 `.claude/` 下已存在、内容和模板不同的本工具文件（hook、子代理、skill 及附属文件）不再静默跳过：显示 `git diff --no-index --stat`，让人选 `[k]` 保留 / `[o]` 覆盖 / `[n]` 另存为 `<文件>.new` / `[d]` 看完整 diff；内容相同的显示「无需改动」不问；非交互时一律另存 `.new` 并警告，提示合并后删掉。`sandpipe update` 对这些文件按同一规则处理，不再静默覆盖；全局 skill 和 `.sandcastle/tsconfig.json`、`.sandcastle/.gitignore` 照旧直接刷新（closes #12）。
+- `sandpipe` 导出 isolation 辅助函数，`sandcastle.config.ts` 不用再手写样板：`readHostEnv(files, projectRoot?)` 按顺序读宿主机 env 文件并合并（缺文件跳过），`toContainerHost(value)` 把 `localhost` / `127.0.0.1` 换成 `host.containers.internal`，`withDbSuffix(url, suffix)` 给库名 / 前缀加后缀（保留 query 和结尾的 `/`，非 URL 直接拼接，URL 没有库名时抛错），`runHostScript(command, args, label)` 在宿主机上跑回收脚本（失败只警告一行、返回 `undefined`）；另导出常量 `CONTAINER_HOST`。duckdb_crm 的 `TEST_MONGO_URL` / `TEST_MYSQL_URL` 如果没写库名，原来会变成 `/_i<票号>`，现在 `isolation.env` 直接报错（报错里遮掉密码）。`examples/duckdb_crm` 的配置改用它们，`docs/config`（中英）新增「隔离辅助函数」一节，开头的示例改用它们。
 
 ## 0.1.4
 

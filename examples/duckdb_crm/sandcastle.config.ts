@@ -1,10 +1,8 @@
 // duckdb_crm 的 Sandcastle 项目配置：原来写死在 .sandcastle/main.ts 里的项目差异，原文搬过来。
 // 放到 duckdb_crm 的 .sandcastle/sandcastle.config.ts 即可（import 路径换成安装好的包名）。
 
-import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { parseEnv, promisify } from "node:util";
-import { defineProject, trySh } from "sandpipe";
+import { readFileSync } from "node:fs";
+import { defineProject, readHostEnv, runHostScript, toContainerHost, trySh, withDbSuffix } from "sandpipe";
 
 // ---------------------------------------------------------------------------
 // 测试依赖的服务：宿主机 apple container 里的 PG / MySQL / MongoDB / SeaweedFS，
@@ -13,27 +11,19 @@ import { defineProject, trySh } from "sandpipe";
 // 每张票的库名 / 前缀再加 `_i<n>`，并行的沙箱互不清表（worker 后缀 `_w<i>` 加在它后面）。
 // ---------------------------------------------------------------------------
 
-const HOST_FROM_CONTAINER = "host.containers.internal";
-const readEnvFile = (file: string): Record<string, string | undefined> => (existsSync(file) ? parseEnv(readFileSync(file, "utf8")) : {});
-const hostEnv = { ...readEnvFile(".env"), ...readEnvFile(".env.test") };
-const toContainer = (value: string) => value.replace(/\b(localhost|127\.0\.0\.1)\b/g, HOST_FROM_CONTAINER);
-const withDbSuffix = (url: string, suffix: string) => {
-  const u = new URL(url);
-  u.pathname = `${u.pathname}${suffix}`;
-  return u.toString();
-};
+const hostEnv = readHostEnv([".env", ".env.test"]);
 
 const SERVICE_KEYS = ["S3_ENDPOINT", "S3_REGION", "S3_ACCESS_KEY", "S3_SECRET_KEY", "S3_URL_STYLE", "S3_USE_SSL"];
-const serviceEnv = Object.fromEntries(SERVICE_KEYS.flatMap((k) => (hostEnv[k] ? [[k, toContainer(hostEnv[k])]] : [])));
+const serviceEnv = Object.fromEntries(SERVICE_KEYS.flatMap((k) => (hostEnv[k] ? [[k, toContainerHost(hostEnv[k])]] : [])));
 
 function testEnv(issueId: string): Record<string, string> {
   const suffix = `_i${issueId}`;
   const env: Record<string, string> = {
     ...serviceEnv,
-    TEST_PLATFORM_DATABASE_URL: withDbSuffix(toContainer("postgres://crm:crm@localhost:5432/crm_platform_test"), suffix),
-    TEST_SOURCE_DATABASE_URL: withDbSuffix(toContainer("postgres://crm:crm@localhost:5432/crm_source_test"), suffix),
+    TEST_PLATFORM_DATABASE_URL: withDbSuffix(toContainerHost("postgres://crm:crm@localhost:5432/crm_platform_test"), suffix),
+    TEST_SOURCE_DATABASE_URL: withDbSuffix(toContainerHost("postgres://crm:crm@localhost:5432/crm_source_test"), suffix),
     // 宿主机 PG 是 pgvector/pgvector:pg17-trixie（db_script/pg_setup.sh），pgvector 契约用例在沙箱里也跑（#850）
-    TEST_PGVECTOR_URL: withDbSuffix(toContainer("postgres://crm:crm@localhost:5432/crm_vector_test"), suffix),
+    TEST_PGVECTOR_URL: withDbSuffix(toContainerHost("postgres://crm:crm@localhost:5432/crm_vector_test"), suffix),
     // 源端测试账号名按票区分（scripts/test-resource-names.ts 的 CRM_TEST_RUN_SUFFIX），并行的沙箱不共用账号
     CRM_TEST_RUN_SUFFIX: suffix,
     CRM_TEST_WORKERS: "4",
@@ -41,8 +31,8 @@ function testEnv(issueId: string): Record<string, string> {
     CRM_TEST_TIMEOUT_SCALE: "2",
   };
   const { TEST_MONGO_URL, TEST_MYSQL_URL, TEST_S3_LAKE_URI } = hostEnv;
-  if (TEST_MONGO_URL) env.TEST_MONGO_URL = withDbSuffix(toContainer(TEST_MONGO_URL), suffix);
-  if (TEST_MYSQL_URL) env.TEST_MYSQL_URL = withDbSuffix(toContainer(TEST_MYSQL_URL), suffix);
+  if (TEST_MONGO_URL) env.TEST_MONGO_URL = withDbSuffix(toContainerHost(TEST_MONGO_URL), suffix);
+  if (TEST_MYSQL_URL) env.TEST_MYSQL_URL = withDbSuffix(toContainerHost(TEST_MYSQL_URL), suffix);
   if (TEST_S3_LAKE_URI) env.TEST_S3_LAKE_URI = TEST_S3_LAKE_URI + suffix;
   return { ...env, ...browserEnv(suffix) };
 }
@@ -60,15 +50,8 @@ async function dropTestResources(issueId: string) {
     "scripts/drop-test-resources.ts",
     `_i${issueId}`,
   ];
-  try {
-    const { stdout } = await promisify(execFile)("node", args, { encoding: "utf8" });
-    console.log(`  🧹 #${issueId} ${stdout.trim().split("\n").slice(1).join("；")}`);
-  } catch (e) {
-    const { stdout, stderr } = e as { stdout?: string; stderr?: string };
-    console.warn(
-      `  ⚠ #${issueId} 测试资源回收失败（之后可用 pnpm sandcastle:cleanup _i${issueId} 补收）：${(stderr || stdout || String(e)).trim().slice(0, 500)}`,
-    );
-  }
+  const stdout = await runHostScript("node", args, `#${issueId} 测试资源回收失败（之后可用 pnpm sandcastle:cleanup _i${issueId} 补收）`);
+  if (stdout !== undefined) console.log(`  🧹 #${issueId} ${stdout.trim().split("\n").slice(1).join("；")}`);
 }
 
 // 本机 seaweedfs 的 filer 元数据日志会一直占卷，卷数到上限后门槛里对象存储全部超时（见 docs/agents/sandcastle.md）。
@@ -82,7 +65,7 @@ function pruneSeaweedMetalog() {
 // 本地湖目录、固定的测试主密钥、发信打到日志。vitest.config.ts 会为测试覆盖这几个变量，门槛不受影响。
 function browserEnv(suffix: string): Record<string, string> {
   return {
-    PLATFORM_DATABASE_URL: withDbSuffix(toContainer("postgres://crm:crm@localhost:5432/crm_platform_browser"), suffix),
+    PLATFORM_DATABASE_URL: withDbSuffix(toContainerHost("postgres://crm:crm@localhost:5432/crm_platform_browser"), suffix),
     PLATFORM_LAKE_URI: "/tmp/crm_browser_lake",
     PLATFORM_MASTER_KEY: Buffer.alloc(32, 7).toString("base64"),
     MAILER: "console",

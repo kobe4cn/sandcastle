@@ -5,15 +5,20 @@
 `onboard` 按探测结果生成。必填的只有 `install`、`isolation`、`gate`，其余都有默认值。
 
 ```ts
-import { defineProject } from "sandpipe";
+import { defineProject, readHostEnv, runHostScript, toContainerHost, withDbSuffix } from "sandpipe";
 
 export default defineProject({
   install: { onSandboxReady: "pnpm install --frozen-lockfile" },
   isolation: {
     // 每张票独立的测试库或前缀，并行的票互不清表。runId 是票号，main 上的兜底检查是 "main"
-    env: (runId) => ({ DATABASE_URL: `postgres://test@host.containers.internal/shop_test_${runId}` }),
+    // .env 里是 DATABASE_URL=postgres://test@localhost/shop_test，进沙箱的是 postgres://test@host.containers.internal/shop_test_i<runId>
+    env: (runId) => ({
+      DATABASE_URL: withDbSuffix(toContainerHost(readHostEnv(".env").DATABASE_URL ?? "postgres://test@localhost/shop_test"), `_i${runId}`),
+    }),
     // 关沙箱后在宿主机上回收这张票的资源（删库等）。失败只记日志
-    cleanup: async (runId) => {},
+    cleanup: async (runId) => {
+      await runHostScript("node", ["scripts/drop-test-db.js", `_i${runId}`], `#${runId} 回收失败`);
+    },
   },
   gate: {
     script: ({ baseRef }) => "pnpm typecheck && pnpm lint && pnpm test",
@@ -43,6 +48,17 @@ export default defineProject({
 - 输出一行 `GATE_TIER: selected …`，表示只跑了按依赖选出的测试；没有这一行就算完整测试。
 - 环境变量 `GATE_FULL=1` 时必须跑完整测试（`baseline` 和 main 上的兜底检查会设）。
 - 失败的文件单独重跑后通过时，输出 `GATE_FLAKY`。它前面列出重跑过的文件，后面是第一次失败的摘要。流水线会为这些文件开 `flaky` 票。
+
+## 隔离辅助函数
+
+`sandpipe` 导出，给 `isolation.env` / `cleanup` 用。config 在宿主机上被加载，它们都跑在宿主机，相对路径按项目根算。
+
+| 函数 | 做什么 |
+|---|---|
+| `readHostEnv(files, projectRoot?)` | 读宿主机上的一个或多个 env 文件（比如 `[".env", ".env.test"]`）并合并，后面的覆盖前面的。不存在的文件跳过，不报错 |
+| `toContainerHost(value)` | 把 `localhost` / `127.0.0.1` 换成 `host.containers.internal`，沙箱才连得上宿主机上的服务 |
+| `withDbSuffix(url, suffix)` | 给库名或前缀加后缀（比如 `` `_i${runId}` ``）。保留 query（`?authSource=admin`）和结尾的 `/`；不含 `://` 的值直接拼接。URL 没有库名时抛错，不让测试打到开发库 |
+| `runHostScript(command, args, label)` | 在宿主机上跑回收脚本。成功返回 stdout；失败打一行警告（`label` 加 stderr 前 500 字）并返回 `undefined`，从不抛错 |
 
 ## 可选
 
