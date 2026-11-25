@@ -1,10 +1,10 @@
 // onboard：探测项目事实、生成配置与 PROJECT.md 草稿、登记 hook。生成的文件要能被流水线直接加载。
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { agentWritable, configSource, containerfileSource, hasGlobalSkill, installFiles, installGlobalSkill, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboardPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
+import { agentWritable, configSource, containerfileSource, hasGlobalSkill, installFiles, installGlobalSkill, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { parseProjectDoc } from "../src/project-doc.ts";
 import { nodeRepo, pythonRepo } from "./fixtures.ts";
@@ -242,6 +242,76 @@ describe("onboardPrompt", () => {
     mkdirSync(join(root, ".sandcastle"), { recursive: true });
     writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "# 缺口清单\n");
     expect(agentWritable(root)).toEqual([".sandcastle/PROJECT.md"]);
+  });
+});
+
+describe("questionsPrompt / --questions-only", () => {
+  const projectMd = "## 概况\n\n独有的标记 shop-marker-42\n";
+  const files = (root: string): string[] => {
+    const out: string[] = [];
+    const walk = (dir: string) => {
+      for (const e of readdirSync(join(root, dir), { withFileTypes: true })) {
+        const rel = dir ? `${dir}/${e.name}` : e.name;
+        if (e.name === ".git" || e.name === "node_modules") continue;
+        if (e.isDirectory()) walk(rel);
+        else out.push(`${rel}:${readFileSync(join(root, rel), "utf8")}`);
+      }
+    };
+    walk("");
+    return out.sort();
+  };
+
+  it("中文：有现有 PROJECT.md 和清单路径，只许写清单，没有残留占位符", () => {
+    const p = questionsPrompt(detectProject(nodeRepo()), "zh", projectMd);
+    expect(p).not.toMatch(/\{\{[A-Z_]+\}\}/);
+    expect(p).toContain("shop-marker-42");
+    expect(p).toContain('"packageManager": "pnpm"');
+    expect(p).toContain("`.sandcastle/OPEN-QUESTIONS.md`");
+    expect(p).not.toContain("`.sandcastle/PROJECT.md`、");
+    expect(p).not.toContain("用 Write 写 `.sandcastle/PROJECT.md`");
+    expect(p).toContain("[意图]");
+    expect(p).not.toContain("需要人确认");
+  });
+
+  it("英文：清单类别用 [convention] / [intent]，没有残留占位符", () => {
+    const p = questionsPrompt(detectProject(pythonRepo()), "en", projectMd);
+    expect(p).not.toMatch(/\{\{[A-Z_]+\}\}/);
+    expect(p).toContain("shop-marker-42");
+    expect(p).toContain("[intent]");
+    expect(p).toContain("# Open questions");
+  });
+
+  it("questionsOnlyPrecheck：清单已存在 / 没有 PROJECT.md / 都满足", () => {
+    const root = nodeRepo();
+    expect(questionsOnlyPrecheck(root)).toContain("onboard");
+    mkdirSync(join(root, ".sandcastle"), { recursive: true });
+    writeFileSync(join(root, ".sandcastle/PROJECT.md"), projectMd);
+    expect(questionsOnlyPrecheck(root)).toBeNull();
+    writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "# 缺口清单\n");
+    expect(questionsOnlyPrecheck(root)).toContain("OPEN-QUESTIONS.md");
+  });
+
+  it("onboard --questions-only：清单已存在时不生成也不改动任何文件", () => {
+    const root = nodeRepo();
+    mkdirSync(join(root, ".sandcastle"), { recursive: true });
+    writeFileSync(join(root, ".sandcastle/PROJECT.md"), projectMd);
+    writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "# 缺口清单\n");
+    const before = files(root);
+    onboard(["--questions-only"], root);
+    expect(files(root)).toEqual(before);
+    expect(existsSync(join(root, ".gitignore"))).toBe(false);
+    expect(existsSync(join(root, ".claude"))).toBe(false);
+  });
+
+  it("onboard --questions-only：没有 PROJECT.md 时也不生成任何文件", () => {
+    const root = nodeRepo();
+    const before = files(root);
+    onboard(["--questions-only"], root);
+    expect(files(root)).toEqual(before);
+  });
+
+  it("--questions-only 和 --no-agent 不能同时给", () => {
+    expect(() => onboard(["--questions-only", "--no-agent"], nodeRepo())).toThrow("--questions-only");
   });
 });
 

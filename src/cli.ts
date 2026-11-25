@@ -10,6 +10,7 @@ const help = () =>
   sandpipe onboard     接入新项目：生成 .sandcastle/ 配置与 PROJECT.md，装上下文预算 hook
                       [--no-agent] 不让 agent 补全 PROJECT.md；[--model <名>] agent 用的模型，默认 opus
                       [--lang zh|en] PROJECT.md 草稿和 issue / PR / 终端用的语言，默认按提交信息判断
+                      [--questions-only] 只生成缺口清单 .sandcastle/OPEN-QUESTIONS.md（给早于清单接入的项目），不动其他文件
   sandpipe doctor      跑之前的检查：配置、PROJECT.md、models.json、.env、平台登录、标签、镜像、hook
                       [--fix] 缺的标签直接建上
   sandpipe baseline    在沙箱里对 origin/main 跑一次完整门槛，只报告不开票（接入新项目时，见 docs/onboarding-checklist.zh-CN.md）
@@ -25,6 +26,7 @@ const help = () =>
   sandpipe onboard     onboard a new project: generate the .sandcastle/ config and PROJECT.md, install the context budget hook
                       [--no-agent] don't let the agent complete PROJECT.md; [--model <name>] model for the agent, default opus
                       [--lang zh|en] language of the PROJECT.md draft and of issues / PRs / the terminal, default from the commit messages
+                      [--questions-only] only write the open questions list .sandcastle/OPEN-QUESTIONS.md (for projects onboarded before it existed), touching nothing else
   sandpipe doctor      pre-run checks: config, PROJECT.md, models.json, .env, forge login, labels, image, hook
                       [--fix] create missing labels
   sandpipe baseline    run the full gate once against origin/main in a sandbox, report only (when onboarding, see docs/onboarding-checklist.md)

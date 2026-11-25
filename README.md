@@ -68,6 +68,7 @@ New projects only open PRs by default and don't auto-merge (`autoMerge: false`),
 |---|---|
 | `sandpipe [run]` | Run the pipeline |
 | `sandpipe onboard [--no-agent] [--model <name>] [--lang zh\|en]` | Onboard a new project; existing files are not overwritten |
+| `sandpipe onboard --questions-only [--model <name>] [--lang zh\|en]` | Only write the open questions list `.sandcastle/OPEN-QUESTIONS.md`, for projects onboarded before it existed; touches no other file |
 | `sandpipe doctor [--fix]` | Pre-run checks; exit code 1 when anything shows ✗ |
 | `sandpipe baseline` | Run the full gate once against `origin/main`, report only |
 | `sandpipe update` | Refresh this tool's files under `.claude/` to the current version, plus the global skill if installed |
