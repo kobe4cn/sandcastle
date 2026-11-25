@@ -28,7 +28,7 @@ const render = (md: string) => {
 const RUNTIME_ARGS = {
   implement: ["TASK_ID", "ISSUE_TITLE", "BRANCH"],
   review: ["TASK_ID", "BRANCH", "BASE", "ROUND", "REVISE_MAX"],
-  prep: ["TASK_ID", "REPREP_MARK"],
+  prep: ["TASK_ID", "REPREP_MARK", "BASE"],
   rebase: ["TASK_ID", "BRANCH", "BASE", "SITUATION"],
 };
 

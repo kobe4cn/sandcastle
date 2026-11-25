@@ -52,6 +52,8 @@ export function configSource(f: ProjectFacts, importFrom: string): string {
     forgeLine,
     ...(f.remote !== "origin" ? [`  remote: ${q(f.remote)},`] : []),
     ...(f.baseBranch !== "main" ? [`  baseBranch: ${q(f.baseBranch)},`] : []),
+    "  // issue、PR、评论用什么语言写（\"zh\" / \"en\"），按最近的提交信息判断",
+    `  language: ${q(f.commitLanguage)},`,
     "  // 试跑期：只开 PR 不合并、一次一张。按 docs/onboarding-checklist.md 走完前几张票再打开自动合并、调高并行数。",
     "  autoMerge: false,",
     "  // 同时实现几张票：受测试依赖的服务（连接数）与机器负载限制",

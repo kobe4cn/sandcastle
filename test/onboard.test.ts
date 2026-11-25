@@ -71,7 +71,7 @@ describe("installFiles", () => {
     expect(project.gate.testFile.test("test/a.test.ts")).toBe(true);
     expect(project.isolation.env("12")).toEqual({ SANDCASTLE_RUN_ID: "12" });
     // 新项目试跑期：只开 PR 不合并、一次一张（docs/onboarding-checklist.md）
-    expect(project).toMatchObject({ autoMerge: false, maxParallel: 1 });
+    expect(project).toMatchObject({ autoMerge: false, maxParallel: 1, language: f.commitLanguage });
 
     expect(JSON.parse(readFileSync(join(root, ".sandcastle/package.json"), "utf8"))).toEqual({ type: "module" });
 

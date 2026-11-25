@@ -81,7 +81,7 @@ export async function diagnose(opts: {
   try {
     const doc = loadProjectDoc(dir);
     if (project && forge)
-      rmSync(dirname(Object.values(renderPrompts({ doc, forgeGuide: forge.agentGuide(), labels: project.labels, dir }))[0]!), {
+      rmSync(dirname(Object.values(renderPrompts({ doc, forgeGuide: forge.agentGuide(), labels: project.labels, dir, language: project.language }))[0]!), {
         recursive: true,
       });
     const source = readFileSync(join(dir, "PROJECT.md"), "utf8");

@@ -23,27 +23,27 @@
 ## C. doctor
 
 - [ ] C1 没有 `.env`：✗，并给出修法
-- [ ] C2 填好 `.env`、还没建标签：⚠/✗ 提示缺标签
-- [ ] C3 `doctor --fix` 建好标签，GitHub 上能看到；再跑全部 ✓
+- [x] C2 ✓ 填好 `.env`、还没建标签：⚠/✗ 提示缺标签
+- [x] C3 ✓（顺带：改名后 hook 不一致，`update` 刷新后 doctor 全绿）`doctor --fix` 建好标签，GitHub 上能看到；再跑全部 ✓
 - [ ] C4 镜像不存在时 ✗，并给出 build 命令
 
 ## D. baseline
 
-- [ ] D1 在沙箱里对 origin/main 跑完整门槛：通过，输出 GATE_TIME
-- [ ] D2 门槛故意失败（本地临时把 gate.script 改成会失败）：报告失败，退出码非 0，不开票
-- [ ] D3 结束后沙箱和 worktree 都清理掉
+- [x] D1 ✓ 41 秒 在沙箱里对 origin/main 跑完整门槛：通过，输出 GATE_TIME
+- [x] D2 ✓ 退出码 1 门槛故意失败（本地临时把 gate.script 改成会失败）：报告失败，退出码非 0，不开票
+- [x] D3 ✓ 结束后沙箱和 worktree 都清理掉
 
 ## E. 票（`autoMerge: false`、`maxParallel: 1`）
 
-- [ ] E1 金丝雀票：加 `ledger --version`。检查：
+- [x] E1 ✓ 约 4 分钟（prep→implement→review→门槛），PR #2；修了：进度评论第一行只有「opus」看着像笔误，改成 `模型档案：opus`；prep 看的是宿主机工作目录（会看到 `.venv`、未提交的改动），提示词里说明以 origin/main 为准。金丝雀票：加 `ledger --version`。检查：
   - prep 写了 `## Implementation guide`，打了 prepped
   - 开出 PR，PR 正文有 Review、Gate、用量
   - 没有合并，打了 pr-open，评论说明是因为 autoMerge: false
   - 提交信息是英文
-- [ ] E2 人打回：在 E1 的 PR 上评论 `/sandcastle …` 提修改意见。下一轮去掉 pr-open，按意见改完后 PR 更新
-- [ ] E3 大票（超过 3 条验收标准，比如「月度预算」功能）：prep 拆成子票，子票继承 Sandcastle 标签、写了 Blocked by，父票去掉标签
-- [ ] E4 要人拍板的票（含糊的需求）：打 stuck 并评论原因，或者自己拍板后打 decided
-- [ ] E5 人合并 E1 的 PR 后，下一轮清理：关掉 issue，删掉分支和 worktree
+- [x] E2 ✓ 约 2.5 分钟，PR 加了 `-V` 的提交、验收说明更新、重新打 pr-open。人打回：在 E1 的 PR 上评论 `/sandcastle …` 提修改意见。下一轮去掉 pr-open，按意见改完后 PR 更新
+- [x] E3 ✓ #3 拆成 #5/#6/#7，有 Parent、Blocked by，父票去掉标签；#5 代拍板打了 decided。注意：子票标题和正文是中文（原票是英文）。大票（超过 3 条验收标准，比如「月度预算」功能）：prep 拆成子票，子票继承 Sandcastle 标签、写了 Blocked by，父票去掉标签
+- [x] E4 ✓ #4 prep 时打 stuck，评论列了 4 个决定和建议，指出改 expenses 表是红线。要人拍板的票（含糊的需求）：打 stuck 并评论原因，或者自己拍板后打 decided
+- [x] E5 ✓ 去掉标签，删远端和本地分支，worktree 干净。人合并 E1 的 PR 后，下一轮清理：关掉 issue，删掉分支和 worktree
 
 ## F. 自动合并与并行（`autoMerge: true`、`maxParallel: 2`）
 

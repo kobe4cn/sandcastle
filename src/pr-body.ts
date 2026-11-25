@@ -2,23 +2,26 @@
 // 测试在 test/sandcastle-pr-body.test.ts。验收说明是 implementer 写在 worktree `.pr-notes/验收说明.md`（不提交）、
 // 给验收 PR 的人看的：做了什么、在宿主机上怎么一步步验证、最终效果。脚本（main.ts 的 land）把固定准备段落
 // 拼在它前面，放进 PR 正文最前面的 `## 验收说明` 一节；缺失或格式不对时正文写警告、不自动合并。
+// 文字按项目语言（i18n.ts）：参数 m 默认中文。
+
+import { messages, type Messages } from "./i18n.ts";
 
 /** `## 标题` 二级标题行的标题（`###` 小标题、`##x` 这种不是标题的都不认）；不是二级标题行时 undefined。 */
 const headingOf = (line: string): string | undefined => (/^##(\s|$)/.test(line) ? line.replace(/^##\s*/, "") : undefined);
 
-/** 验收说明必须有的三个小标题；`## ` 二级标题不能出现（replaceSection 按它切节，会被切错）。 */
-const NOTE_HEADINGS = ["### 做了什么", "### 怎么验证", "### 最终效果"] as const;
 
 /**
  * 验收说明的问题列表（空数组 = 合格）：文件没写、缺三个小标题之一、「怎么验证」下没有编号步骤、
  * 文件里出现 `## ` 二级标题。main.ts 的 land 有问题时留 PR 不自动合并，reviewer 另有一道独立检查。
  */
-export const checkAcceptanceNotes = (md: string | undefined): string[] => {
-  if (md === undefined) return ["文件不存在"];
+export const checkAcceptanceNotes = (md: string | undefined, m: Messages = messages()): string[] => {
+  // 必须有的三个小标题见 m.noteHeadings；`## ` 二级标题不能出现（replaceSection 按它切节，会被切错）。
+  const NOTE_HEADINGS = m.noteHeadings;
+  if (md === undefined) return [m.notesMissingFile];
   const lines = md.split("\n");
   const problems: string[] = [];
   for (const heading of NOTE_HEADINGS) {
-    if (!lines.some((line) => line.trim().startsWith(heading))) problems.push(`缺 \`${heading}\` 小标题`);
+    if (!lines.some((line) => line.trim().startsWith(heading))) problems.push(m.notesMissingHeading(heading));
   }
   const verifyAt = lines.findIndex((line) => line.trim().startsWith(NOTE_HEADINGS[1]));
   if (verifyAt >= 0) {
@@ -27,10 +30,10 @@ export const checkAcceptanceNotes = (md: string | undefined): string[] => {
       if (line.trim().startsWith("###")) break; // 到下一个小标题为止
       steps.push(line);
     }
-    if (!steps.some((line) => /^\s*\d+\./.test(line))) problems.push("「怎么验证」下面没有编号步骤");
+    if (!steps.some((line) => /^\s*\d+\./.test(line))) problems.push(m.notesNoSteps);
   }
   if (lines.some((line) => headingOf(line) !== undefined)) {
-    problems.push("文件里出现了 `## ` 二级标题（只能写 `###` 小标题，二级标题会让替换这一节时切错）");
+    problems.push(m.notesHasH2);
   }
   return problems;
 };
@@ -47,18 +50,13 @@ const demoteHeadings = (md: string): string =>
  * 让验收的人能在宿主机上照做。不合格时给警告（文件不存在）或「格式不对」+ 问题列表 + 原文（二级标题降成 `###`），照样进正文让人看见。
  * pageChanged：有 `.browser-check/`（改了页面）的票给项目配置的准备步骤（acceptancePrep）；其余只要 checkout，不用起 dev server。
  */
-export const acceptanceSection = (branch: string, md: string | undefined, opts: { pageChanged: boolean; pagePrep?: (branch: string) => string }): string => {
-  const problems = checkAcceptanceNotes(md);
+export const acceptanceSection = (branch: string, md: string | undefined, opts: { pageChanged: boolean; pagePrep?: (branch: string) => string; m?: Messages }): string => {
+  const m = opts.m ?? messages();
+  const problems = checkAcceptanceNotes(md, m);
   if (problems.length > 0) {
-    return md === undefined
-      ? "⚠️ implementer 没有写验收说明"
-      : `⚠️ 验收说明格式不对：${problems.join("；")}\n\n${demoteHeadings(md)}`;
+    return md === undefined ? m.notesNotWritten : `${m.notesBadFormat(problems.join(m.sep))}\n\n${demoteHeadings(md)}`;
   }
-  const prep = opts.pageChanged && opts.pagePrep
-    ? opts.pagePrep(branch)
-    : opts.pageChanged
-      ? `### 准备\n\n\`git checkout ${branch}\`，按项目说明起 dev server`
-      : `### 准备\n\n\`git checkout ${branch}\`（本票没改页面，不用起 dev server）`;
+  const prep = opts.pageChanged && opts.pagePrep ? opts.pagePrep(branch) : opts.pageChanged ? m.prepPage(branch) : m.prepNoPage(branch);
   return `${prep}\n\n${md}`;
 };
 

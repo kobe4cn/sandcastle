@@ -1,0 +1,286 @@
+// 脚本自己写到托管平台上的文字（PR 正文、评论、自动开的票）：按项目配置的 language 选中文或英文。
+// agent 写的文字由提示词里的「输出语言」规则管（project-doc.ts 的 languageVars）。终端日志不在这里，一律中文。
+// 新增一条：zh 和 en 都要加（en 的类型是 Messages，少了编译不过）。
+
+export type Language = "zh" | "en";
+
+const zh = {
+  list: (items: string[]) => items.join("、"),
+  sep: "；",
+
+  // —— PR 正文：验收说明 ——
+  notesTitle: "验收说明",
+  /** 验收说明必须有的三个小标题（implementer 按提示词写，pr-body.ts 检查）。 */
+  noteHeadings: ["### 做了什么", "### 怎么验证", "### 最终效果"] as readonly [string, string, string],
+  notesMissingFile: "文件不存在",
+  notesMissingHeading: (h: string) => `缺 \`${h}\` 小标题`,
+  notesNoSteps: "「怎么验证」下面没有编号步骤",
+  notesHasH2: "文件里出现了 `## ` 二级标题（只能写 `###` 小标题，二级标题会让替换这一节时切错）",
+  notesNotWritten: "⚠️ implementer 没有写验收说明",
+  notesBadFormat: (problems: string) => `⚠️ 验收说明格式不对：${problems}`,
+  prepPage: (branch: string) => `### 准备\n\n\`git checkout ${branch}\`，按项目说明起 dev server`,
+  prepNoPage: (branch: string) => `### 准备\n\n\`git checkout ${branch}\`（本票没改页面，不用起 dev server）`,
+
+  // —— PR 正文：其余各节 ——
+  usageNone: "（没有记录到用量）",
+  usageHeader: "| 会话 | 档案 | 次数 | 输入 | 缓存写 | 缓存读 | 输出 | 上下文峰值 |",
+  usageProfile: (profile: string, model: string) => `${profile}（${model}）`,
+  budgetNote: (peakK: number, budgetK: number, sessions: number) =>
+    `上下文峰值约 ${peakK}k / ${budgetK}k，implement 用了 ${sessions} 次会话。`,
+  overBudget: "\n\n⚠️ 超过上下文预算，考虑把同类票切得更小。",
+  tierFull: "完整测试",
+  gateFailed: (out: string) => `❌ 门槛失败：\n\n\`\`\`\n${out}\n\`\`\``,
+  gateFlaky: (tier: string, out: string) =>
+    `typecheck 通过；⚠️ ${tier}有偶发失败，失败的文件单独重跑通过（沙箱内）。已自动开票修（见 PR 评论）。\n\n\`\`\`\n${out}\n\`\`\``,
+  gatePassed: (tier: string, out: string) => `typecheck 与${tier}通过（沙箱内）。\n\n\`\`\`\n${out}\n\`\`\``,
+  browserNoResult: "（implementer 没有写 RESULT.md）",
+  browserShots: (n: number) => `截图 ${n} 张，附在下面。`,
+  revisions: (n: number) => `\n\n**reviewer 打回过 ${n} 次**（implementer 已按意见修改）：\n\n`,
+  revisionN: (n: number) => `第 ${n} 次的意见`,
+  noReviewSummary: "（reviewer 没有给出摘要）",
+
+  // —— PR 评论 ——
+  prUpdated: "Sandcastle 更新了这个分支。",
+  prUpdatedNotes: "Sandcastle 更新了这个分支（验收说明已更新）。",
+  notMerged: (reason: string) => `没有自动合并：${reason}`,
+  decisions: (n: number, issueId: string, label: string) =>
+    `## 代拍板\n\nagent 按「必须停下 / 可以代拍板」的规则自己定了 ${n} 个设计决定，请事后确认（不同意就在 issue 上回复，确认后去掉 #${issueId} 的 \`${label}\`）：`,
+  decisionN: (n: number) => `第 ${n} 个`,
+  reopened: "收到打回，这张票重新进入 Sandcastle：implementer 会先处理这个 PR 上的意见。",
+  flakyTicketsOpened: (tickets: string) => `门槛里的偶发失败已开票：${tickets}`,
+  flakyDeferred: (files: string) =>
+    `门槛里重跑才通过、报错只是超时或连接失败，7 天内第一次出现，只记进 .sandcastle/logs/flaky.json、不开票：${files}`,
+  rebasedTypecheckOnly: (base: string, how: string, files: string) =>
+    `Sandcastle 把分支 rebase 到最新的 ${base}（原来和它冲突，${how}；冲突文件：${files}）。rebase 后只跑了 typecheck（通过），**没有重跑测试**：PR 正文 Gate 里的测试结果是 rebase 之前的，合并前请判断是否要补跑。`,
+  rebaseHowAgent: "冲突由 agent 处理",
+  rebaseHowClean: "rebase 没有冲突",
+  rebaseNoTextConflict: (integrity: string) => `（没有文本冲突，${integrity}分叉）`,
+  rebasedMerged: (base: string) => `Sandcastle 把分支 rebase 到最新的 ${base}，门槛重跑通过后合并。`,
+
+  // —— 留给人的原因（接在 notMerged 后面） ——
+  reasonExternal: (verdict: string | undefined, gateOk: boolean) =>
+    `这是外部 PR，Sandcastle 只负责修改，合并由人决定。reviewer 结论：${verdict}；门槛${gateOk ? "通过" : "没通过"}（见上面的评论）。`,
+  reasonExternalConflict: (base: string, branch: string) => `\n\n⚠️ 分支和最新的 ${base} 有冲突，需要先把 ${branch} 合进来。`,
+  reasonNotes: (problems: string) => `\n\n验收说明缺失或格式不对：${problems}（见 PR 正文的「验收说明」一节）。`,
+  reasonReviseMax: (n: number) => `reviewer 打回 ${n} 次后仍有要改的问题（见最新的 Review）。`,
+  reasonReviewerPr: "reviewer 认为需要人审（见 PR 正文的 Review）。",
+  reasonGate: "typecheck 或完整测试没通过（见 PR 正文的 Gate）。",
+  reasonAutoMergeOff: "项目配置 autoMerge: false（试跑期），reviewer 和门槛都通过，等人合并。",
+  reasonMergeFailed: (out: string, retry: string) => `合并失败：${out}\n\nrebase 后重试也没成：${retry}`,
+  rebasedForHuman: (base: string) => `\n\n分支和最新的 ${base} 冲突，已 rebase，只重跑了 typecheck（通过），没有重跑测试。`,
+  rebaseForHumanFailed: (base: string, reason: string) => `\n\n⚠️ 分支和最新的 ${base} 冲突，自动 rebase 没成：${reason}`,
+
+  // —— rebase 失败的原因 ——
+  rebaseExternal: (branch: string) => `外部 PR 的分支 ${branch} 不由 Sandcastle rebase 或合并。`,
+  rebaseNotBehind: (base: string) => `分支已经包含最新的 ${base}，失败不是冲突造成的，需要人看。`,
+  rebaseAgentFailed: "agent 没能解决 rebase 冲突（原因见 issue 评论）。",
+  rebaseStillBehind: (base: string) => `处理后分支仍不在 ${base} 之上。`,
+  rebaseStillBroken: (broken: string) => `处理后仍然${broken}。`,
+  rebaseTypecheckFailed: (out: string) => `rebase 后 typecheck 失败：\n\n\`\`\`\n${out}\n\`\`\``,
+  rebaseGateFailed: (out: string) => `rebase 后门槛失败：\n\n\`\`\`\n${out}\n\`\`\``,
+  rebaseMergeFailed: (out: string) => `rebase 并通过门槛后仍合并失败：${out}`,
+  integrityName: "一致性检查",
+  integrityBroken: "一致性检查没通过",
+
+  // —— issue 评论：停下 / 退回 ——
+  stuck: (reason: string) => `Sandcastle 停下了：${reason}`,
+  sandboxError: (err: string) => `沙箱出错：${err}`,
+  pushedTo: (branch: string) => `已有的提交推到了分支 \`${branch}\`。`,
+  pushedHere: "已有的提交推到了这个分支。",
+  notPushed: "提交没能推上去，留在宿主机的本地分支上。",
+  needsDecision: (budget: string, pushed: string, stuckLabel: string) =>
+    `implementer 遇到必须由人拍板的设计决定（见上面 implementer 的评论）。${budget}${pushed}拍板后在票上回复，去掉 ${stuckLabel} 即可接着跑。`,
+  reprepFailed: (max: number, budget: string) =>
+    `重新准备过一次，${max} 次会话内仍没有完成（见上面 implementer 的评论）。${budget} 请人看一下票怎么拆。`,
+  externalIncomplete: (branch: string, max: number, budget: string, pushed: string) =>
+    `在外部 PR 的分支 \`${branch}\` 上 ${max} 次会话内没有改完（见上面 implementer 的评论）。${budget}${pushed}`,
+  reprep: (max: number, budget: string, stuckLabel: string) =>
+    `${max} 次会话内没有完成。${budget} 下次调度时 prep 会按上面 implementer 的进度评论重新准备：指引不对就重写，票太大就把没完成的验收标准拆成子票。再没做完就打 ${stuckLabel}。`,
+  reprepCommits: (branch: string, log: string) => `\n\n分支 \`${branch}\` 上已有的提交：\n\n${log}`,
+  reprepNoCommits: "\n\n分支上还没有提交。",
+  reprepNotPushed: "\n\n（分支没能推到远端，下一轮会在本地的同名分支上接着做。）",
+  landError: (branch: string, reason: string, stuckLabel: string) =>
+    `Sandcastle 停下了：落地（push / 开 PR / 合并）出错，本地分支 \`${branch}\` 保留。\n\n\`\`\`\n${reason}\n\`\`\`\n\n处理后去掉 ${stuckLabel} 再运行。`,
+
+  // —— 偶发失败与 main 兜底 ——
+  flakyLabelDesc: "偶发失败的测试（Sandcastle 门槛自动开票）",
+  flakySeen: (issueId: string, pr: string) => `#${issueId} 的门槛（PR #${pr}）`,
+  flakyEnv: (others: string[], load: string, cores: number) =>
+    `开票时：同时在做的票 ${others.length ? others.join("、") : "无"}；宿主机 1 / 5 / 15 分钟负载 ${load}（${cores} 核）。`,
+  flakyPriorItem: (at: string, issue: string, file: string) => `${at}Z #${issue} 的门槛（\`${file}\`）`,
+  flakyPrior: (items: string[]) => `7 天内之前的出现：${items.join("；")}。`,
+  flakyAgain: (seen: string, files?: string) => (files ? `又出现一次：${seen}，这次失败的文件：${files}。` : `又出现一次：${seen}。`),
+  flakyFirstFailure: "第一次的失败：",
+  flakyTitle: (file: string, n: number) => `偶发失败：${file}${n > 1 ? ` 等 ${n} 个文件` : ""}`,
+  mainBrokenLabelDesc: "main 上的兜底完整测试失败（Sandcastle 自动开票，调度时排最前）",
+  mainBrokenAgain: (short: string, summary: string) => `main（${short}）上的兜底完整测试又失败了：\n\n${summary}`,
+  mainBrokenTitle: (short: string) => `main 上的兜底完整测试失败（${short}）`,
+  mainBrokenNoHistory: "（之前没有通过记录，下面是最近 20 个提交）",
+
+  // —— 默认的自动开票正文（项目配置 texts 可以整份替换） ——
+  flakyIssueBody: (list: string, seen: string, env: string, prior: string, summary: string) =>
+    [
+      `${list} 在 ${seen}的测试里失败，单独重跑通过。`,
+      "", env, ...(prior ? ["", prior] : []),
+      "", "## 第一次的失败", "", summary, "",
+      "## 怎么修", "",
+      "先有一条能让它稳定变红的命令，再改。复现不了就照摘要从代码推断原因，并在提交信息里写明推断依据。",
+      "",
+      "## Acceptance criteria", "",
+      "- [ ] 失败原因写进提交信息（复现命令，或推断的依据）",
+      `- [ ] 修复后复现命令变绿、${list} 单跑通过；根因已被别的提交修掉时只核实、不改代码`,
+      "- [ ] 不放宽全局超时，不删除或改弱断言",
+    ].join("\n"),
+  mainBrokenIssueBody: (sha: string, summary: string, commits: string) =>
+    [
+      `Sandcastle 在 main 的 \`${sha}\` 上跑兜底完整测试（\`GATE_FULL=1\`），没通过。`,
+      "按依赖选测试的票只跑一部分测试；这里失败说明要么依赖图漏选了，要么两张各自通过的票合在一起才出问题。",
+      "", "## 失败摘要", "", summary, "",
+      "## 上次兜底通过以来进 main 的提交", "", "```", commits, "```", "",
+      "## Acceptance criteria", "",
+      "- [ ] 失败的测试文件在 main 上单跑通过；原因（哪个提交引入、为什么）写进提交信息",
+      "- [ ] 不放宽全局超时，不删除或改弱断言",
+      "- [ ] 是不是依赖图漏选导致的，在 issue 评论里写明结论",
+    ].join("\n"),
+
+  // —— 给 agent 的输出语言规则（渲染进每个提示词开头，以及内联的 revise / fix 提示词） ——
+  outputLanguage:
+    "输出语言：写到 issue、PR、评论里的一切文字（票的标题和正文、进度评论、验收说明、review 摘要）都用中文。提交信息的语言按 PROJECT.md「提交」一节。",
+};
+
+export type Messages = typeof zh;
+
+const en: Messages = {
+  list: (items) => items.join(", "),
+  sep: "; ",
+
+  notesTitle: "Acceptance notes",
+  noteHeadings: ["### What changed", "### How to verify", "### Result"],
+  notesMissingFile: "file not found",
+  notesMissingHeading: (h) => `missing the \`${h}\` heading`,
+  notesNoSteps: "no numbered steps under “How to verify”",
+  notesHasH2: "the file contains a `## ` heading (use `###` only; a `## ` heading breaks replacing this section)",
+  notesNotWritten: "⚠️ The implementer did not write acceptance notes",
+  notesBadFormat: (problems) => `⚠️ Acceptance notes are malformed: ${problems}`,
+  prepPage: (branch) => `### Setup\n\n\`git checkout ${branch}\`, then start the dev server as the project docs describe`,
+  prepNoPage: (branch) => `### Setup\n\n\`git checkout ${branch}\` (no page changes, no dev server needed)`,
+
+  usageNone: "(no usage recorded)",
+  usageHeader: "| Session | Profile | Runs | Input | Cache write | Cache read | Output | Peak context |",
+  usageProfile: (profile, model) => `${profile} (${model})`,
+  budgetNote: (peakK, budgetK, sessions) => `Peak context about ${peakK}k / ${budgetK}k; implement used ${sessions} session(s).`,
+  overBudget: "\n\n⚠️ Over the context budget; consider splitting similar tickets smaller.",
+  tierFull: "full tests",
+  gateFailed: (out) => `❌ Gate failed:\n\n\`\`\`\n${out}\n\`\`\``,
+  gateFlaky: (tier, out) =>
+    `Typecheck passed; ⚠️ ${tier} had flaky failures that passed when the failing files were rerun (in the sandbox). Tickets were opened to fix them (see PR comments).\n\n\`\`\`\n${out}\n\`\`\``,
+  gatePassed: (tier, out) => `Typecheck and ${tier} passed (in the sandbox).\n\n\`\`\`\n${out}\n\`\`\``,
+  browserNoResult: "(the implementer did not write RESULT.md)",
+  browserShots: (n) => `${n} screenshot(s) attached below.`,
+  revisions: (n) => `\n\n**The reviewer sent it back ${n} time(s)** (the implementer addressed the feedback):\n\n`,
+  revisionN: (n) => `Feedback round ${n}`,
+  noReviewSummary: "(the reviewer gave no summary)",
+
+  prUpdated: "Sandcastle updated this branch.",
+  prUpdatedNotes: "Sandcastle updated this branch (acceptance notes updated).",
+  notMerged: (reason) => `Not merged automatically: ${reason}`,
+  decisions: (n, issueId, label) =>
+    `## Decisions made by the agent\n\nThe agent made ${n} design decision(s) itself under the “must stop / may decide” rules. Please confirm them (reply on the issue if you disagree; once confirmed, remove \`${label}\` from #${issueId}):`,
+  decisionN: (n) => `Decision ${n}`,
+  reopened: "Changes requested; this ticket is back in Sandcastle. The implementer will address the feedback on this PR first.",
+  flakyTicketsOpened: (tickets) => `Opened tickets for flaky failures in the gate: ${tickets}`,
+  flakyDeferred: (files) =>
+    `Passed only on rerun with a timeout or connection error, first time in 7 days; recorded in .sandcastle/logs/flaky.json without a ticket: ${files}`,
+  rebasedTypecheckOnly: (base, how, files) =>
+    `Sandcastle rebased this branch onto the latest ${base} (it conflicted; ${how}; conflicting files: ${files}). After the rebase only typecheck was run (passed); **tests were not rerun**: the test results in the Gate section predate the rebase, so decide whether to rerun them before merging.`,
+  rebaseHowAgent: "the agent resolved the conflicts",
+  rebaseHowClean: "the rebase had no conflicts",
+  rebaseNoTextConflict: (integrity) => `(no textual conflicts; ${integrity} diverged)`,
+  rebasedMerged: (base) => `Sandcastle rebased this branch onto the latest ${base} and merged it after the gate passed again.`,
+
+  reasonExternal: (verdict, gateOk) =>
+    `This is an external PR: Sandcastle only makes changes, a human decides whether to merge. Reviewer verdict: ${verdict}; gate ${gateOk ? "passed" : "failed"} (see the comments above).`,
+  reasonExternalConflict: (base, branch) => `\n\n⚠️ The branch conflicts with the latest ${base}; merge ${branch} into it first.`,
+  reasonNotes: (problems) => `\n\nAcceptance notes are missing or malformed: ${problems} (see the “Acceptance notes” section of the PR description).`,
+  reasonReviseMax: (n) => `The reviewer still found issues after sending it back ${n} time(s) (see the latest Review).`,
+  reasonReviewerPr: "The reviewer thinks a human should review this (see the Review section of the PR description).",
+  reasonGate: "Typecheck or the full test run failed (see the Gate section of the PR description).",
+  reasonAutoMergeOff: "The project config has autoMerge: false (trial period). Reviewer and gate both passed; waiting for a human to merge.",
+  reasonMergeFailed: (out, retry) => `Merge failed: ${out}\n\nRetrying after a rebase also failed: ${retry}`,
+  rebasedForHuman: (base) => `\n\nThe branch conflicted with the latest ${base} and was rebased; only typecheck was rerun (passed), tests were not.`,
+  rebaseForHumanFailed: (base, reason) => `\n\n⚠️ The branch conflicts with the latest ${base} and the automatic rebase failed: ${reason}`,
+
+  rebaseExternal: (branch) => `Sandcastle does not rebase or merge the external PR branch ${branch}.`,
+  rebaseNotBehind: (base) => `The branch already contains the latest ${base}; the failure is not caused by a conflict and needs a human.`,
+  rebaseAgentFailed: "The agent could not resolve the rebase conflicts (see the issue comments).",
+  rebaseStillBehind: (base) => `After resolving, the branch is still not on top of ${base}.`,
+  rebaseStillBroken: (broken) => `After resolving, still: ${broken}.`,
+  rebaseTypecheckFailed: (out) => `Typecheck failed after the rebase:\n\n\`\`\`\n${out}\n\`\`\``,
+  rebaseGateFailed: (out) => `The gate failed after the rebase:\n\n\`\`\`\n${out}\n\`\`\``,
+  rebaseMergeFailed: (out) => `Merge still failed after rebasing and passing the gate: ${out}`,
+  integrityName: "the integrity check",
+  integrityBroken: "the integrity check failed",
+
+  stuck: (reason) => `Sandcastle stopped: ${reason}`,
+  sandboxError: (err) => `sandbox error: ${err}`,
+  pushedTo: (branch) => `Existing commits were pushed to \`${branch}\`. `,
+  pushedHere: "Existing commits were pushed to this branch.",
+  notPushed: "The commits could not be pushed and remain on the local branch on the host. ",
+  needsDecision: (budget, pushed, stuckLabel) =>
+    `The implementer hit a design decision that a human must make (see the implementer's comment above). ${budget} ${pushed}Reply on the ticket with the decision and remove ${stuckLabel} to continue.`,
+  reprepFailed: (max, budget) =>
+    `Already re-prepped once and still not done within ${max} session(s) (see the implementer's comments above). ${budget} Please check how to split this ticket.`,
+  externalIncomplete: (branch, max, budget, pushed) =>
+    `Not finished on the external PR branch \`${branch}\` within ${max} session(s) (see the implementer's comments above). ${budget} ${pushed}`,
+  reprep: (max, budget, stuckLabel) =>
+    `Not done within ${max} session(s). ${budget} At the next schedule prep will re-prepare from the implementer's progress comments above: rewrite the guide if it is wrong, or split the unfinished acceptance criteria into sub-tickets if the ticket is too big. If it still is not done, it gets ${stuckLabel}.`,
+  reprepCommits: (branch, log) => `\n\nCommits already on \`${branch}\`:\n\n${log}`,
+  reprepNoCommits: "\n\nNo commits on the branch yet.",
+  reprepNotPushed: "\n\n(The branch could not be pushed; the next round continues on the local branch of the same name.)",
+  landError: (branch, reason, stuckLabel) =>
+    `Sandcastle stopped: landing (push / open PR / merge) failed; the local branch \`${branch}\` is kept.\n\n\`\`\`\n${reason}\n\`\`\`\n\nFix it, then remove ${stuckLabel} and run again.`,
+
+  flakyLabelDesc: "Flaky tests (opened automatically by the Sandcastle gate)",
+  flakySeen: (issueId, pr) => `the gate of #${issueId} (PR #${pr})`,
+  flakyEnv: (others, load, cores) =>
+    `When opened: tickets in progress ${others.length ? others.join(", ") : "none"}; host load (1 / 5 / 15 min) ${load} (${cores} cores).`,
+  flakyPriorItem: (at, issue, file) => `${at}Z gate of #${issue} (\`${file}\`)`,
+  flakyPrior: (items) => `Earlier sightings in the last 7 days: ${items.join("; ")}.`,
+  flakyAgain: (seen, files) => (files ? `Seen again: ${seen}; failing files this time: ${files}.` : `Seen again: ${seen}.`),
+  flakyFirstFailure: "First failure:",
+  flakyTitle: (file, n) => `Flaky test: ${file}${n > 1 ? ` and ${n - 1} more file(s)` : ""}`,
+  mainBrokenLabelDesc: "Full test run on main failed (opened automatically by Sandcastle, scheduled first)",
+  mainBrokenAgain: (short, summary) => `The full test run on main (${short}) failed again:\n\n${summary}`,
+  mainBrokenTitle: (short) => `Full test run failed on main (${short})`,
+  mainBrokenNoHistory: "(no earlier passing run; the last 20 commits follow)",
+
+  flakyIssueBody: (list, seen, env, prior, summary) =>
+    [
+      `${list} failed in the tests of ${seen} and passed when rerun alone.`,
+      "", env, ...(prior ? ["", prior] : []),
+      "", "## First failure", "", summary, "",
+      "## How to fix", "",
+      "First get a command that makes it fail reliably, then change the code. If you cannot reproduce it, infer the cause from the summary and the code, and explain the reasoning in the commit message.",
+      "",
+      "## Acceptance criteria", "",
+      "- [ ] The cause is written in the commit message (the reproduction command, or the reasoning)",
+      `- [ ] After the fix the reproduction command passes and ${list} pass alone; if another commit already fixed the root cause, only verify, don't change code`,
+      "- [ ] Don't raise global timeouts, don't delete or weaken assertions",
+    ].join("\n"),
+  mainBrokenIssueBody: (sha, summary, commits) =>
+    [
+      `Sandcastle ran the full test suite (\`GATE_FULL=1\`) on main at \`${sha}\` and it failed.`,
+      "Tickets that select tests by dependency only run part of the suite; a failure here means either the dependency graph missed something, or two tickets that passed on their own break together.",
+      "", "## Failure summary", "", summary, "",
+      "## Commits merged into main since the last passing full run", "", "```", commits, "```", "",
+      "## Acceptance criteria", "",
+      "- [ ] The failing test files pass alone on main; the cause (which commit, and why) is in the commit message",
+      "- [ ] Don't raise global timeouts, don't delete or weaken assertions",
+      "- [ ] State in an issue comment whether the dependency graph missed it",
+    ].join("\n"),
+
+  outputLanguage:
+    "Output language: write everything that goes onto the issue tracker or a PR in English: ticket titles and bodies, progress comments, acceptance notes, the review summary (translate the fixed labels in the output templates below, but keep `<tags>`, HTML comments, `## Implementation guide`, `## Blocked by`, `## Acceptance criteria` and the other `##` section names exactly as written). Commit messages follow the “提交” section of PROJECT.md. The instructions below are in Chinese; read them, but answer in English.",
+};
+
+export const messages = (lang: Language = "zh"): Messages => (lang === "en" ? en : zh);

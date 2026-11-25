@@ -4,6 +4,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 import * as sandcastle from "@ai-hero/sandcastle";
+import { messages, type Messages } from "./i18n.ts";
 
 export const PHASES = ["prep", "implement", "review", "revise", "fix", "rebase"] as const;
 export type Phase = (typeof PHASES)[number];
@@ -397,8 +398,8 @@ export function recordUsage(issue: string, phase: Phase, run: AgentRun, name: st
 const k = (n: number) => `${(n / 1000).toFixed(1)}k`;
 
 /** PR 正文里的用量表：每次 run 一行，只记 token 数（别家档案的「费用」是按 Claude 单价算的，没有意义）。 */
-export function usageTable(records: readonly UsageRecord[]): string {
-  if (records.length === 0) return "（没有记录到用量）";
-  const rows = records.map((r) => `| ${r.run} | ${r.profile}（${r.model}） | ${r.sessions} | ${k(r.input)} | ${k(r.cacheCreation)} | ${k(r.cacheRead)} | ${k(r.output)} | ${k(r.peak)} |`);
-  return ["| 会话 | 档案 | 次数 | 输入 | 缓存写 | 缓存读 | 输出 | 上下文峰值 |", "|---|---|---|---|---|---|---|---|", ...rows].join("\n");
+export function usageTable(records: readonly UsageRecord[], m: Messages = messages()): string {
+  if (records.length === 0) return m.usageNone;
+  const rows = records.map((r) => `| ${r.run} | ${m.usageProfile(r.profile, r.model)} | ${r.sessions} | ${k(r.input)} | ${k(r.cacheCreation)} | ${k(r.cacheRead)} | ${k(r.output)} | ${k(r.peak)} |`);
+  return [m.usageHeader, "|---|---|---|---|---|---|---|---|", ...rows].join("\n");
 }

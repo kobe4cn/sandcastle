@@ -4,6 +4,8 @@
  * 指引的写法见 prompts/ticket-sizing.md 的 `## Implementation guide` 模板。
  */
 
+import { messages, type Messages } from "./i18n.ts";
+
 /** 正文里 `## <title>` 一节的内容（到下一个 `## ` 为止），没有这一节时为空串。 */
 export const section = (body: string, title: string) => {
   const m = body.match(new RegExp(`^##\\s*${title}[^\\n]*\\n([\\s\\S]*?)(?=^##\\s|(?![\\s\\S]))`, "mi"));
@@ -162,6 +164,7 @@ export const flakyTickets = (
   after: string,
   open: { number: number; title: string; body: string }[],
   testFile: RegExp = DEFAULT_TEST_FILE,
+  m: Messages = messages(),
 ): { files: string[]; signature: string; marker?: string; title: string; existing?: number }[] => {
   const signatures = new Map(flakyFailures(after, testFile).map((f) => [f.file, f.signature]));
   const groups = new Map<string, string[]>();
@@ -174,9 +177,9 @@ export const flakyTickets = (
   return [...groups.values()].map((groupFiles) => {
     const signature = signatures.get(groupFiles[0]!) ?? "";
     const marker = signature ? `<!-- flaky-sig: ${signature.replaceAll("-->", "--›")} -->` : undefined;
-    const title = `偶发失败：${groupFiles[0]!}${groupFiles.length > 1 ? ` 等 ${groupFiles.length} 个文件` : ""}`;
+    const title = m.flakyTitle(groupFiles[0]!, groupFiles.length);
     const existing = (marker ? open.find((i) => i.body.includes(marker)) : undefined)
-      ?? open.find((i) => groupFiles.some((f) => i.title === `偶发失败：${f}`));
+      ?? open.find((i) => groupFiles.some((f) => i.title === m.flakyTitle(f, 1)));
     return { files: groupFiles, signature, marker, title, existing: existing?.number };
   });
 };

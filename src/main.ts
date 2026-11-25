@@ -51,6 +51,7 @@ import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage
 import { acceptanceSection, checkAcceptanceNotes, replaceSection, restSections } from "./pr-body.ts";
 import type { ForgeIssue, ForgePr } from "./forge.ts";
 import { loadProject } from "./profile.ts";
+import { messages } from "./i18n.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
 
@@ -59,6 +60,8 @@ import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, 
 // ---------------------------------------------------------------------------
 
 const project = await loadProject();
+/** 写到平台上的文字（PR、评论、自动开的票）按项目语言。 */
+const M = messages(project.language);
 const forge = project.forge;
 
 // agent 多久没输出算卡死：库默认 600 秒，太短（门槛失败后的 fix 会话要在后台重跑慢测试，等通知期间没有输出）。
@@ -86,7 +89,7 @@ const allowed = (id: string | number) => ONLY.size === 0 || ONLY.has(String(id).
 
 const LABEL = project.labels;
 // 提示词：通用模板 + .sandcastle/PROJECT.md 的章节 + 平台命令，启动时渲染一次（改了 PROJECT.md 要重启才生效）
-const PROMPTS = renderPrompts({ doc: loadProjectDoc(), forgeGuide: forge.agentGuide(), labels: LABEL });
+const PROMPTS = renderPrompts({ doc: loadProjectDoc(), forgeGuide: forge.agentGuide(), labels: LABEL, language: project.language });
 const APPEND_ONLY: ReadonlySet<string> = new Set(project.appendOnlyFiles);
 
 /** 调度顺序：main 坏了的修复票排最前，其余按编号从小到大（早建的票通常是后面票的 blocker）。 */
@@ -489,24 +492,24 @@ async function pushAndOpenPr(issue: Issue, notes: PrNotes, shots: string[]): Pro
     // 已有 PR：自己的分支只替换正文里的「验收说明」一节，其余（上次的 Review / Gate 记录）逐字保留；
     // 外部 PR 不动别人写的正文，验收说明贴在评论里。
     if (isExternal(issue)) {
-      forge.commentPr(existing, `Sandcastle 更新了这个分支。\n\n## 验收说明\n\n${notes.acceptance}\n\n${notes.rest}`, shots);
+      forge.commentPr(existing, `${M.prUpdated}\n\n## ${M.notesTitle}\n\n${notes.acceptance}\n\n${notes.rest}`, shots);
     } else {
       const body = forge.prBody(existing);
-      forge.editPrBody(existing, replaceSection(body, "验收说明", `## 验收说明\n\n${notes.acceptance}`));
-      forge.commentPr(existing, `Sandcastle 更新了这个分支（验收说明已更新）。\n\n${notes.rest}`, shots);
+      forge.editPrBody(existing, replaceSection(body, M.notesTitle, `## ${M.notesTitle}\n\n${notes.acceptance}`));
+      forge.commentPr(existing, `${M.prUpdatedNotes}\n\n${notes.rest}`, shots);
     }
     return existing;
   }
   // 外部 PR 不在这里新开：它被关了就说明人不要了。
   if (isExternal(issue)) throw new Error(`分支 ${issue.branch} 上已经没有 open 的 PR，外部 PR 不由 Sandcastle 重开。`);
   const commits = sh("git", ["log", `${BASE_REF}..${issue.branch}`, "--format=- %B"]);
-  const body = `${forge.closingRef(issue.id)}\n\n## 验收说明\n\n${notes.acceptance}\n\n${notes.rest}\n\n## Commits\n\n${commits}`;
+  const body = `${forge.closingRef(issue.id)}\n\n## ${M.notesTitle}\n\n${notes.acceptance}\n\n${notes.rest}\n\n## Commits\n\n${commits}`;
   return forge.createPr({ base: BASE_BRANCH, head: issue.branch, title: `${issue.title} (#${issue.id})`, body, attachments: shots });
 }
 
 function leaveForHuman(issue: Issue, pr: string, reason: string) {
   forge.addLabel(issue.id, LABEL.prOpen);
-  forge.commentPr(pr, `没有自动合并：${reason}`);
+  forge.commentPr(pr, M.notMerged(reason));
 }
 
 /** agent 代拍板过的票：打 sandcastle:decided，把那些评论贴到 PR 上，人事后确认。平台出错只警告，不影响落地。 */
@@ -516,14 +519,14 @@ function reportDecisions(issueId: string, pr: string) {
   const decisions = r.value.filter((body) => body.startsWith(DECIDED_MARK)).map((body) => body.slice(DECIDED_MARK.length).trim());
   if (!decisions.length) return;
   const label = attempt(() => forge.addLabel(issueId, LABEL.decided));
-  const comment = attempt(() => forge.commentPr(pr, `## 代拍板\n\nagent 按「必须停下 / 可以代拍板」的规则自己定了 ${decisions.length} 个设计决定，请事后确认（不同意就在 issue 上回复，确认后去掉 #${issueId} 的 \`${LABEL.decided}\`）：\n\n${decisions.map((d, n) => `<details><summary>第 ${n + 1} 个</summary>\n\n${d}\n\n</details>`).join("\n\n")}`));
+  const comment = attempt(() => forge.commentPr(pr, `${M.decisions(decisions.length, issueId, LABEL.decided)}\n\n${decisions.map((d, n) => `<details><summary>${M.decisionN(n + 1)}</summary>\n\n${d}\n\n</details>`).join("\n\n")}`));
   for (const x of [label, comment]) if (!x.ok) console.warn(`  ⚠ #${issueId} 代拍板标记失败：${x.out.slice(0, 200)}`);
   console.log(`  📝 #${issueId} 有 ${decisions.length} 个代拍板，打 ${LABEL.decided}`);
 }
 
 function markStuck(issueId: string, reason: string) {
   forge.addLabel(issueId, LABEL.stuck);
-  forge.commentIssue(issueId, `Sandcastle 停下了：${reason}`);
+  forge.commentIssue(issueId, M.stuck(reason));
 }
 
 /** PR 上以这个开头的评论或 review 正文表示「打回 Sandcastle」（作者不能对自己的 PR 点 Request changes）。 */
@@ -546,7 +549,7 @@ function reopenRequestedRevisions() {
     ];
     if (!signals.some((at) => at > lastCommit)) continue;
     forge.removeLabel(String(issueId), LABEL.prOpen);
-    forge.commentPr(pr.id, "收到打回，这张票重新进入 Sandcastle：implementer 会先处理这个 PR 上的意见。");
+    forge.commentPr(pr.id, M.reopened);
     console.log(`  ↺ #${issueId} 收到打回（PR #${pr.id}），重新排队`);
   }
 }
@@ -565,35 +568,33 @@ function reportFlaky(issue: Issue, pr: string, gateOutput: string): { tickets: s
   const after = parts.slice(1).join("\n");
   const files = [...new Set(before.match(new RegExp(`^${project.gate.testFile.source}$`, "gm")) ?? [])];
   if (files.length === 0) return { tickets: [], deferred: [] };
-  attempt(() => forge.ensureLabel(LABEL.flaky, "fbca04", "偶发失败的测试（Sandcastle 门槛自动开票）"));
+  attempt(() => forge.ensureLabel(LABEL.flaky, "fbca04", M.flakyLabelDesc));
   const open = forge.listOpenIssues([LABEL.flaky]);
-  const seen = `#${issue.id} 的门槛（PR #${pr}）`;
+  const seen = M.flakySeen(issue.id, pr);
   const summary = `\`\`\`\n${after.trim().slice(0, 3000)}\n\`\`\``;
   // 当时的环境：判断是不是负载 / 并发问题时先看这个
   const others = [...running.values()].filter((i) => i.id !== issue.id).map((i) => `#${i.id}`);
   const load = loadavg().map((n) => n.toFixed(1)).join(" / ");
-  const env = `开票时：同时在做的票 ${others.length ? others.join("、") : "无"}；宿主机 1 / 5 / 15 分钟负载 ${load}（${cpus().length} 核）。`;
+  const env = M.flakyEnv(others, load, cpus().length);
   // 分组、签名标记、标题与已有票的匹配见 guide.ts 的 flakyTickets；开不开票见 flakyTriage；正文见项目配置 texts.flakyIssueBody。
   let history: FlakySighting[] = [];
   try {
     history = JSON.parse(readFileSync(FLAKY_FILE, "utf8")) as FlakySighting[];
   } catch {}
-  const triage = flakyTriage(flakyTickets(files, after, open, project.gate.testFile), history, issue.id, new Date());
+  const triage = flakyTriage(flakyTickets(files, after, open, project.gate.testFile, M), history, issue.id, new Date());
   writeFileSync(FLAKY_FILE, `${JSON.stringify(triage.history, null, 1)}\n`);
   const deferred = triage.deferred.flatMap((g) => g.files);
   if (deferred.length) console.log(`  ⚠ #${issue.id} 门槛偶发超时 / 连接失败，7 天内第一次，只记录不开票：${deferred.join("、")}`);
   // 同一文件 7 天内之前的出现（超时类第二次出现才开票，票里列出前几次，方便判断是不是同一个环境时段）
   const prior = (groupFiles: string[]) => {
-    const seenAt = history.filter((h) => groupFiles.includes(h.file)).map((h) => `${h.at.slice(0, 16)}Z #${h.issue} 的门槛（\`${h.file}\`）`);
-    return seenAt.length ? `7 天内之前的出现：${seenAt.join("；")}。` : "";
+    const seenAt = history.filter((h) => groupFiles.includes(h.file)).map((h) => M.flakyPriorItem(h.at.slice(0, 16), h.issue, h.file));
+    return seenAt.length ? M.flakyPrior(seenAt) : "";
   };
   const tickets = triage.ticket.map(({ files: groupFiles, marker, title, existing }) => {
-    const list = groupFiles.map((f) => `\`${f}\``).join("、");
+    const list = M.list(groupFiles.map((f) => `\`${f}\``));
     if (existing !== undefined) {
-      const again = marker
-        ? `又出现一次：${seen}，这次失败的文件：${list}。`
-        : `又出现一次：${seen}。`;
-      forge.commentIssue(String(existing), `${again}${env}第一次的失败：\n\n${summary}`);
+      const again = M.flakyAgain(seen, marker ? list : undefined);
+      forge.commentIssue(String(existing), `${again}${env}${M.flakyFirstFailure}\n\n${summary}`);
       return `#${existing}`;
     }
     const body = project.texts.flakyIssueBody({ files: groupFiles, seen, env, prior: prior(groupFiles), summary });
@@ -699,7 +700,7 @@ async function build(issue: Issue) {
       runs: [...reviews, ...revisions.map((r) => r.run), fix],
       revisions: revisions.map((r) => r.items),
       verdict: tagged(review.stdout, "verdict"),
-      summary: tagged(review.stdout, "review-summary") ?? "（reviewer 没有给出摘要）",
+      summary: tagged(review.stdout, "review-summary") ?? M.noReviewSummary,
       gate: { ok: gateResult.exitCode === 0, output: gateResult.stdout.slice(-3000), tier: gateTier(gateResult.stdout) },
       browser: collectBrowserCheck(sandbox.worktreePath, issue.id),
       notes: readAcceptanceNotes(sandbox.worktreePath),
@@ -722,8 +723,8 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 // 没配置时恒为通过。
 const integrityOk = (head: string) => (project.integrity ? project.integrity.command(head, BASE_REF) : "true");
 const INTEGRITY_OK = integrityOk("HEAD");
-const integrityBroken = () => project.integrity?.broken(BASE_REF) ?? "一致性检查没通过";
-const integrityName = project.integrity?.name ?? "一致性检查";
+const integrityBroken = () => project.integrity?.broken(BASE_REF) ?? M.integrityBroken;
+const integrityName = project.integrity?.name ?? M.integrityName;
 
 /**
  * 把分支 rebase 到最新的 origin/main：没冲突直接 rebase；有冲突开一次 agent 会话按
@@ -739,7 +740,7 @@ type HostGap = { release: () => void; reacquire: () => Promise<void> };
  * 放开期间别的票可能先合进 main：这里的合并会失败，按原有路径留 PR。
  */
 async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = true): Promise<{ ok: true } | { ok: false; reason: string }> {
-  if (isExternal(issue)) return { ok: false, reason: `外部 PR 的分支 ${issue.branch} 不由 Sandcastle rebase 或合并。` };
+  if (isExternal(issue)) return { ok: false, reason: M.rebaseExternal(issue.branch) };
   const env = testEnv(issue.id);
   host.release();
   let opened: Awaited<ReturnType<typeof sandcastle.createSandbox>> | undefined;
@@ -749,7 +750,7 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     opened = sandbox;
     const behind = await sandbox.exec(`git merge-base --is-ancestor ${BASE_REF} HEAD`);
     if (behind.exitCode === 0) {
-      return { ok: false, reason: `分支已经包含最新的 ${BASE_REF}，失败不是冲突造成的，需要人看。` };
+      return { ok: false, reason: M.rebaseNotBehind(BASE_REF) };
     }
 
     // merge-tree 有冲突时退出码 1、冲突文件列在 stdout 第一行（树 id）之后；`; true` 让 trySh 拿到 stdout
@@ -777,13 +778,13 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
       }));
       if ((await sandbox.exec(REBASE_STATE)).exitCode === 0) {
         await sandbox.exec("git rebase --abort");
-        return { ok: false, reason: "agent 没能解决 rebase 冲突（原因见 issue 评论）。" };
+        return { ok: false, reason: M.rebaseAgentFailed };
       }
       if ((await sandbox.exec(`git merge-base --is-ancestor ${BASE_REF} HEAD`)).exitCode !== 0) {
-        return { ok: false, reason: `处理后分支仍不在 ${BASE_REF} 之上。` };
+        return { ok: false, reason: M.rebaseStillBehind(BASE_REF) };
       }
       if ((await sandbox.exec(INTEGRITY_OK)).exitCode !== 0) {
-        return { ok: false, reason: `处理后仍然${integrityBroken()}。` };
+        return { ok: false, reason: M.rebaseStillBroken(integrityBroken()) };
       }
     }
 
@@ -792,21 +793,21 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     if (!merge) {
       const tc = await sandbox.exec(`${project.gate.typecheck} > /tmp/rebase-typecheck.log 2>&1 || { tail -40 /tmp/rebase-typecheck.log; exit 1; }`);
       if (tc.exitCode !== 0) {
-        return { ok: false, reason: `rebase 后 typecheck 失败：\n\n\`\`\`\n${tc.stdout.slice(-2000)}\n\`\`\`` };
+        return { ok: false, reason: M.rebaseTypecheckFailed(tc.stdout.slice(-2000)) };
       }
       await host.reacquire();
       await gitRemoteOrThrow(["push", "--force-with-lease", REMOTE, issue.branch]);
-      const files = conflictFiles.length ? conflictFiles.map((f) => `\`${f}\``).join("、") : `（没有文本冲突，${integrityName}分叉）`;
-      const how = conflicted || chainBroken ? "冲突由 agent 处理" : "rebase 没有冲突";
+      const files = conflictFiles.length ? M.list(conflictFiles.map((f) => `\`${f}\``)) : M.rebaseNoTextConflict(integrityName);
+      const how = conflicted || chainBroken ? M.rebaseHowAgent : M.rebaseHowClean;
       console.log(`  ↻ #${issue.id} rebase 后 typecheck 通过，不重跑测试，留给人审`);
-      forge.commentPr(pr, `Sandcastle 把分支 rebase 到最新的 ${BASE_REF}（原来和它冲突，${how}；冲突文件：${files}）。rebase 后只跑了 typecheck（通过），**没有重跑测试**：PR 正文 Gate 里的测试结果是 rebase 之前的，合并前请判断是否要补跑。`);
+      forge.commentPr(pr, M.rebasedTypecheckOnly(BASE_REF, how, files));
       return { ok: true };
     }
 
     // rebase 后的门槛和开工时同一套选测试规则（分支相对新 main 的改动），不再因冲突强制完整测试（2026-11-24）。
     const gate = await runGate((c) => sandbox.exec(c), issue.id, env);
     if (gate.exitCode !== 0) {
-      return { ok: false, reason: `rebase 后门槛失败：\n\n\`\`\`\n${gate.stdout.slice(-2000)}\n\`\`\`` };
+      return { ok: false, reason: M.rebaseGateFailed(gate.stdout.slice(-2000)) };
     }
 
     await host.reacquire();
@@ -817,12 +818,12 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
       await sleep(10_000);
       const merged = attempt(() => forge.mergePr(pr, project.mergeMethod));
       if (merged.ok) {
-        forge.commentPr(pr, `Sandcastle 把分支 rebase 到最新的 ${BASE_REF}，门槛重跑通过后合并。`);
+        forge.commentPr(pr, M.rebasedMerged(BASE_REF));
         return { ok: true };
       }
       last = merged.out;
     }
-    return { ok: false, reason: `rebase 并通过门槛后仍合并失败：${last.slice(0, 300)}` };
+    return { ok: false, reason: M.rebaseMergeFailed(last.slice(0, 300)) };
   } finally {
     if (opened) {
       await opened.close();
@@ -901,8 +902,8 @@ async function rebaseIfConflicting(issue: Issue, pr: string, host: HostGap): Pro
   console.log(`  ↻ #${issue.id} 和最新的 ${BASE_REF} 冲突，rebase 后再留给人审`);
   const r = await untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host, false));
   return r.ok
-    ? `\n\n分支和最新的 ${BASE_REF} 冲突，已 rebase，只重跑了 typecheck（通过），没有重跑测试。`
-    : `\n\n⚠️ 分支和最新的 ${BASE_REF} 冲突，自动 rebase 没成：${r.reason}`;
+    ? M.rebasedForHuman(BASE_REF)
+    : M.rebaseForHumanFailed(BASE_REF, r.reason);
 }
 
 async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnType<typeof build>>>, host: HostGap) {
@@ -913,20 +914,20 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   }
   if (outcome.status === "rejected") {
     console.error(`  ✗ #${issue.id} 失败：${outcome.reason}`);
-    markStuck(issue.id, `沙箱出错：${String(outcome.reason).slice(0, 500)}`);
+    markStuck(issue.id, M.sandboxError(String(outcome.reason).slice(0, 500)));
     return;
   }
   const result = outcome.value;
   const peak = result.done
     ? peakContext(result.implement, ...result.runs)
     : peakContext(result.implement);
-  const budgetNote = `上下文峰值约 ${Math.round(peak / 1000)}k / ${CONTEXT_BUDGET / 1000}k，implement 用了 ${result.implement.iterations.length} 次会话。`;
+  const budgetNote = M.budgetNote(Math.round(peak / 1000), CONTEXT_BUDGET / 1000, result.implement.iterations.length);
   if (!result.done) {
     // implementer 判断必须由人拍板：推上已有的提交，直接交给人，不退回 prep。
     if (result.implement.completionSignal === NEEDS_DECISION) {
       const pushed = (await pushBranch(issue)).ok;
       attempt(() => forge.addLabel(issue.id, LABEL.readyForHuman));
-      markStuck(issue.id, `implementer 遇到必须由人拍板的设计决定（见上面 implementer 的评论）。${budgetNote}${pushed ? `已有的提交推到了分支 \`${issue.branch}\`。` : "提交没能推上去，留在宿主机的本地分支上。"}拍板后在票上回复，去掉 ${LABEL.stuck} 即可接着跑。`);
+      markStuck(issue.id, M.needsDecision(budgetNote, pushed ? M.pushedTo(issue.branch) : M.notPushed, LABEL.stuck));
       console.log(`  ✋ #${issue.id} 要人拍板，打 ${LABEL.stuck}`);
       return;
     }
@@ -934,57 +935,57 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     if (comments.includes(REPREP_MARK)) {
       markStuck(
         issue.id,
-        `重新准备过一次，${IMPLEMENT_MAX_ITERATIONS} 次会话内仍没有完成（见上面 implementer 的评论）。${budgetNote} 请人看一下票怎么拆。`,
+        M.reprepFailed(IMPLEMENT_MAX_ITERATIONS, budgetNote),
       );
       return;
     }
     // 外部 PR 不退回 prep（prep 会按 sandcastle/issue-n 拆票）：推上已有的提交，交给人。
     if (isExternal(issue)) {
       const pushed = (await pushBranch(issue)).ok;
-      markStuck(issue.id, `在外部 PR 的分支 \`${issue.branch}\` 上 ${IMPLEMENT_MAX_ITERATIONS} 次会话内没有改完（见上面 implementer 的评论）。${budgetNote}${pushed ? "已有的提交推到了这个分支。" : "提交没能推上去，留在宿主机的本地分支上。"}`);
+      markStuck(issue.id, M.externalIncomplete(issue.branch, IMPLEMENT_MAX_ITERATIONS, budgetNote, pushed ? M.pushedHere : M.notPushed));
       return;
     }
     // 第一次没做完：分支推上去免得部分提交只留在宿主机，提交列表写进评论给 prep 看，退回 prep 重新准备。
     const pushed = (await pushBranch(issue)).ok;
     const log = trySh("git", ["log", "--format=- %h %s", `${BASE_REF}..${issue.branch}`]);
-    const commits = log.ok && log.out ? `\n\n分支 \`${issue.branch}\` 上已有的提交：\n\n${log.out}` : "\n\n分支上还没有提交。";
+    const commits = log.ok && log.out ? M.reprepCommits(issue.branch, log.out) : M.reprepNoCommits;
     forge.removeLabel(issue.id, LABEL.prepped);
     forge.commentIssue(
       issue.id,
-      `${REPREP_MARK}\n${IMPLEMENT_MAX_ITERATIONS} 次会话内没有完成。${budgetNote} 下次调度时 prep 会按上面 implementer 的进度评论重新准备：指引不对就重写，票太大就把没完成的验收标准拆成子票。再没做完就打 ${LABEL.stuck}。${commits}${pushed ? "" : "\n\n（分支没能推到远端，下一轮会在本地的同名分支上接着做。）"}`,
+      `${REPREP_MARK}\n${M.reprep(IMPLEMENT_MAX_ITERATIONS, budgetNote, LABEL.stuck)}${commits}${pushed ? "" : M.reprepNotPushed}`,
     );
     console.log(`  ↺ #${issue.id} 没做完，退回 prep 重新准备`);
     return;
   }
 
-  const overBudget = peak > CONTEXT_BUDGET ? "\n\n⚠️ 超过上下文预算，考虑把同类票切得更小。" : "";
+  const overBudget = peak > CONTEXT_BUDGET ? M.overBudget : "";
   const flaky = result.gate.output.includes("GATE_FLAKY");
-  const tierName = result.gate.tier === "selected" ? project.gate.selectedDescription : "完整测试";
+  const tierName = result.gate.tier === "selected" ? project.gate.selectedDescription : M.tierFull;
   // 先 push 开 PR 才有 PR 号；开票放在后面，票号用评论补到 PR 上。
   const gateNote = !result.gate.ok
-    ? `❌ 门槛失败：\n\n\`\`\`\n${result.gate.output}\n\`\`\``
+    ? M.gateFailed(result.gate.output)
     : flaky
-      ? `typecheck 通过；⚠️ ${tierName}有偶发失败，失败的文件单独重跑通过（沙箱内）。已自动开票修（见 PR 评论）。\n\n\`\`\`\n${result.gate.output}\n\`\`\``
-      : `typecheck 与${tierName}通过（沙箱内）。\n\n\`\`\`\n${result.gate.output.slice(-500)}\n\`\`\``;
+      ? M.gateFlaky(tierName, result.gate.output)
+      : M.gatePassed(tierName, result.gate.output.slice(-500));
   const browserSection = result.browser
-    ? `${result.browser.result ?? "（implementer 没有写 RESULT.md）"}\n\n截图 ${result.browser.shots.length} 张，附在下面。`
+    ? `${result.browser.result ?? M.browserNoResult}\n\n${M.browserShots(result.browser.shots.length)}`
     : undefined;
   const revisionNote = result.revisions.length
-    ? `\n\n**reviewer 打回过 ${result.revisions.length} 次**（implementer 已按意见修改）：\n\n${result.revisions
-        .map((items, n) => `<details><summary>第 ${n + 1} 次的意见</summary>\n\n${items}\n\n</details>`)
+    ? `${M.revisions(result.revisions.length)}${result.revisions
+        .map((items, n) => `<details><summary>${M.revisionN(n + 1)}</summary>\n\n${items}\n\n</details>`)
         .join("\n\n")}`
     : "";
-  const notesProblems = checkAcceptanceNotes(result.notes);
+  const notesProblems = checkAcceptanceNotes(result.notes, M);
   const pr = await pushAndOpenPr(
     issue,
     {
-      acceptance: acceptanceSection(issue.branch, result.notes, { pageChanged: result.browser !== undefined, pagePrep: project.acceptancePrep }),
+      acceptance: acceptanceSection(issue.branch, result.notes, { pageChanged: result.browser !== undefined, pagePrep: project.acceptancePrep, m: M }),
       rest: restSections({
         review: `${result.summary}${revisionNote}`,
         browser: browserSection,
         gate: gateNote,
         budget: `${budgetNote}${overBudget}`,
-        usage: usageTable(result.usage),
+        usage: usageTable(result.usage, M),
       }),
     },
     result.browser?.shots ?? [],
@@ -993,8 +994,8 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   if (flaky && result.gate.ok) {
     const { tickets, deferred } = reportFlaky(issue, pr, result.gate.output);
     const notes = [
-      ...(tickets.length ? [`门槛里的偶发失败已开票：${tickets.join("、")}`] : []),
-      ...(deferred.length ? [`门槛里重跑才通过、报错只是超时或连接失败，7 天内第一次出现，只记进 .sandcastle/logs/flaky.json、不开票：${deferred.map((f) => `\`${f}\``).join("、")}`] : []),
+      ...(tickets.length ? [M.flakyTicketsOpened(M.list(tickets))] : []),
+      ...(deferred.length ? [M.flakyDeferred(M.list(deferred.map((f) => `\`${f}\``)))] : []),
     ];
     if (notes.length) forge.commentPr(pr, notes.join("\n\n"));
   }
@@ -1006,15 +1007,14 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     leaveForHuman(
       issue,
       pr,
-      `这是外部 PR，Sandcastle 只负责修改，合并由人决定。reviewer 结论：${result.verdict}；门槛${result.gate.ok ? "通过" : "没通过"}（见上面的评论）。` +
-        (clean ? "" : `\n\n⚠️ 分支和最新的 ${BASE_REF} 有冲突，需要先把 ${BASE_BRANCH} 合进来。`),
+      M.reasonExternal(result.verdict, result.gate.ok) + (clean ? "" : M.reasonExternalConflict(BASE_REF, BASE_BRANCH)),
     );
     console.log(`  ◐ #${issue.id} 外部 PR #${pr}，留给人合并`);
     return;
   }
   // 验收说明缺失或格式不对：正文里已经有警告，下面每条留给人的路径都把它附进原因（外部 PR 本来就不自动合并，不走这里）。
   const notesNote = notesProblems.length
-    ? `\n\n验收说明缺失或格式不对：${notesProblems.join("；")}（见 PR 正文的「验收说明」一节）。`
+    ? M.reasonNotes(notesProblems.join(M.sep))
     : "";
   if (result.verdict !== "merge") {
     // 开工后 main 上合进了改同一处的票：先 rebase 好再交给人，免得人审的是一个合不进去的 PR。
@@ -1023,8 +1023,8 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
       issue,
       pr,
       (result.verdict === "revise"
-        ? `reviewer 打回 ${REVISE_MAX} 次后仍有要改的问题（见最新的 Review）。`
-        : "reviewer 认为需要人审（见 PR 正文的 Review）。") +
+        ? M.reasonReviseMax(REVISE_MAX)
+        : M.reasonReviewerPr) +
         rebaseNote +
         notesNote,
     );
@@ -1032,7 +1032,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     return;
   }
   if (!result.gate.ok) {
-    leaveForHuman(issue, pr, `typecheck 或完整测试没通过（见 PR 正文的 Gate）。${notesNote}`);
+    leaveForHuman(issue, pr, `${M.reasonGate}${notesNote}`);
     console.log(`  ◐ #${issue.id} 门槛失败，留 PR #${pr}`);
     return;
   }
@@ -1045,7 +1045,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   // 试跑期（autoMerge: false）：全程都过了也只留 PR，人看过再合并。
   if (!project.autoMerge) {
     const rebaseNote = await rebaseIfConflicting(issue, pr, host);
-    leaveForHuman(issue, pr, `项目配置 autoMerge: false（试跑期），reviewer 和门槛都通过，等人合并。${rebaseNote}`);
+    leaveForHuman(issue, pr, `${M.reasonAutoMergeOff}${rebaseNote}`);
     console.log(`  ◐ #${issue.id} 全部通过，autoMerge 关着，留 PR #${pr} 等人合并`);
     return;
   }
@@ -1060,7 +1060,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     console.log(`  ↻ #${issue.id} 没能直接合并，rebase 到最新的 ${BASE_REF} 后重试`);
     const retry = await untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host));
     if (!retry.ok) {
-      leaveForHuman(issue, pr, `合并失败：${merged.out.slice(0, 300)}\n\nrebase 后重试也没成：${retry.reason}`);
+      leaveForHuman(issue, pr, M.reasonMergeFailed(merged.out.slice(0, 300), retry.reason));
       console.log(`  ◐ #${issue.id} 合并失败，留 PR #${pr}`);
       return;
     }
@@ -1161,17 +1161,17 @@ async function runMainFullCheck() {
   writeMainCheck({ lastPass: now.lastPass, selectedSince: rest });
   const commits = now.lastPass
     ? trySh("git", ["log", "--oneline", `${now.lastPass}..${sha}`]).out
-    : `（之前没有通过记录，下面是最近 20 个提交）\n${trySh("git", ["log", "--oneline", "-n", "20", sha]).out}`;
+    : `${M.mainBrokenNoHistory}\n${trySh("git", ["log", "--oneline", "-n", "20", sha]).out}`;
   const summary = `\`\`\`\n${gate.stdout.slice(-3000)}\n\`\`\``;
   const open = forge.listOpenIssues([LABEL.mainBroken]);
   if (open[0]) {
-    forge.commentIssue(String(open[0].number), `main（${short}）上的兜底完整测试又失败了：\n\n${summary}`);
+    forge.commentIssue(String(open[0].number), M.mainBrokenAgain(short, summary));
     console.log(`  🛡 main 兜底完整测试失败：${short}，已记在 #${open[0].number}`);
     return;
   }
-  attempt(() => forge.ensureLabel(LABEL.mainBroken, "d73a4a", "main 上的兜底完整测试失败（Sandcastle 自动开票，调度时排最前）"));
+  attempt(() => forge.ensureLabel(LABEL.mainBroken, "d73a4a", M.mainBrokenLabelDesc));
   const id = forge.createIssue({
-    title: `main 上的兜底完整测试失败（${short}）`,
+    title: M.mainBrokenTitle(short),
     body: project.texts.mainBrokenIssueBody({ sha, summary, commits }),
     labels: [LABEL.mainBroken, LABEL.picked, LABEL.readyForAgent],
   });
@@ -1262,7 +1262,7 @@ function start(issue: Issue) {
         console.error(`  ✗ #${issue.id} 落地出错：${reason}`);
         // 打 stuck 不让下次再做；本地分支保留，人看过后去掉 stuck 即可接着跑。
         if (!issueClosed(issue.id)) attempt(() => forge.addLabel(issue.id, LABEL.stuck));
-        if (!issueClosed(issue.id)) attempt(() => forge.commentIssue(issue.id, `Sandcastle 停下了：落地（push / 开 PR / 合并）出错，本地分支 \`${issue.branch}\` 保留。\n\n\`\`\`\n${reason}\n\`\`\`\n\n处理后去掉 ${LABEL.stuck} 再运行。`));
+        if (!issueClosed(issue.id)) attempt(() => forge.commentIssue(issue.id, M.landError(issue.branch, reason, LABEL.stuck)));
       }
     });
   })()
@@ -1330,7 +1330,7 @@ async function schedule(): Promise<ScheduleResult> {
         idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
         agent,
         promptFile: PROMPTS.prep,
-        promptArgs: { TASK_ID: issue.number, REPREP_MARK },
+        promptArgs: { TASK_ID: issue.number, REPREP_MARK, BASE: BASE_REF },
       }));
     } catch (e) {
       const limit = limitWait(e);

@@ -13,6 +13,7 @@ import type { SandboxProvider } from "@ai-hero/sandcastle";
 import { podman } from "@ai-hero/sandcastle/sandboxes/podman";
 import type { Forge, MergeMethod } from "./forge.ts";
 import { githubForge } from "./forges/github.ts";
+import { messages, type Language, type Messages } from "./i18n.ts";
 
 export const CONFIG_FILE = "sandcastle.config.ts";
 
@@ -84,6 +85,11 @@ export interface ProjectProfile {
    * （新项目试跑期用，见 docs/onboarding-checklist.md）。
    */
   autoMerge?: boolean;
+  /**
+   * issue、PR、评论用什么语言写（agent 写的和脚本写的都算）："zh" 或 "en"。默认 "zh"。
+   * 提交信息的语言另由 PROJECT.md「提交」一节决定；终端日志一律中文。
+   */
+  language?: Language;
 
   /** 同时实现的票数，受测试依赖的服务（数据库连接数等）与机器负载限制。默认 2。 */
   maxParallel?: number;
@@ -176,7 +182,7 @@ export const defineProject = (profile: ProjectProfile): ProjectProfile => profil
 export type Project = Required<
   Pick<
     ProjectProfile,
-    | "forge" | "remote" | "baseBranch" | "mergeMethod" | "autoMerge" | "maxParallel" | "agentIdleTimeoutS" | "pollIntervalMs"
+    | "forge" | "remote" | "baseBranch" | "mergeMethod" | "autoMerge" | "language" | "maxParallel" | "agentIdleTimeoutS" | "pollIntervalMs"
     | "maxIdlePolls" | "implementMaxSessions" | "reviseMax" | "contextBudget" | "mainCheckEvery" | "sandbox"
     | "install" | "isolation" | "appendOnlyFiles"
   >
@@ -198,6 +204,7 @@ export function resolveProject(p: ProjectProfile): Project {
     baseBranch: p.baseBranch ?? "main",
     mergeMethod: p.mergeMethod ?? "rebase",
     autoMerge: p.autoMerge ?? true,
+    language: p.language ?? "zh",
     maxParallel: p.maxParallel ?? 2,
     agentIdleTimeoutS: p.agentIdleTimeoutS ?? 40 * 60,
     pollIntervalMs: p.pollIntervalMs ?? 10 * 60_000,
@@ -216,7 +223,7 @@ export function resolveProject(p: ProjectProfile): Project {
     beforeSchedule: p.beforeSchedule ?? (() => {}),
     appendOnlyFiles: p.appendOnlyFiles ?? [],
     acceptancePrep: p.acceptancePrep,
-    texts: { ...DEFAULT_TEXTS, ...p.texts },
+    texts: { ...defaultTexts(p.language), ...p.texts },
   };
 }
 
@@ -255,7 +262,20 @@ export async function loadProject(dir = configDir()): Promise<Project> {
 const CROSS_ISSUE_RULE = (id: string) =>
   `除了本票（issue #${id}）和本次会话里自己新开的 issue，不要改其他 issue 的标签或正文（评论除外）；本次会话之前开出的票（包括本票早先会话开的）也不能改。`;
 
-export const DEFAULT_TEXTS: Project["texts"] = {
+/** 按语言的默认文案：自动开的票（偶发失败、main 坏了）用 i18n.ts 的正文；内联提示词是中文，英文项目在开头加输出语言规则。 */
+export function defaultTexts(lang: Language = "zh"): Project["texts"] {
+  const m: Messages = messages(lang);
+  const withLanguage = (text: string) => (lang === "zh" ? text : `${m.outputLanguage}\n\n${text}`);
+  return {
+    revisePrompt: (ctx) => withLanguage(ZH_PROMPTS.revisePrompt(ctx)),
+    fixPrompt: (ctx) => withLanguage(ZH_PROMPTS.fixPrompt(ctx)),
+    flakyIssueBody: ({ files, seen, env, prior, summary }) =>
+      m.flakyIssueBody(m.list(files.map((f) => `\`${f}\``)), seen, env, prior, summary),
+    mainBrokenIssueBody: ({ sha, summary, commits }) => m.mainBrokenIssueBody(sha, summary, commits.slice(0, 4000)),
+  };
+}
+
+const ZH_PROMPTS: Pick<Project["texts"], "revisePrompt" | "fixPrompt"> = {
   revisePrompt: ({ issueId, branch, title, viewIssue, items }) =>
     [
       `分支 ${branch}（issue #${issueId}：${title}）的 review 打回了，修改意见如下。`,
@@ -276,30 +296,7 @@ export const DEFAULT_TEXTS: Project["texts"] = {
       CROSS_ISSUE_RULE(issueId),
       "最后输出 <promise>COMPLETE</promise>。",
     ].join("\n"),
-  flakyIssueBody: ({ files, seen, env, prior, summary }) => {
-    const list = files.map((f) => `\`${f}\``).join("、");
-    return [
-      `${list} 在 ${seen}的测试里失败，单独重跑通过。`,
-      "", env, ...(prior ? ["", prior] : []),
-      "", "## 第一次的失败", "", summary, "",
-      "## 怎么修", "",
-      "先有一条能让它稳定变红的命令，再改。复现不了就照摘要从代码推断原因，并在提交信息里写明推断依据。",
-      "",
-      "## Acceptance criteria", "",
-      "- [ ] 失败原因写进提交信息（复现命令，或推断的依据）",
-      `- [ ] 修复后复现命令变绿、${list} 单跑通过；根因已被别的提交修掉时只核实、不改代码`,
-      "- [ ] 不放宽全局超时，不删除或改弱断言",
-    ].join("\n");
-  },
-  mainBrokenIssueBody: ({ sha, summary, commits }) =>
-    [
-      `Sandcastle 在 main 的 \`${sha}\` 上跑兜底完整测试（\`GATE_FULL=1\`），没通过。`,
-      "按依赖选测试的票只跑一部分测试；这里失败说明要么依赖图漏选了，要么两张各自通过的票合在一起才出问题。",
-      "", "## 失败摘要", "", summary, "",
-      "## 上次兜底通过以来进 main 的提交", "", "```", commits.slice(0, 4000), "```", "",
-      "## Acceptance criteria", "",
-      "- [ ] 失败的测试文件在 main 上单跑通过；原因（哪个提交引入、为什么）写进提交信息",
-      "- [ ] 不放宽全局超时，不删除或改弱断言",
-      "- [ ] 是不是依赖图漏选导致的，在 issue 评论里写明结论",
-    ].join("\n"),
 };
+
+/** 中文的默认文案（兼容旧的导出）。 */
+export const DEFAULT_TEXTS: Project["texts"] = defaultTexts("zh");

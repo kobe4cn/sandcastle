@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configDir } from "./profile.ts";
+import { messages, type Language, type Messages } from "./i18n.ts";
 
 export const PROJECT_DOC = "PROJECT.md";
 
@@ -110,10 +111,10 @@ export function readPromptSource(name: string, dir = configDir()): string {
   return readFileSync(existsSync(own) ? own : join(PACKAGE_PROMPTS, `${name}.md`), "utf8");
 }
 
-/** 渲染期替换的占位符：{{P_…}}（PROJECT.md 章节）、{{DOC_…}}（共享片段）、{{L_…}}（标签名）、{{FORGE}}、{{IF_BROWSER}}…{{END_BROWSER}}。 */
+/** 渲染期替换的占位符：{{P_…}}（PROJECT.md 章节）、{{DOC_…}}（共享片段）、{{L_…}}（标签名）、{{LANG_…}}（按项目语言的固定格式）、{{FORGE}}、{{IF_BROWSER}}…{{END_BROWSER}}。 */
 export type StaticVars = Record<string, string>;
 
-const STATIC_PLACEHOLDER = /\{\{\s*((?:P|DOC|L)_[A-Z_]+|FORGE)\s*\}\}/g;
+const STATIC_PLACEHOLDER = /\{\{\s*((?:P|DOC|L|LANG)_[A-Z_]+|FORGE)\s*\}\}/g;
 
 /** 只替换渲染期占位符；其余 {{X}} 原样留给上游在运行时替换。未知的渲染期占位符报错。 */
 export function renderTemplate(template: string, vars: StaticVars, opts: { browser: boolean }): string {
@@ -137,6 +138,12 @@ export const sectionVars = (doc: ProjectDoc): StaticVars =>
 export const labelVars = (labels: Record<string, string>): StaticVars =>
   Object.fromEntries(Object.entries(labels).map(([key, name]) => [`L_${constName(key)}`, name]));
 
+/** 按项目语言的固定格式：{{LANG_H_WHAT}} 等是验收说明必须有的三个小标题（脚本按它们检查，见 pr-body.ts）。 */
+export const languageVars = (m: Messages): StaticVars => {
+  const [what, verify, result] = m.noteHeadings;
+  return { LANG_H_WHAT: what, LANG_H_VERIFY: verify, LANG_H_RESULT: result };
+};
+
 /** 渲染全部提示词，写进临时目录，返回各自的绝对路径（给 promptFile）。 */
 export function renderPrompts(args: {
   doc: ProjectDoc;
@@ -144,9 +151,12 @@ export function renderPrompts(args: {
   labels: Record<string, string>;
   /** 配置目录，默认 configDir() */
   dir?: string;
+  /** issue / PR / 评论的语言（项目配置 language），默认中文 */
+  language?: Language;
 }): Record<PromptName, string> {
-  const { doc, forgeGuide, labels, dir: confDir = configDir() } = args;
-  const base: StaticVars = { ...sectionVars(doc), ...labelVars(labels), FORGE: forgeGuide };
+  const { doc, forgeGuide, labels, dir: confDir = configDir(), language } = args;
+  const m = messages(language);
+  const base: StaticVars = { ...sectionVars(doc), ...labelVars(labels), ...languageVars(m), FORGE: forgeGuide };
   const shared = (name: string) => renderTemplate(readPromptSource(name, confDir), base, { browser: doc.hasBrowser });
   const vars: StaticVars = {
     ...base,
@@ -158,7 +168,7 @@ export function renderPrompts(args: {
   const out = {} as Record<PromptName, string>;
   for (const name of PROMPT_NAMES) {
     const file = join(dir, `${name}.md`);
-    writeFileSync(file, renderTemplate(readPromptSource(name, confDir), vars, { browser: doc.hasBrowser }));
+    writeFileSync(file, `${m.outputLanguage}\n\n${renderTemplate(readPromptSource(name, confDir), vars, { browser: doc.hasBrowser })}`);
     out[name] = file;
   }
   return out;
