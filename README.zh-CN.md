@@ -24,7 +24,7 @@
 ```bash
 npm i -g sandpipe
 # 或
-pnpm add -g sandpipe
+pnpm add -g sandpipe   # 第一次用 pnpm 装全局包：先跑 `pnpm setup` 再重开终端，把它的全局 bin 目录加进 PATH
 ```
 
 也可以直接装 GitHub Release 上的包：`npm i -g https://github.com/kobe4cn/sandcastle-releases/releases/latest/download/sandpipe.tgz`。

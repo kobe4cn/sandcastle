@@ -24,7 +24,7 @@ The pipeline runs these steps in order:
 ```bash
 npm i -g sandpipe
 # or
-pnpm add -g sandpipe
+pnpm add -g sandpipe   # first time with pnpm: run `pnpm setup` and reopen the terminal, so its global bin directory is on PATH
 ```
 
 You can also install the package from the GitHub Release: `npm i -g https://github.com/kobe4cn/sandcastle-releases/releases/latest/download/sandpipe.tgz`.

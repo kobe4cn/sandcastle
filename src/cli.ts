@@ -37,6 +37,13 @@ Terminal language: the project config's language; without a project config, LANG
 
 const [cmd = "run", ...rest] = process.argv.slice(2);
 
+// 子命令后面带 --help 也只打印帮助：onboard / run 这类命令一跑就会改文件、调 agent。
+// A subcommand followed by --help only prints help too: commands like onboard or run change files and call the agent as soon as they start.
+if (rest.includes("--help") || rest.includes("-h")) {
+  console.log(help());
+  process.exit(0);
+}
+
 if (cmd === "run") await import("./main.ts");
 else if (cmd === "baseline") {
   process.env.SANDCASTLE_BASELINE = "1";

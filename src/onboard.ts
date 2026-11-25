@@ -23,6 +23,7 @@ import type { Language } from "./i18n.ts";
 import { DEFAULT_LABELS } from "./profile.ts";
 import { parseProjectDoc, SECTIONS, SECTIONS_EN } from "./project-doc.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
+import { RELEASES_REPO } from "./version.ts";
 
 export const TOOL_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const HOOK_FILE = "sandcastle-context.mjs";
@@ -547,7 +548,9 @@ export function onboard(argv: string[], root = process.cwd()) {
     console.warn(t("⚠ PROJECT.md 校验没过：", "⚠ PROJECT.md is invalid: ") + (e as Error).message);
   }
 
-  const checklist = join(TOOL_ROOT, manual("onboarding-checklist", lang));
+  // 给网页链接而不是本机路径：pnpm 全局装的包路径很长，在终端里没法点。
+  // Print a web link rather than a local path: packages installed globally with pnpm live under a very long path that can't be clicked in a terminal.
+  const checklist = `https://github.com/${RELEASES_REPO}/blob/HEAD/${manual("onboarding-checklist", lang)}`;
   console.log(
     [
       "",
