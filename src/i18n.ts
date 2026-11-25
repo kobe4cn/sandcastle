@@ -1,5 +1,5 @@
 // 脚本自己写到托管平台上的文字（PR 正文、评论、自动开的票）：按项目配置的 language 选中文或英文。
-// agent 写的文字由提示词里的「输出语言」规则管（project-doc.ts 的 languageVars）。终端日志不在这里，一律中文。
+// agent 写的文字由提示词里的「输出语言」规则管（project-doc.ts 的 languageVars）。终端输出不在这里，见 term.ts。
 // 新增一条：zh 和 en 都要加（en 的类型是 Messages，少了编译不过）。
 
 export type Language = "zh" | "en";
@@ -54,6 +54,7 @@ const zh = {
     `Sandcastle 把分支 rebase 到最新的 ${base}（原来和它冲突，${how}；冲突文件：${files}）。rebase 后只跑了 typecheck（通过），**没有重跑测试**：PR 正文 Gate 里的测试结果是 rebase 之前的，合并前请判断是否要补跑。`,
   rebaseHowAgent: "冲突由 agent 处理",
   rebaseHowClean: "rebase 没有冲突",
+  parentClosed: (children: string) => `子票 ${children} 都已关闭，Sandcastle 关闭父票。`,
   rebaseNoTextConflict: (integrity: string) => `（没有文本冲突，${integrity}分叉）`,
   rebasedMerged: (base: string) => `Sandcastle 把分支 rebase 到最新的 ${base}，门槛重跑通过后合并。`,
 
@@ -195,6 +196,7 @@ const en: Messages = {
     `Sandcastle rebased this branch onto the latest ${base} (it conflicted; ${how}; conflicting files: ${files}). After the rebase only typecheck was run (passed); **tests were not rerun**: the test results in the Gate section predate the rebase, so decide whether to rerun them before merging.`,
   rebaseHowAgent: "the agent resolved the conflicts",
   rebaseHowClean: "the rebase had no conflicts",
+  parentClosed: (children: string) => `Child tickets ${children} are all closed; Sandcastle closed this parent ticket.`,
   rebaseNoTextConflict: (integrity) => `(no textual conflicts; ${integrity} diverged)`,
   rebasedMerged: (base) => `Sandcastle rebased this branch onto the latest ${base} and merged it after the gate passed again.`,
 

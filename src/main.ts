@@ -52,6 +52,7 @@ import { acceptanceSection, checkAcceptanceNotes, replaceSection, restSections }
 import type { ForgeIssue, ForgePr } from "./forge.ts";
 import { loadProject } from "./profile.ts";
 import { messages } from "./i18n.ts";
+import { setTermLanguage, t } from "./term.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
 
@@ -62,6 +63,8 @@ import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, 
 const project = await loadProject();
 /** 写到平台上的文字（PR、评论、自动开的票）按项目语言。 */
 const M = messages(project.language);
+// 终端输出也跟项目语言（设了 SANDPIPE_LANG 时以它为准） / Terminal output follows the project's language too (SANDPIPE_LANG wins when set)
+setTermLanguage(project.language);
 const forge = project.forge;
 
 // agent 多久没输出算卡死：库默认 600 秒，太短（门槛失败后的 fix 会话要在后台重跑慢测试，等通知期间没有输出）。
@@ -127,7 +130,7 @@ async function dropTestResources(runId: string) {
   try {
     await project.isolation.cleanup?.(runId);
   } catch (e) {
-    console.warn(`  ⚠ #${runId} 测试资源回收出错：${String(e).slice(0, 500)}`);
+    console.warn(t(`  ⚠ #${runId} 测试资源回收出错：`, `  ⚠ #${runId} test resource cleanup failed: `) + String(e).slice(0, 500));
   }
 }
 
@@ -161,7 +164,7 @@ function readAcceptanceNotes(worktreePath: string): string | undefined {
 const GATE_RERUN_MAX = project.gate.rerunMax;
 type GateTier = "selected" | "full";
 const gateTier = (stdout: string): GateTier => (stdout.includes("GATE_TIER: selected") ? "selected" : "full");
-const gateTierName = (tier: GateTier) => (tier === "selected" ? "按依赖选" : "完整");
+const gateTierName = (tier: GateTier) => (tier === "selected" ? t("按依赖选", "dependency-selected") : t("完整", "full"));
 const GATE_SCRIPT = project.gate.script({ baseRef: BASE_REF });
 
 // 门槛同一时间只跑一个（不分档位）：并行跑时 CPU 与测试依赖的服务都被挤满，反而比先后跑更慢、更容易超时。
@@ -169,7 +172,8 @@ const GATE_SCRIPT = project.gate.script({ baseRef: BASE_REF });
 let gateQueue: Promise<unknown> = Promise.resolve();
 type ExecResult = { stdout: string; exitCode: number };
 // 不到一分钟显示秒：小项目的门槛只跑几秒，显示「0.0 分钟」看不出用时。
-const duration = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)} 秒` : `${(ms / 60_000).toFixed(1)} 分钟`);
+const duration = (ms: number) =>
+  ms < 60_000 ? t(`${Math.round(ms / 1000)} 秒`, `${Math.round(ms / 1000)}s`) : t(`${(ms / 60_000).toFixed(1)} 分钟`, `${(ms / 60_000).toFixed(1)} min`);
 
 /** 跑一次门槛：所有门槛排同一个队；用时（和排队时间）打进日志，并追加在输出末尾一行 GATE_TIME（进 PR 的 Gate 一节）。 */
 async function runGate<R extends ExecResult>(
@@ -180,12 +184,15 @@ async function runGate<R extends ExecResult>(
   const queued = Date.now();
   const go = async () => {
     const waited = Date.now() - queued;
-    if (waited > 5_000) console.log(`  ⏳ #${issueId} 排队 ${duration(waited)}后开始跑门槛`);
+    if (waited > 5_000) console.log(t(`  ⏳ #${issueId} 排队 ${duration(waited)}后开始跑门槛`, `  ⏳ #${issueId} starting the gate after queueing ${duration(waited)}`));
     const started = Date.now();
     const r = await exec(`${envPrefix({ ...env, ...project.gate.env })} sh -c ${shellQuote(GATE_SCRIPT)}`);
-    const took = `${gateTierName(gateTier(r.stdout))}门槛用时 ${duration(Date.now() - started)}${waited > 5_000 ? `（之前排队 ${duration(waited)}）` : ""}`;
-    console.log(`  ⏱ #${issueId} ${took}，${r.exitCode === 0 ? "通过" : "失败"}`);
-    return { ...r, stdout: `${r.stdout}\nGATE_TIME: ${took}` };
+    const tier = gateTierName(gateTier(r.stdout));
+    const took = duration(Date.now() - started);
+    const before = waited > 5_000 ? t(`（之前排队 ${duration(waited)}）`, ` (queued ${duration(waited)} before)`) : "";
+    const line = t(`${tier}门槛用时 ${took}${before}`, `${tier} gate took ${took}${before}`);
+    console.log(`  ⏱ #${issueId} ${line}${r.exitCode === 0 ? t("，通过", ", passed") : t("，失败", ", failed")}`);
+    return { ...r, stdout: `${r.stdout}\nGATE_TIME: ${line}` };
   };
   const run = gateQueue.then(go);
   gateQueue = run.catch(() => {});
@@ -222,7 +229,9 @@ async function retryTransient<T>(what: string, fn: () => Promise<T>): Promise<T>
       const message = String((e as { stderr?: unknown }).stderr || e);
       const wait = TRANSIENT_RETRY_WAITS_MS[attempt];
       if (wait === undefined || !TRANSIENT.test(message)) throw e;
-      console.warn(`  ⚠ ${what} 撞上临时错误（${message.split("\n")[0].slice(0, 160)}），${wait / 1000} 秒后重跑（第 ${attempt + 1}/${TRANSIENT_RETRY_WAITS_MS.length} 次）`);
+      const first = message.split("\n")[0].slice(0, 160);
+      const n = `${attempt + 1}/${TRANSIENT_RETRY_WAITS_MS.length}`;
+      console.warn(t(`  ⚠ ${what} 撞上临时错误（${first}），${wait / 1000} 秒后重跑（第 ${n} 次）`, `  ⚠ ${what} hit a transient error (${first}); rerunning in ${wait / 1000}s (attempt ${n})`));
       await new Promise((resolve) => setTimeout(resolve, wait));
     }
   }
@@ -238,12 +247,20 @@ async function retryTransient<T>(what: string, fn: () => Promise<T>): Promise<T>
 function syncHostBase() {
   const branch = trySh("git", ["rev-parse", "--abbrev-ref", "HEAD"]).out;
   if (branch !== BASE_BRANCH) {
-    console.warn(`  ⚠ 宿主机当前在 ${branch}，不是 ${BASE_BRANCH}：prep / plan 读到的是这个分支的代码，可能不是 ${BASE_REF}`);
+    console.warn(
+      t(
+        `  ⚠ 宿主机当前在 ${branch}，不是 ${BASE_BRANCH}：prep / plan 读到的是这个分支的代码，可能不是 ${BASE_REF}`,
+        `  ⚠ The host is on ${branch}, not ${BASE_BRANCH}: prep / plan read this branch's code, which may not be ${BASE_REF}`,
+      ),
+    );
     return;
   }
   const merged = trySh("git", ["merge", "--ff-only", "--quiet", BASE_REF]);
   if (!merged.ok) {
-    console.warn(`  ⚠ 本地 ${BASE_BRANCH} 没能快进到 ${BASE_REF}，prep / plan 可能读到旧代码：${merged.out.slice(0, 300)}`);
+    console.warn(
+      t(`  ⚠ 本地 ${BASE_BRANCH} 没能快进到 ${BASE_REF}，prep / plan 可能读到旧代码：`, `  ⚠ Local ${BASE_BRANCH} couldn't fast-forward to ${BASE_REF}; prep / plan may read old code: `) +
+        merged.out.slice(0, 300),
+    );
   }
 }
 
@@ -278,21 +295,22 @@ const openBlockers = (body: string) => blockersOf(body).filter(isOpen);
 function closeFinishedParents() {
   const parents = attempt(() => forge.listSplitParents(LABEL.picked));
   if (!parents.ok) {
-    console.warn(`  ⚠ 查拆过的父票失败：${parents.out.slice(0, 200)}`);
+    console.warn(t("  ⚠ 查拆过的父票失败：", "  ⚠ Listing split parent tickets failed: ") + parents.out.slice(0, 200));
     return;
   }
   for (const parent of parents.value) {
     const children = splitChildren(parent.body);
     if (children.length === 0 || children.some(isOpen)) continue;
     const body = parent.body.replace(/^(\s*[-*]\s*)\[ \](?=\s*#\d+)/gm, "$1[x]");
-    const list = children.map((n) => `#${n}`).join("、");
+    const refs = children.map((n) => `#${n}`);
     if (body !== parent.body) attempt(() => forge.editIssueBody(String(parent.number), body));
-    const closed = attempt(() => forge.closeIssue(String(parent.number), `子票 ${list} 都已关闭，Sandcastle 关闭父票。`));
+    const closed = attempt(() => forge.closeIssue(String(parent.number), M.parentClosed(M.list(refs))));
+    const list = refs.join(t("、", ", "));
     if (closed.ok) {
       openStates.set(parent.number, false);
-      console.log(`  ✓ 父票 #${parent.number} 的子票 ${list} 都已关闭，已关闭父票`);
+      console.log(t(`  ✓ 父票 #${parent.number} 的子票 ${list} 都已关闭，已关闭父票`, `  ✓ Children ${list} of #${parent.number} are all closed; closed the parent`));
     } else {
-      console.warn(`  ⚠ 关闭父票 #${parent.number} 失败：${closed.out.slice(0, 200)}`);
+      console.warn(t(`  ⚠ 关闭父票 #${parent.number} 失败：`, `  ⚠ Closing parent #${parent.number} failed: `) + closed.out.slice(0, 200));
     }
   }
 }
@@ -310,21 +328,21 @@ async function cleanupClosedIssues() {
   for (const label of [LABEL.prepped, LABEL.prOpen, LABEL.stuck]) {
     const closed = attempt(() => forge.listClosedIssueNumbers(label));
     if (!closed.ok) {
-      console.warn(`  ⚠ 查带 ${label} 的已关闭票失败：${closed.out.slice(0, 200)}`);
+      console.warn(t(`  ⚠ 查带 ${label} 的已关闭票失败：`, `  ⚠ Listing closed tickets labelled ${label} failed: `) + closed.out.slice(0, 200));
       continue;
     }
     const cleared: string[] = [];
     for (const n of closed.value.map(String)) {
       const edited = attempt(() => forge.removeLabel(n, label));
       if (edited.ok) cleared.push(`#${n}`);
-      else console.warn(`  ⚠ 去掉 #${n} 的 ${label} 失败：${edited.out.slice(0, 200)}`);
+      else console.warn(t(`  ⚠ 去掉 #${n} 的 ${label} 失败：`, `  ⚠ Removing ${label} from #${n} failed: `) + edited.out.slice(0, 200));
     }
-    if (cleared.length > 0) console.log(`  🧹 已关闭的票去掉 ${label}：${cleared.join("、")}`);
+    if (cleared.length > 0) console.log(t(`  🧹 已关闭的票去掉 ${label}：${cleared.join("、")}`, `  🧹 Removed ${label} from closed tickets: ${cleared.join(", ")}`));
   }
 
   const branchOf = /^sandcastle\/issue-(\d+)$/;
   const remote = await gitRemote(["ls-remote", "--heads", REMOTE, "sandcastle/issue-*"]);
-  if (!remote.ok) console.warn(`  ⚠ 列远端的 sandcastle 分支失败：${remote.out.slice(0, 200)}`);
+  if (!remote.ok) console.warn(t("  ⚠ 列远端的 sandcastle 分支失败：", "  ⚠ Listing remote sandcastle branches failed: ") + remote.out.slice(0, 200));
   const remoteBranches = remote.ok
     ? remote.out.split("\n").map((line) => line.split("\t")[1]?.replace(/^refs\/heads\//, "") ?? "").filter((b) => branchOf.test(b))
     : [];
@@ -346,20 +364,21 @@ async function cleanupClosedIssues() {
     const removed: string[] = [];
     if (remoteBranches.includes(branch)) {
       const deleted = await gitRemote(["push", REMOTE, "--delete", branch]);
-      if (deleted.ok) removed.push("远端分支");
-      else console.warn(`  ⚠ 删除远端分支 ${branch} 失败：${deleted.out.slice(0, 200)}`);
+      if (deleted.ok) removed.push(t("远端分支", "remote branch"));
+      else console.warn(t(`  ⚠ 删除远端分支 ${branch} 失败：`, `  ⚠ Deleting remote branch ${branch} failed: `) + deleted.out.slice(0, 200));
     }
     const worktree = worktrees.get(branch);
     if (worktree) {
       const gone = trySh("git", ["worktree", "remove", worktree]);
       if (!gone.ok) {
-        console.warn(`  ⚠ #${id} 的 worktree ${worktree} 没删（有未提交改动？）：${gone.out.slice(0, 200)}`);
+        console.warn(t(`  ⚠ #${id} 的 worktree ${worktree} 没删（有未提交改动？）：`, `  ⚠ Didn't remove #${id}'s worktree ${worktree} (uncommitted changes?): `) + gone.out.slice(0, 200));
         continue;
       }
       removed.push("worktree");
     }
-    if (localBranches.includes(branch) && trySh("git", ["branch", "-D", branch]).ok) removed.push("本地分支");
-    if (removed.length > 0) console.log(`  🧹 #${id} 已关闭、PR #${pr.value} 已合并，删除${removed.join("、")}`);
+    if (localBranches.includes(branch) && trySh("git", ["branch", "-D", branch]).ok) removed.push(t("本地分支", "local branch"));
+    if (removed.length > 0)
+      console.log(t(`  🧹 #${id} 已关闭、PR #${pr.value} 已合并，删除${removed.join("、")}`, `  🧹 #${id} closed and PR #${pr.value} merged; deleted ${removed.join(", ")}`));
   }
 }
 
@@ -389,19 +408,27 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
   for (const issue of candidates.filter((c) => allowed(c.number) && !running.has(String(c.number))).sort(byUrgency)) {
     const open = openBlockers(issue.body);
     if (open.length > 0) {
-      log(`  跳过 #${issue.number}：blocker ${open.map((n) => `#${n}`).join("、")} 还没关`);
+      const blockers = open.map((n) => `#${n}`);
+      log(t(`  跳过 #${issue.number}：blocker ${blockers.join("、")} 还没关`, `  Skipping #${issue.number}: blocker ${blockers.join(", ")} still open`));
       continue;
     }
     const { files, fallback } = changedFiles(issue.body, APPEND_ONLY);
-    if (fallback) warn(`  ⚠ #${issue.number} 的指引里没认出 Change 行，按指引引用的文件处理：${files.join("、")}`);
-    else if (files.length === 0) warn(`  ⚠ #${issue.number} 的指引里没认出要改的文件，按不改已有文件处理`);
+    if (fallback)
+      warn(
+        t(
+          `  ⚠ #${issue.number} 的指引里没认出 Change 行，按指引引用的文件处理：${files.join("、")}`,
+          `  ⚠ No Change lines recognized in #${issue.number}'s guide; using the files it references: ${files.join(", ")}`,
+        ),
+      );
+    else if (files.length === 0)
+      warn(t(`  ⚠ #${issue.number} 的指引里没认出要改的文件，按不改已有文件处理`, `  ⚠ No files to change recognized in #${issue.number}'s guide; assuming it changes no existing files`));
     const clash = files.find((f) => taken.has(f));
     if (clash) {
       const owner = taken.get(clash)!;
       const why = awaitingReview.has(owner)
-        ? `等人审的 #${owner}（PR 合入或关闭后再做）`
-        : running.has(String(owner)) ? `正在做的 #${owner}` : `#${owner}`;
-      log(`  跳过 #${issue.number}：和${why} 都改 ${clash}`);
+        ? t(`等人审的 #${owner}（PR 合入或关闭后再做）`, `#${owner}, which is waiting for review (will run after that PR is merged or closed)`)
+        : running.has(String(owner)) ? t(`正在做的 #${owner}`, `#${owner}, which is in progress`) : `#${owner}`;
+      log(t(`  跳过 #${issue.number}：和${why} 都改 ${clash}`, `  Skipping #${issue.number}: it and ${why} both change ${clash}`));
       continue;
     }
     if (picked.length >= slots) break;
@@ -460,7 +487,10 @@ function prFor(issueId: string | number): ForgePr | null {
   if (own) return own;
   const external = prs.filter((pr) => !pr.branch.startsWith("sandcastle/"));
   if (external.length > 1) {
-    console.warn(`  ⚠ #${issueId} 关联了多个外部 PR（${external.map((pr) => `#${pr.id}`).join("、")}），不知道在哪个上改，跳过`);
+    const prs = external.map((pr) => `#${pr.id}`);
+    console.warn(
+      t(`  ⚠ #${issueId} 关联了多个外部 PR（${prs.join("、")}），不知道在哪个上改，跳过`, `  ⚠ #${issueId} is linked to several external PRs (${prs.join(", ")}); can't tell which one to work on, skipping`),
+    );
     return null;
   }
   return external[0] ?? view(ownBranch(issueId));
@@ -478,7 +508,12 @@ async function syncExternalBranch(issue: Issue) {
   } else if (trySh("git", ["merge-base", "--is-ancestor", issue.branch, remote]).ok) {
     sh("git", ["branch", "-f", issue.branch, remote]);
   } else if (!trySh("git", ["merge-base", "--is-ancestor", remote, issue.branch]).ok) {
-    throw new Error(`本地分支 ${issue.branch} 和 ${remote} 分叉了（PR 作者在 Sandcastle 处理期间推过提交？），请人合并后再跑。`);
+    throw new Error(
+      t(
+        `本地分支 ${issue.branch} 和 ${remote} 分叉了（PR 作者在 Sandcastle 处理期间推过提交？），请人合并后再跑。`,
+        `Local branch ${issue.branch} has diverged from ${remote} (did the PR author push while Sandcastle was working?); have someone merge them, then rerun.`,
+      ),
+    );
   }
 }
 
@@ -487,7 +522,7 @@ type PrNotes = { acceptance: string; rest: string };
 
 async function pushAndOpenPr(issue: Issue, notes: PrNotes, shots: string[]): Promise<string> {
   const pushed = await pushBranch(issue);
-  if (!pushed.ok) throw new Error(`push ${issue.branch} 失败：${pushed.out.slice(0, 500)}`);
+  if (!pushed.ok) throw new Error(`push ${issue.branch} ${t("失败：", "failed: ")}${pushed.out.slice(0, 500)}`);
   const existing = forge.findPr(issue.branch, "open");
   if (existing) {
     // 已有 PR：自己的分支只替换正文里的「验收说明」一节，其余（上次的 Review / Gate 记录）逐字保留；
@@ -502,7 +537,8 @@ async function pushAndOpenPr(issue: Issue, notes: PrNotes, shots: string[]): Pro
     return existing;
   }
   // 外部 PR 不在这里新开：它被关了就说明人不要了。
-  if (isExternal(issue)) throw new Error(`分支 ${issue.branch} 上已经没有 open 的 PR，外部 PR 不由 Sandcastle 重开。`);
+  if (isExternal(issue))
+    throw new Error(t(`分支 ${issue.branch} 上已经没有 open 的 PR，外部 PR 不由 Sandcastle 重开。`, `Branch ${issue.branch} no longer has an open PR; Sandcastle doesn't reopen external PRs.`));
   const commits = sh("git", ["log", `${BASE_REF}..${issue.branch}`, "--format=- %B"]);
   const body = `${forge.closingRef(issue.id)}\n\n## ${M.notesTitle}\n\n${notes.acceptance}\n\n${notes.rest}\n\n## Commits\n\n${commits}`;
   return forge.createPr({ base: BASE_BRANCH, head: issue.branch, title: `${issue.title} (#${issue.id})`, body, attachments: shots });
@@ -516,13 +552,13 @@ function leaveForHuman(issue: Issue, pr: string, reason: string) {
 /** agent 代拍板过的票：打 sandcastle:decided，把那些评论贴到 PR 上，人事后确认。平台出错只警告，不影响落地。 */
 function reportDecisions(issueId: string, pr: string) {
   const r = attempt(() => forge.issueComments(issueId));
-  if (!r.ok) return console.warn(`  ⚠ 读 #${issueId} 的代拍板评论失败：${r.out.slice(0, 200)}`);
+  if (!r.ok) return console.warn(t(`  ⚠ 读 #${issueId} 的代拍板评论失败：`, `  ⚠ Reading #${issueId}'s decision comments failed: `) + r.out.slice(0, 200));
   const decisions = r.value.filter((body) => body.startsWith(DECIDED_MARK)).map((body) => body.slice(DECIDED_MARK.length).trim());
   if (!decisions.length) return;
   const label = attempt(() => forge.addLabel(issueId, LABEL.decided));
   const comment = attempt(() => forge.commentPr(pr, `${M.decisions(decisions.length, issueId, LABEL.decided)}\n\n${decisions.map((d, n) => `<details><summary>${M.decisionN(n + 1)}</summary>\n\n${d}\n\n</details>`).join("\n\n")}`));
-  for (const x of [label, comment]) if (!x.ok) console.warn(`  ⚠ #${issueId} 代拍板标记失败：${x.out.slice(0, 200)}`);
-  console.log(`  📝 #${issueId} 有 ${decisions.length} 个代拍板，打 ${LABEL.decided}`);
+  for (const x of [label, comment]) if (!x.ok) console.warn(t(`  ⚠ #${issueId} 代拍板标记失败：`, `  ⚠ Marking #${issueId}'s decisions failed: `) + x.out.slice(0, 200));
+  console.log(t(`  📝 #${issueId} 有 ${decisions.length} 个代拍板，打 ${LABEL.decided}`, `  📝 #${issueId} has ${decisions.length} agent decision(s); labelled ${LABEL.decided}`));
 }
 
 function markStuck(issueId: string, reason: string) {
@@ -551,7 +587,7 @@ function reopenRequestedRevisions() {
     if (!signals.some((at) => at > lastCommit)) continue;
     forge.removeLabel(String(issueId), LABEL.prOpen);
     forge.commentPr(pr.id, M.reopened);
-    console.log(`  ↺ #${issueId} 收到打回（PR #${pr.id}），重新排队`);
+    console.log(t(`  ↺ #${issueId} 收到打回（PR #${pr.id}），重新排队`, `  ↺ #${issueId} was sent back (PR #${pr.id}); requeued`));
   }
 }
 
@@ -585,7 +621,13 @@ function reportFlaky(issue: Issue, pr: string, gateOutput: string): { tickets: s
   const triage = flakyTriage(flakyTickets(files, after, open, project.gate.testFile, M), history, issue.id, new Date());
   writeFileSync(FLAKY_FILE, `${JSON.stringify(triage.history, null, 1)}\n`);
   const deferred = triage.deferred.flatMap((g) => g.files);
-  if (deferred.length) console.log(`  ⚠ #${issue.id} 门槛偶发超时 / 连接失败，7 天内第一次，只记录不开票：${deferred.join("、")}`);
+  if (deferred.length)
+    console.log(
+      t(
+        `  ⚠ #${issue.id} 门槛偶发超时 / 连接失败，7 天内第一次，只记录不开票：${deferred.join("、")}`,
+        `  ⚠ #${issue.id} gate had a flaky timeout / connection failure, the first in 7 days; recorded without a ticket: ${deferred.join(", ")}`,
+      ),
+    );
   // 同一文件 7 天内之前的出现（超时类第二次出现才开票，票里列出前几次，方便判断是不是同一个环境时段）
   const prior = (groupFiles: string[]) => {
     const seenAt = history.filter((h) => groupFiles.includes(h.file)).map((h) => M.flakyPriorItem(h.at.slice(0, 16), h.issue, h.file));
@@ -800,7 +842,7 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
       await gitRemoteOrThrow(["push", "--force-with-lease", REMOTE, issue.branch]);
       const files = conflictFiles.length ? M.list(conflictFiles.map((f) => `\`${f}\``)) : M.rebaseNoTextConflict(integrityName);
       const how = conflicted || chainBroken ? M.rebaseHowAgent : M.rebaseHowClean;
-      console.log(`  ↻ #${issue.id} rebase 后 typecheck 通过，不重跑测试，留给人审`);
+      console.log(t(`  ↻ #${issue.id} rebase 后 typecheck 通过，不重跑测试，留给人审`, `  ↻ #${issue.id} typecheck passed after the rebase; tests not rerun, left for review`));
       forge.commentPr(pr, M.rebasedTypecheckOnly(BASE_REF, how, files));
       return { ok: true };
     }
@@ -860,7 +902,8 @@ async function untilAfterLimit<T>(what: string, fn: () => Promise<T>, onLimit?: 
       const limit = limitWait(e);
       if (!limit) throw e;
       await onLimit?.();
-      console.log(`  ⏸ ${what} 撞上用量限额，${limit.why}等到 ${new Date(limit.until).toLocaleString()} 再接着跑`);
+      const until = new Date(limit.until).toLocaleString();
+      console.log(t(`  ⏸ ${what} 撞上用量限额，${limit.why}等到 ${until} 再接着跑`, `  ⏸ ${what} hit the usage limit; ${limit.why}resuming at ${until}`));
       await sleepUntil(limit.until);
     }
   }
@@ -874,7 +917,7 @@ function limitWait(e: unknown): { until: number; why: string } | null {
   if (!CLAUDE_LIMIT_PATTERN.test(message)) return null;
   const resetAt = limitResetAt(message);
   return resetAt === null
-    ? { until: Date.now() + LIMIT_FALLBACK_WAIT_MS, why: `认不出重置时间（${message.slice(0, 200)}），` }
+    ? { until: Date.now() + LIMIT_FALLBACK_WAIT_MS, why: t(`认不出重置时间（${message.slice(0, 200)}），`, `couldn't read the reset time (${message.slice(0, 200)}); `) }
     : { until: resetAt + LIMIT_RESUME_SLACK_MS, why: "" };
 }
 
@@ -900,7 +943,7 @@ async function rebaseIfConflicting(issue: Issue, pr: string, host: HostGap): Pro
   const clean = trySh("git", ["merge-tree", "--write-tree", "--name-only", BASE_REF, issue.branch]).ok;
   const chainOk = trySh("sh", ["-c", integrityOk(issue.branch)]).ok;
   if (clean && chainOk) return "";
-  console.log(`  ↻ #${issue.id} 和最新的 ${BASE_REF} 冲突，rebase 后再留给人审`);
+  console.log(t(`  ↻ #${issue.id} 和最新的 ${BASE_REF} 冲突，rebase 后再留给人审`, `  ↻ #${issue.id} conflicts with the latest ${BASE_REF}; rebasing before leaving it for review`));
   const r = await untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host, false));
   return r.ok
     ? M.rebasedForHuman(BASE_REF)
@@ -910,11 +953,11 @@ async function rebaseIfConflicting(issue: Issue, pr: string, host: HostGap): Pro
 async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnType<typeof build>>>, host: HostGap) {
   // 运行期间人已经合并了这张票的 PR 或关了票：不再 push、开 PR、打标签，本地分支留着备查。
   if (issueClosed(issue.id)) {
-    console.log(`  ⏭ #${issue.id} 已被关闭（运行期间有人合并了 PR 或关了票），跳过落地`);
+    console.log(t(`  ⏭ #${issue.id} 已被关闭（运行期间有人合并了 PR 或关了票），跳过落地`, `  ⏭ #${issue.id} was closed (someone merged the PR or closed it during the run); skipping landing`));
     return;
   }
   if (outcome.status === "rejected") {
-    console.error(`  ✗ #${issue.id} 失败：${outcome.reason}`);
+    console.error(`  ✗ #${issue.id} ${t("失败：", "failed: ")}${outcome.reason}`);
     markStuck(issue.id, M.sandboxError(String(outcome.reason).slice(0, 500)));
     return;
   }
@@ -929,7 +972,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
       const pushed = (await pushBranch(issue)).ok;
       attempt(() => forge.addLabel(issue.id, LABEL.readyForHuman));
       markStuck(issue.id, M.needsDecision(budgetNote, pushed ? M.pushedTo(issue.branch) : M.notPushed, LABEL.stuck));
-      console.log(`  ✋ #${issue.id} 要人拍板，打 ${LABEL.stuck}`);
+      console.log(t(`  ✋ #${issue.id} 要人拍板，打 ${LABEL.stuck}`, `  ✋ #${issue.id} needs a human decision; labelled ${LABEL.stuck}`));
       return;
     }
     const comments = forge.issueComments(issue.id).join("\n");
@@ -955,7 +998,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
       issue.id,
       `${REPREP_MARK}\n${M.reprep(IMPLEMENT_MAX_ITERATIONS, budgetNote, LABEL.stuck)}${commits}${pushed ? "" : M.reprepNotPushed}`,
     );
-    console.log(`  ↺ #${issue.id} 没做完，退回 prep 重新准备`);
+    console.log(t(`  ↺ #${issue.id} 没做完，退回 prep 重新准备`, `  ↺ #${issue.id} isn't finished; back to prep`));
     return;
   }
 
@@ -1010,7 +1053,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
       pr,
       M.reasonExternal(result.verdict, result.gate.ok) + (clean ? "" : M.reasonExternalConflict(BASE_REF, BASE_BRANCH)),
     );
-    console.log(`  ◐ #${issue.id} 外部 PR #${pr}，留给人合并`);
+    console.log(t(`  ◐ #${issue.id} 外部 PR #${pr}，留给人合并`, `  ◐ #${issue.id} external PR #${pr}, left for a human to merge`));
     return;
   }
   // 验收说明缺失或格式不对：正文里已经有警告，下面每条留给人的路径都把它附进原因（外部 PR 本来就不自动合并，不走这里）。
@@ -1029,25 +1072,29 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
         rebaseNote +
         notesNote,
     );
-    console.log(`  ◐ #${issue.id} 留 PR #${pr} 等人审`);
+    console.log(t(`  ◐ #${issue.id} 留 PR #${pr} 等人审`, `  ◐ #${issue.id} PR #${pr} left for review`));
     return;
   }
   if (!result.gate.ok) {
     leaveForHuman(issue, pr, `${M.reasonGate}${notesNote}`);
-    console.log(`  ◐ #${issue.id} 门槛失败，留 PR #${pr}`);
+    console.log(t(`  ◐ #${issue.id} 门槛失败，留 PR #${pr}`, `  ◐ #${issue.id} gate failed; PR #${pr} left open`));
     return;
   }
   // reviewer 给了 merge、门槛也过了，但验收说明不合格：照样不自动合并。
   if (notesProblems.length > 0) {
     leaveForHuman(issue, pr, notesNote.trimStart());
-    console.log(`  ◐ #${issue.id} 验收说明${result.notes === undefined ? "缺失" : "格式不对"}，留 PR #${pr}`);
+    console.log(
+      result.notes === undefined
+        ? t(`  ◐ #${issue.id} 验收说明缺失，留 PR #${pr}`, `  ◐ #${issue.id} acceptance notes missing; PR #${pr} left open`)
+        : t(`  ◐ #${issue.id} 验收说明格式不对，留 PR #${pr}`, `  ◐ #${issue.id} acceptance notes badly formatted; PR #${pr} left open`),
+    );
     return;
   }
   // 试跑期（autoMerge: false）：全程都过了也只留 PR，人看过再合并。
   if (!project.autoMerge) {
     const rebaseNote = await rebaseIfConflicting(issue, pr, host);
     leaveForHuman(issue, pr, `${M.reasonAutoMergeOff}${rebaseNote}`);
-    console.log(`  ◐ #${issue.id} 全部通过，autoMerge 关着，留 PR #${pr} 等人合并`);
+    console.log(t(`  ◐ #${issue.id} 全部通过，autoMerge 关着，留 PR #${pr} 等人合并`, `  ◐ #${issue.id} passed everything; autoMerge is off, PR #${pr} left for a human to merge`));
     return;
   }
   // 先合并的票可能让这张冲突：rebase 到最新的 origin/main（冲突交给 agent）、重跑门槛，再合并一次。
@@ -1058,17 +1105,17 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     ? attempt(() => forge.mergePr(pr, project.mergeMethod))
     : { ok: false as const, out: `${integrityBroken()}。` };
   if (!merged.ok) {
-    console.log(`  ↻ #${issue.id} 没能直接合并，rebase 到最新的 ${BASE_REF} 后重试`);
+    console.log(t(`  ↻ #${issue.id} 没能直接合并，rebase 到最新的 ${BASE_REF} 后重试`, `  ↻ #${issue.id} couldn't merge directly; rebasing onto the latest ${BASE_REF} and retrying`));
     const retry = await untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host));
     if (!retry.ok) {
       leaveForHuman(issue, pr, M.reasonMergeFailed(merged.out.slice(0, 300), retry.reason));
-      console.log(`  ◐ #${issue.id} 合并失败，留 PR #${pr}`);
+      console.log(t(`  ◐ #${issue.id} 合并失败，留 PR #${pr}`, `  ◐ #${issue.id} merge failed; PR #${pr} left open`));
       return;
     }
   }
   await gitRemote(["push", REMOTE, "--delete", issue.branch]);
   trySh("git", ["branch", "-D", issue.branch]);
-  console.log(`  ✓ #${issue.id} 已合并（PR #${pr}）`);
+  console.log(t(`  ✓ #${issue.id} 已合并（PR #${pr}）`, `  ✓ #${issue.id} merged (PR #${pr})`));
   noteMerged(result.gate.tier);
 }
 
@@ -1103,7 +1150,14 @@ function noteMerged(tier: GateTier) {
   if (s.selectedSince < MAIN_CHECK_EVERY || mainCheckRunning) return;
   mainCheckRunning = true;
   void runMainFullCheck()
-    .catch((e) => console.warn(`  ⚠ main 兜底完整测试没跑成：${e instanceof Error ? e.message : e}（下一张票合并后再试）`))
+    .catch((e) =>
+      console.warn(
+        t(
+          `  ⚠ main 兜底完整测试没跑成：${e instanceof Error ? e.message : e}（下一张票合并后再试）`,
+          `  ⚠ The fallback full run on main didn't run: ${e instanceof Error ? e.message : e} (will retry after the next merge)`,
+        ),
+      ),
+    )
     .finally(() => (mainCheckRunning = false));
 }
 
@@ -1132,16 +1186,28 @@ async function fullGateAt(sha: string): Promise<ExecResult> {
 async function runBaseline(): Promise<boolean> {
   await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
   const sha = sh("git", ["rev-parse", BASE_REF]);
-  console.log(`门槛基线：在沙箱里对 ${BASE_REF}（${sha.slice(0, 8)}）跑一次完整门槛……`);
+  console.log(t(`门槛基线：在沙箱里对 ${BASE_REF}（${sha.slice(0, 8)}）跑一次完整门槛……`, `Gate baseline: running the full gate once against ${BASE_REF} (${sha.slice(0, 8)}) in a sandbox…`));
   const gate = await fullGateAt(sha);
   const flaky = gate.stdout.includes("GATE_FLAKY");
   console.log(`\n${gate.stdout.slice(-3000)}\n`);
   if (gate.exitCode !== 0) {
-    console.log("✗ 门槛基线没过：先修好 main 或 gate.script（见上面的输出），再让 Sandcastle 做票。");
+    console.log(
+      t(
+        "✗ 门槛基线没过：先修好 main 或 gate.script（见上面的输出），再让 Sandcastle 做票。",
+        "✗ Gate baseline failed: fix main or gate.script first (see the output above) before letting Sandcastle work tickets.",
+      ),
+    );
     return false;
   }
   writeMainCheck({ lastPass: sha, selectedSince: 0 });
-  console.log(`✓ 门槛基线通过${flaky ? "，但有偶发失败（重跑才过）：把 GATE_FLAKY 那几个文件记下来，先修或在门槛里排除" : ""}。`);
+  console.log(
+    flaky
+      ? t(
+          "✓ 门槛基线通过，但有偶发失败（重跑才过）：把 GATE_FLAKY 那几个文件记下来，先修或在门槛里排除。",
+          "✓ Gate baseline passed, but with flaky failures (passed on rerun): note the files listed by GATE_FLAKY and fix them first or exclude them from the gate.",
+        )
+      : t("✓ 门槛基线通过。", "✓ Gate baseline passed."),
+  );
   return true;
 }
 
@@ -1149,14 +1215,20 @@ async function runMainFullCheck() {
   const sha = sh("git", ["rev-parse", BASE_REF]);
   const short = sha.slice(0, 8);
   const counted = readMainCheck().selectedSince;
-  console.log(`  🛡 main 兜底完整测试排队：${short}（上次通过以来合并了 ${counted} 张按依赖选测试的票）`);
+  console.log(
+    t(
+      `  🛡 main 兜底完整测试排队：${short}（上次通过以来合并了 ${counted} 张按依赖选测试的票）`,
+      `  🛡 Fallback full run on main queued: ${short} (${counted} dependency-selected tickets merged since the last pass)`,
+    ),
+  );
   const gate = await fullGateAt(sha);
   // 跑的期间又合并进来的票留给下一次兜底。
   const now = readMainCheck();
   const rest = Math.max(0, now.selectedSince - counted);
   if (gate.exitCode === 0) {
     writeMainCheck({ lastPass: sha, selectedSince: rest });
-    console.log(`  🛡 main 兜底完整测试通过：${short}${gate.stdout.includes("GATE_FLAKY") ? "（有偶发失败，重跑通过）" : ""}`);
+    const flaky = gate.stdout.includes("GATE_FLAKY");
+    console.log(t(`  🛡 main 兜底完整测试通过：${short}${flaky ? "（有偶发失败，重跑通过）" : ""}`, `  🛡 Fallback full run on main passed: ${short}${flaky ? " (flaky failures passed on rerun)" : ""}`));
     return;
   }
   writeMainCheck({ lastPass: now.lastPass, selectedSince: rest });
@@ -1167,7 +1239,7 @@ async function runMainFullCheck() {
   const open = forge.listOpenIssues([LABEL.mainBroken]);
   if (open[0]) {
     forge.commentIssue(String(open[0].number), M.mainBrokenAgain(short, summary));
-    console.log(`  🛡 main 兜底完整测试失败：${short}，已记在 #${open[0].number}`);
+    console.log(t(`  🛡 main 兜底完整测试失败：${short}，已记在 #${open[0].number}`, `  🛡 Fallback full run on main failed: ${short}, recorded on #${open[0].number}`));
     return;
   }
   attempt(() => forge.ensureLabel(LABEL.mainBroken, "d73a4a", M.mainBrokenLabelDesc));
@@ -1176,7 +1248,7 @@ async function runMainFullCheck() {
     body: project.texts.mainBrokenIssueBody({ sha, summary, commits }),
     labels: [LABEL.mainBroken, LABEL.picked, LABEL.readyForAgent],
   });
-  console.log(`  🛡 main 兜底完整测试失败：${short}，已开票 #${id}`);
+  console.log(t(`  🛡 main 兜底完整测试失败：${short}，已开票 #${id}`, `  🛡 Fallback full run on main failed: ${short}, opened #${id}`));
 }
 
 // ---------------------------------------------------------------------------
@@ -1257,20 +1329,20 @@ function start(issue: Issue) {
     // 每张票单独兜底：一张票落地出错（网络、人在运行中途合并或删了分支等）不让整个运行崩掉。
     await withHost(async (host) => {
       try {
-        await retryTransient(`落地 #${issue.id}`, () => land(issue, outcome!, host));
+        await retryTransient(t(`落地 #${issue.id}`, `landing #${issue.id}`), () => land(issue, outcome!, host));
       } catch (e) {
         const reason = String((e as { stderr?: unknown }).stderr || e).trim().slice(0, 500);
-        console.error(`  ✗ #${issue.id} 落地出错：${reason}`);
+        console.error(t(`  ✗ #${issue.id} 落地出错：`, `  ✗ #${issue.id} landing failed: `) + reason);
         // 打 stuck 不让下次再做；本地分支保留，人看过后去掉 stuck 即可接着跑。
         if (!issueClosed(issue.id)) attempt(() => forge.addLabel(issue.id, LABEL.stuck));
         if (!issueClosed(issue.id)) attempt(() => forge.commentIssue(issue.id, M.landError(issue.branch, reason, LABEL.stuck)));
       }
     });
   })()
-    .catch((e) => console.error(`  ✗ #${issue.id} 出错：${String(e).slice(0, 500)}`))
+    .catch((e) => console.error(t(`  ✗ #${issue.id} 出错：`, `  ✗ #${issue.id} error: `) + String(e).slice(0, 500)))
     .finally(() => {
       running.delete(issue.id);
-      console.log(`  ⇢ #${issue.id} 让出空位（还有 ${running.size} 张在做）`);
+      console.log(t(`  ⇢ #${issue.id} 让出空位（还有 ${running.size} 张在做）`, `  ⇢ #${issue.id} freed its slot (${running.size} still running)`));
       signalSlotFreed();
     });
 }
@@ -1295,7 +1367,7 @@ async function schedule(): Promise<ScheduleResult> {
   try {
     project.beforeSchedule();
   } catch (e) {
-    console.warn(`  ⚠ 调度前的维护出错：${String(e).slice(0, 300)}`);
+    console.warn(t("  ⚠ 调度前的维护出错：", "  ⚠ Pre-scheduling maintenance failed: ") + String(e).slice(0, 300));
   }
 
   // Prep —— 串行，因为拆票会改别的票的 Blocked by。
@@ -1313,12 +1385,13 @@ async function schedule(): Promise<ScheduleResult> {
     // 已有够填满空位的可开工票就先开工，剩下的票等下次调度（有票做完或轮询）再 prep。
     // 否则一下子建了二十多张票时，要把它们逐张 prep 完（每张几分钟）才开工，空位空等一两个小时（2026-11-23）。
     if (slots > 0 && plan(new Set(running.keys()), slots, true).length >= slots) {
-      console.log(`  已有 ${slots} 张可开工的票，先开工；其余票下次调度再 prep`);
+      console.log(t(`  已有 ${slots} 张可开工的票，先开工；其余票下次调度再 prep`, `  ${slots} ticket(s) ready to start, starting them first; the rest are prepped next pass`));
       break;
     }
     const open = openBlockers(issue.body);
     if (open.length > 0) {
-      console.log(`  跳过 prep #${issue.number}：blocker ${open.map((n) => `#${n}`).join("、")} 还没关`);
+      const blockers = open.map((n) => `#${n}`);
+      console.log(t(`  跳过 prep #${issue.number}：blocker ${blockers.join("、")} 还没关`, `  Skipping prep #${issue.number}: blocker ${blockers.join(", ")} still open`));
       continue;
     }
     if (prepTried.get(issue.number) === issue.updatedAt) continue;
@@ -1336,11 +1409,12 @@ async function schedule(): Promise<ScheduleResult> {
     } catch (e) {
       const limit = limitWait(e);
       if (limit) {
-        console.log(`  ⏸ prep #${issue.number} 撞上用量限额，${limit.why}${new Date(limit.until).toLocaleString()} 前不再 prep`);
+        const until = new Date(limit.until).toLocaleString();
+        console.log(t(`  ⏸ prep #${issue.number} 撞上用量限额，${limit.why}${until} 前不再 prep`, `  ⏸ prep #${issue.number} hit the usage limit; ${limit.why}no more prep until ${until}`));
         prepLimitedUntil = limit.until;
         break;
       }
-      console.error(`  ✗ prep #${issue.number} 出错：${String(e).slice(0, 500)}`);
+      console.error(t(`  ✗ prep #${issue.number} 出错：`, `  ✗ prep #${issue.number} error: `) + String(e).slice(0, 500));
     }
     const after = attempt(() => forge.issueUpdatedAt(String(issue.number)));
     if (after.ok) prepTried.set(issue.number, after.value);
@@ -1354,11 +1428,12 @@ async function schedule(): Promise<ScheduleResult> {
     const prepped = new Set(toPrep.map((issue) => issue.number));
     const split = listIssues([LABEL.picked], [LABEL.prepped, LABEL.prOpen, LABEL.stuck])
       .filter((issue) => allowed(issue.number) && !prepped.has(issue.number));
-    if (split.length > 0) console.log(`拆出了子票 ${split.map((issue) => `#${issue.number}`).join("、")}，马上 prep。`);
+    const children = split.map((issue) => `#${issue.number}`);
+    if (split.length > 0) console.log(t(`拆出了子票 ${children.join("、")}，马上 prep。`, `Split off ${children.join(", ")}; prepping them now.`));
     return { started: 0, split: split.length > 0 && prepLimitedUntil === undefined, prepLimitedUntil };
   }
   for (const issue of issues) {
-    console.log(`  开工 #${issue.id}: ${issue.title} → ${issue.branch}`);
+    console.log(`  ${t("开工", "Starting")} #${issue.id}: ${issue.title} → ${issue.branch}`);
     start(issue);
   }
   return { started: issues.length, split: false, prepLimitedUntil };
@@ -1373,23 +1448,36 @@ if (process.env.SANDCASTLE_BASELINE === "1") {
 let idlePolls = 0;
 for (let pass = 1; ; pass++) {
   if (running.size < MAX_PARALLEL) {
-    console.log(`\n=== 调度 ${pass}（${new Date().toLocaleString()}，${running.size}/${MAX_PARALLEL} 个空位已占）===\n`);
+    const now = new Date().toLocaleString();
+    console.log(t(`\n=== 调度 ${pass}（${now}，${running.size}/${MAX_PARALLEL} 个空位已占）===\n`, `\n=== Pass ${pass} (${now}, ${running.size}/${MAX_PARALLEL} slots taken) ===\n`));
     const r = await withHost(schedule);
     if (r.split) continue;
     if (running.size > 0 || r.started > 0) {
       idlePolls = 0;
     } else if (r.prepLimitedUntil !== undefined) {
       // 没票在做、prep 在等限额：等到重置再来，不算空转。
-      console.log(`没有票在做，等 prep 的用量限额到 ${new Date(r.prepLimitedUntil).toLocaleString()} 重置`);
+      const until = new Date(r.prepLimitedUntil).toLocaleString();
+      console.log(t(`没有票在做，等 prep 的用量限额到 ${until} 重置`, `Nothing running; waiting for prep's usage limit to reset at ${until}`));
       await sleepUntil(r.prepLimitedUntil);
       continue;
     } else {
       idlePolls++;
       if (idlePolls >= MAX_ITERATIONS) {
-        console.log(`没有可以开工的票（都在等 blocker、等人审 PR，或需要人处理），连续空转 ${idlePolls} 次，结束运行。`);
+        console.log(
+          t(
+            `没有可以开工的票（都在等 blocker、等人审 PR，或需要人处理），连续空转 ${idlePolls} 次，结束运行。`,
+            `No tickets can start (all waiting on blockers, PR reviews, or a human); ${idlePolls} idle polls in a row, stopping.`,
+          ),
+        );
         break;
       }
-      console.log(`没有可以开工的票（都在等 blocker、等人审 PR，或需要人处理），${POLL_INTERVAL_MS / 60_000} 分钟后再查（空转 ${idlePolls}/${MAX_ITERATIONS}）。`);
+      const mins = POLL_INTERVAL_MS / 60_000;
+      console.log(
+        t(
+          `没有可以开工的票（都在等 blocker、等人审 PR，或需要人处理），${mins} 分钟后再查（空转 ${idlePolls}/${MAX_ITERATIONS}）。`,
+          `No tickets can start (all waiting on blockers, PR reviews, or a human); checking again in ${mins} min (idle ${idlePolls}/${MAX_ITERATIONS}).`,
+        ),
+      );
     }
   }
   await waitForSlotOrPoll(POLL_INTERVAL_MS);
@@ -1398,5 +1486,10 @@ for (let pass = 1; ; pass++) {
 // 最后合并的票在上次 fetch 之后才进远端，收尾再同步一次。
 await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
 syncHostBase();
-console.log(`\nAll done. 本地 main 已快进到 ${BASE_REF}（不在 main 上时除外，见上面的警告）；带 ${LABEL.prOpen} 的票在 ${forge.name} 上等你审。`);
+console.log(
+  t(
+    `\n全部完成。本地 main 已快进到 ${BASE_REF}（不在 main 上时除外，见上面的警告）；带 ${LABEL.prOpen} 的票在 ${forge.name} 上等你审。`,
+    `\nAll done. Local main is fast-forwarded to ${BASE_REF} (unless the host isn't on main, see the warnings above); tickets labelled ${LABEL.prOpen} are waiting for your review on ${forge.name}.`,
+  ),
+);
 }

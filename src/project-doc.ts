@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { configDir } from "./profile.ts";
 import { messages, type Language, type Messages } from "./i18n.ts";
+import { t } from "./term.ts";
 
 export const PROJECT_DOC = "PROJECT.md";
 
@@ -85,7 +86,8 @@ export function parseProjectDoc(md: string, file = PROJECT_DOC): ProjectDoc {
       const key = keyOfTitle.get(heading[1]);
       current = [];
       if (!key) unknown.push(heading[1]);
-      else if (byKey.has(key)) throw new Error(`${file}：章节「${heading[1]}」写了两次（中英文标题算同一节）`);
+      else if (byKey.has(key))
+        throw new Error(t(`${file}：章节「${heading[1]}」写了两次（中英文标题算同一节）`, `${file}: section "${heading[1]}" appears twice (Chinese and English titles count as the same section)`));
       else byKey.set(key, current);
     } else {
       current?.push(line);
@@ -94,23 +96,35 @@ export function parseProjectDoc(md: string, file = PROJECT_DOC): ProjectDoc {
   const known = [...keyOfTitle.keys()];
   if (unknown.length > 0) {
     throw new Error(
-      `${file}：不认识的章节${unknown.map((t) => `「${t}」`).join("、")}；只能用 ${[...known].map((t) => `「${t}」`).join("、")}`,
+      t(
+        `${file}：不认识的章节${unknown.map((x) => `「${x}」`).join("、")}；只能用 ${known.map((x) => `「${x}」`).join("、")}`,
+        `${file}: unknown section(s) ${unknown.map((x) => `"${x}"`).join(", ")}; allowed: ${known.map((x) => `"${x}"`).join(", ")}`,
+      ),
     );
   }
   const doc = {} as ProjectDoc;
   const missing: string[] = [];
-  for (const [key, title] of Object.entries(SECTIONS) as [SectionKey, string][]) {
+  for (const [key, zhTitle] of Object.entries(SECTIONS) as [SectionKey, string][]) {
+    const title = t(zhTitle, SECTIONS_EN[key]);
     // HTML 注释是模板里给人看的填写说明，不进提示词
     const body = (byKey.get(key) ?? [])
       .join("\n")
       .replace(/<!--[\s\S]*?-->/g, "")
       .trim();
     if (body.includes("!`"))
-      throw new Error(`${file}「${title}」里有 !\`…\`：提示词里这是「执行命令并替换」的语法，命令请写成普通的 \`…\``);
+      throw new Error(
+        t(
+          `${file}「${title}」里有 !\`…\`：提示词里这是「执行命令并替换」的语法，命令请写成普通的 \`…\``,
+          `${file} "${title}" contains !\`…\`: in prompts that means "run the command and substitute its output"; write commands as plain \`…\``,
+        ),
+      );
     if (!body && REQUIRED.includes(key)) missing.push(title);
     doc[key] = body || MISSING[key];
   }
-  if (missing.length > 0) throw new Error(`${file} 缺少必填章节（或内容为空）：${missing.map((t) => `「${t}」`).join("、")}`);
+  if (missing.length > 0)
+    throw new Error(
+      t(`${file} 缺少必填章节（或内容为空）：${missing.map((x) => `「${x}」`).join("、")}`, `${file} is missing required sections (or they're empty): ${missing.map((x) => `"${x}"`).join(", ")}`),
+    );
   doc.hasBrowser = doc.browser !== "";
   return doc;
 }
@@ -118,7 +132,7 @@ export function parseProjectDoc(md: string, file = PROJECT_DOC): ProjectDoc {
 /** 读配置目录（见 configDir）里的 PROJECT.md。 */
 export function loadProjectDoc(dir = configDir()): ProjectDoc {
   const file = join(dir, PROJECT_DOC);
-  if (!existsSync(file)) throw new Error(`找不到 ${file}：先按 templates/.sandcastle/PROJECT.md 写一份`);
+  if (!existsSync(file)) throw new Error(t(`找不到 ${file}：先跑 sandpipe onboard 生成，或按 templates/.sandcastle/PROJECT.md 写一份`, `${file} not found: run sandpipe onboard, or write one following templates/.sandcastle/PROJECT.md`));
   return parseProjectDoc(readFileSync(file, "utf8"), file);
 }
 
@@ -148,7 +162,7 @@ export function renderTemplate(template: string, vars: StaticVars, opts: { brows
   );
   return withBranches.replace(STATIC_PLACEHOLDER, (_, key: string) => {
     const value = vars[key];
-    if (value === undefined) throw new Error(`提示词里的 {{${key}}} 没有对应的值`);
+    if (value === undefined) throw new Error(t(`提示词里的 {{${key}}} 没有对应的值`, `{{${key}}} in a prompt has no value`));
     return value;
   });
 }

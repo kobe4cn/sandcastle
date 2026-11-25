@@ -1,12 +1,14 @@
 // 宿主机命令：一律带超时，连远端的 git 遇到临时错误时等一会儿重试。main.ts 与各 Forge 共用。
 
+import { t } from "./term.ts";
 import { execFileSync } from "node:child_process";
 
 // 宿主机命令一律带超时：2026-11-07 机器睡眠醒来后一个 git fetch 挂了一个多小时不返回，整个运行停在那里。
 // 超时抛的错带 TIMEOUT_TEXT，被 TRANSIENT 认作临时错误。
 export const SH_TIMEOUT_MS = 10 * 60_000;
 export const GIT_REMOTE_TIMEOUT_MS = 5 * 60_000;
-export const TIMEOUT_TEXT = "命令超时";
+/** 超时报错的开头，中英两种都算（被 REMOTE_TRANSIENT 认作临时错误）。 / Start of a timeout error in either language (REMOTE_TRANSIENT treats it as transient). */
+export const TIMEOUT_TEXT = "命令超时|command timed out";
 
 export const sh = (cmd: string, args: string[], timeout = SH_TIMEOUT_MS, env?: NodeJS.ProcessEnv) => {
   try {
@@ -14,7 +16,7 @@ export const sh = (cmd: string, args: string[], timeout = SH_TIMEOUT_MS, env?: N
     // 失败时 stderr 仍在抛出的错误里（e.stderr / message），调用方照常拿得到。
     return execFileSync(cmd, args, { encoding: "utf8", timeout, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"], env }).trim();
   } catch (e) {
-    if ((e as { code?: unknown }).code === "ETIMEDOUT") throw new Error(`${TIMEOUT_TEXT}（${timeout / 1000} 秒）：${cmd} ${args.join(" ").slice(0, 200)}`);
+    if ((e as { code?: unknown }).code === "ETIMEDOUT") throw new Error(`${t(`命令超时（${timeout / 1000} 秒）：`, `command timed out (${timeout / 1000}s): `)}${cmd} ${args.join(" ").slice(0, 200)}`);
     throw e;
   }
 };
@@ -59,7 +61,11 @@ export async function gitRemote(args: string[]) {
     const result = trySh("git", args, GIT_REMOTE_TIMEOUT_MS);
     const wait = REMOTE_RETRY_WAITS_MS[attempt];
     if (result.ok || wait === undefined || !REMOTE_TRANSIENT.test(result.out)) return result;
-    console.warn(`  ⚠ git ${args.join(" ")} 连不上远端（${result.out.split("\n")[0].slice(0, 160)}），${wait / 1000} 秒后重试（第 ${attempt + 1}/${REMOTE_RETRY_WAITS_MS.length} 次）`);
+    const first = result.out.split("\n")[0].slice(0, 160);
+    const n = `${attempt + 1}/${REMOTE_RETRY_WAITS_MS.length}`;
+    console.warn(
+      t(`  ⚠ git ${args.join(" ")} 连不上远端（${first}），${wait / 1000} 秒后重试（第 ${n} 次）`, `  ⚠ git ${args.join(" ")} can't reach the remote (${first}); retrying in ${wait / 1000}s (attempt ${n})`),
+    );
     await new Promise((resolve) => setTimeout(resolve, wait));
   }
 }
@@ -67,7 +73,7 @@ export async function gitRemote(args: string[]) {
 /** 同 gitRemote，重试用完仍失败就抛错（原来直接用 sh 的地方）。 */
 export async function gitRemoteOrThrow(args: string[]) {
   const result = await gitRemote(args);
-  if (!result.ok) throw new Error(`git ${args.join(" ")} 失败：${result.out.slice(0, 500)}`);
+  if (!result.ok) throw new Error(`git ${args.join(" ")} ${t("失败：", "failed: ")}${result.out.slice(0, 500)}`);
   return result.out;
 }
 

@@ -10,6 +10,8 @@ import { usageTable } from "../src/models.ts";
 import { acceptanceSection, checkAcceptanceNotes } from "../src/pr-body.ts";
 import { DEFAULT_LABELS, defaultTexts, resolveProject } from "../src/profile.ts";
 import { parseProjectDoc, PROMPT_NAMES, renderPrompts } from "../src/project-doc.ts";
+import { formatChecks } from "../src/doctor.ts";
+import { envLanguage, setTermLanguage, t, termLanguage } from "../src/term.ts";
 
 const en = messages("en");
 const enNotes = "### What changed\n\nAdds a flag.\n\n### How to verify\n\n1. Run it → prints the version\n\n### Result\n\nDone.";
@@ -71,5 +73,27 @@ describe("PROJECT.md 英文标题", () => {
   it("同一节用中英文各写一次算重复；不认识的标题报错", () => {
     expect(() => parseProjectDoc([...en, "## 概况", "y"].join("\n"))).toThrow(/写了两次/);
     expect(() => parseProjectDoc([...en, "## Overveiw", "y"].join("\n"))).toThrow(/不认识的章节「Overveiw」/);
+  });
+});
+
+describe("终端语言 / terminal language", () => {
+  it("环境默认：SANDPIPE_LANG 优先，其次 LANG 以 zh 开头算中文，其余英文", () => {
+    expect(envLanguage({ SANDPIPE_LANG: "en", LANG: "zh_CN.UTF-8" })).toBe("en");
+    expect(envLanguage({ LANG: "zh_CN.UTF-8" })).toBe("zh");
+    expect(envLanguage({ LC_ALL: "en_US.UTF-8", LANG: "zh_CN.UTF-8" })).toBe("en");
+    expect(envLanguage({ LANG: "C.UTF-8" })).toBe("en");
+    expect(envLanguage({})).toBe("en");
+  });
+
+  it("读到项目配置后跟项目语言；设了 SANDPIPE_LANG 时不跟", () => {
+    try {
+      setTermLanguage("en", {});
+      expect(termLanguage()).toBe("en");
+      expect(formatChecks([{ name: "Config", level: "fail", detail: "x", fix: "y" }])).toBe("✗ Config: x\n    → y");
+      setTermLanguage("en", { SANDPIPE_LANG: "zh" });
+      expect(t("中", "en")).toBe("中");
+    } finally {
+      setTermLanguage("zh", {});
+    }
   });
 });

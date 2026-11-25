@@ -14,6 +14,7 @@ import { podman } from "@ai-hero/sandcastle/sandboxes/podman";
 import type { Forge, MergeMethod } from "./forge.ts";
 import { githubForge } from "./forges/github.ts";
 import { messages, type Language, type Messages } from "./i18n.ts";
+import { t } from "./term.ts";
 
 export const CONFIG_FILE = "sandcastle.config.ts";
 
@@ -218,7 +219,8 @@ export function resolveProject(p: ProjectProfile): Project {
     customSandbox: p.sandbox !== undefined,
     install: { copyToWorktree: [], ...p.install },
     isolation: p.isolation,
-    gate: { rerunMax: 3, selectedDescription: "按依赖选的测试", ...p.gate },
+    // 写进 PR 正文，按项目语言 / Goes into the PR body, so it follows the project's language
+    gate: { rerunMax: 3, selectedDescription: p.language === "en" ? "dependency-selected tests" : "按依赖选的测试", ...p.gate },
     integrity: p.integrity,
     beforeSchedule: p.beforeSchedule ?? (() => {}),
     appendOnlyFiles: p.appendOnlyFiles ?? [],
@@ -249,9 +251,14 @@ export async function loadProject(dir = configDir()): Promise<Project> {
   registerSelfResolver();
   const file = join(dir, CONFIG_FILE);
   if (!existsSync(file))
-    throw new Error(`找不到 ${file}：在项目根目录运行、用 SANDCASTLE_PROJECT_DIR 指定配置目录，或先跑 sandpipe onboard 生成项目配置（字段见 docs/config.md）。`);
+    throw new Error(
+      t(
+        `找不到 ${file}：在项目根目录运行、用 SANDCASTLE_PROJECT_DIR 指定配置目录，或先跑 sandpipe onboard 生成项目配置（字段见 docs/config.zh-CN.md）。`,
+        `${file} not found: run in the project root, point SANDCASTLE_PROJECT_DIR at the config directory, or run sandpipe onboard to generate a project config (fields in docs/config.md).`,
+      ),
+    );
   const mod = (await import(pathToFileURL(file).href)) as { default?: ProjectProfile };
-  if (!mod.default) throw new Error(`${file} 没有 default export（应为 export default defineProject({...})）。`);
+  if (!mod.default) throw new Error(t(`${file} 没有 default export（应为 export default defineProject({...})）。`, `${file} has no default export (expected export default defineProject({...})).`));
   return resolveProject(mod.default);
 }
 

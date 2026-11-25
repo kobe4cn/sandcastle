@@ -69,14 +69,14 @@ const WEB_DEPS = [
   "react-router",
   "astro",
 ];
-/** 镜像名里的关键字 → 服务名（pgvector 也是 PostgreSQL） */
+/** 镜像名里的关键字 → 服务名（pgvector 也是 PostgreSQL）；服务名用英文，会写进 PROJECT.md 草稿和配置注释。 / Image-name keyword → service name (pgvector is PostgreSQL too); names are English since they go into the PROJECT.md draft and config comments. */
 const SERVICE_IMAGES: [RegExp, string][] = [
   [/postgres|pgvector|postgis|timescale/, "postgres"],
   [/mysql|mariadb/, "mysql"],
   [/mongo/, "mongodb"],
   [/redis|valkey/, "redis"],
-  [/minio|seaweedfs|localstack/, "对象存储"],
-  [/elasticsearch|opensearch/, "搜索引擎"],
+  [/minio|seaweedfs|localstack/, "s3"],
+  [/elasticsearch|opensearch/, "elasticsearch"],
   [/rabbitmq/, "rabbitmq"],
   [/kafka|redpanda/, "kafka"],
   [/clickhouse/, "clickhouse"],

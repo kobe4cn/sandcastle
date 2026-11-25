@@ -5,6 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { parseEnv } from "node:util";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { messages, type Messages } from "./i18n.ts";
+import { t } from "./term.ts";
 
 export const PHASES = ["prep", "implement", "review", "revise", "fix", "rebase"] as const;
 export type Phase = (typeof PHASES)[number];
@@ -71,55 +72,65 @@ function sandcastleEnvKeys(): Set<string> {
 
 function parseProfile(name: string, raw: unknown, warn: (m: string) => void): Profile & { readonly refs: readonly { where: string; variable: string }[] } {
   const at = `profiles.${name}`;
-  if (!isRecord(raw)) return fail(`${at} 要是对象`);
+  if (!isRecord(raw)) return fail(t(`${at} 要是对象`, `${at} must be an object`));
   const harness = raw.harness ?? "claude-code";
-  if (harness === "codex") fail(`${at}.harness 是 codex：还没实现，目前只支持 claude-code`);
-  if (harness !== "claude-code") fail(`${at}.harness 只能是 claude-code`);
-  if (typeof raw.model !== "string" || !raw.model) fail(`${at}.model 要是非空字符串`);
-  if (raw.effort !== undefined && !EFFORTS.includes(raw.effort as Effort)) fail(`${at}.effort 只能是 ${EFFORTS.join(" / ")}`);
-  if (raw.env !== undefined && !isRecord(raw.env)) fail(`${at}.env 要是对象`);
+  if (harness === "codex") fail(t(`${at}.harness 是 codex：还没实现，目前只支持 claude-code`, `${at}.harness is codex: not implemented yet, only claude-code is supported`));
+  if (harness !== "claude-code") fail(t(`${at}.harness 只能是 claude-code`, `${at}.harness must be claude-code`));
+  if (typeof raw.model !== "string" || !raw.model) fail(t(`${at}.model 要是非空字符串`, `${at}.model must be a non-empty string`));
+  if (raw.effort !== undefined && !EFFORTS.includes(raw.effort as Effort)) fail(t(`${at}.effort 只能是 ${EFFORTS.join(" / ")}`, `${at}.effort must be one of ${EFFORTS.join(" / ")}`));
+  if (raw.env !== undefined && !isRecord(raw.env)) fail(t(`${at}.env 要是对象`, `${at}.env must be an object`));
 
   const env: Record<string, string> = {};
   const refs: { where: string; variable: string }[] = [];
   for (const [key, value] of Object.entries(raw.env ?? {})) {
-    if (!ENV_KEY.test(key)) fail(`${at}.env 的键 ${key} 不是合法的环境变量名`);
-    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") fail(`${at}.env.${key} 要是字符串或数字`);
+    if (!ENV_KEY.test(key)) fail(t(`${at}.env 的键 ${key} 不是合法的环境变量名`, `${at}.env key ${key} isn't a valid environment variable name`));
+    if (typeof value !== "string" && typeof value !== "number" && typeof value !== "boolean") fail(t(`${at}.env.${key} 要是字符串或数字`, `${at}.env.${key} must be a string or number`));
     if (RESERVED_ENV.includes(key)) {
-      warn(`${at}.env.${key} 忽略：上下文预算由脚本统一设置`);
+      warn(t(`${at}.env.${key} 忽略：上下文预算由脚本统一设置`, `${at}.env.${key} ignored: the context budget is set by the pipeline`));
       continue;
     }
-    if (CLAUDE_CREDENTIALS.includes(key)) fail(`${at}.env 不能设 ${key}`);
+    if (CLAUDE_CREDENTIALS.includes(key)) fail(t(`${at}.env 不能设 ${key}`, `${at}.env can't set ${key}`));
     const text = String(value);
     const ref = SECRET_REF.exec(text);
     if (ref) {
       refs.push({ where: `${at}.env.${key}`, variable: ref[1]! });
     } else if (text.includes("${")) {
-      fail(`${at}.env.${key}：\${VAR} 只能单独作为整个值`);
+      fail(t(`${at}.env.${key}：\${VAR} 只能单独作为整个值`, `${at}.env.${key}: \${VAR} must be the whole value on its own`));
     }
     env[key] = text;
   }
 
   const thirdParty = "ANTHROPIC_BASE_URL" in env;
   if (thirdParty && !env.ANTHROPIC_DEFAULT_HAIKU_MODEL) {
-    warn(`${at} 发到别家但没设 ANTHROPIC_DEFAULT_HAIKU_MODEL：Claude Code 的后台小任务和子 agent 会拿 Claude 的模型名去请求别家接口`);
+    warn(
+      t(
+        `${at} 发到别家但没设 ANTHROPIC_DEFAULT_HAIKU_MODEL：Claude Code 的后台小任务和子 agent 会拿 Claude 的模型名去请求别家接口`,
+        `${at} goes to another vendor but doesn't set ANTHROPIC_DEFAULT_HAIKU_MODEL: Claude Code's background tasks and subagents would request Claude model names from that vendor`,
+      ),
+    );
   }
-  if (raw.limitPattern !== undefined && typeof raw.limitPattern !== "string") fail(`${at}.limitPattern 要是正则字符串`);
+  if (raw.limitPattern !== undefined && typeof raw.limitPattern !== "string") fail(t(`${at}.limitPattern 要是正则字符串`, `${at}.limitPattern must be a regex string`));
   let limitPattern = CLAUDE_LIMIT_PATTERN;
   if (typeof raw.limitPattern === "string") {
     try {
       limitPattern = new RegExp(raw.limitPattern, "i");
     } catch (e) {
-      fail(`${at}.limitPattern 不是合法的正则：${String(e)}`);
+      fail(t(`${at}.limitPattern 不是合法的正则：`, `${at}.limitPattern isn't a valid regex: `) + String(e));
     }
   } else if (thirdParty) {
-    warn(`${at} 发到别家但没设 limitPattern：撞了它的限额认不出来，只会当成普通报错`);
+    warn(
+      t(
+        `${at} 发到别家但没设 limitPattern：撞了它的限额认不出来，只会当成普通报错`,
+        `${at} goes to another vendor but doesn't set limitPattern: hitting its limit won't be recognized and counts as an ordinary error`,
+      ),
+    );
   }
   if (raw.resetTimeZone !== undefined) {
-    if (typeof raw.resetTimeZone !== "string") fail(`${at}.resetTimeZone 要是时区名，如 Asia/Shanghai`);
+    if (typeof raw.resetTimeZone !== "string") fail(t(`${at}.resetTimeZone 要是时区名，如 Asia/Shanghai`, `${at}.resetTimeZone must be a time zone name, e.g. Asia/Shanghai`));
     try {
       new Intl.DateTimeFormat("en-US", { timeZone: raw.resetTimeZone as string });
     } catch {
-      fail(`${at}.resetTimeZone 不是合法的时区：${String(raw.resetTimeZone)}`);
+      fail(t(`${at}.resetTimeZone 不是合法的时区：`, `${at}.resetTimeZone isn't a valid time zone: `) + String(raw.resetTimeZone));
     }
   }
   return {
@@ -139,26 +150,31 @@ function parseConfig(text: string, envKeys: Set<string>, warn: (m: string) => vo
   try {
     raw = JSON.parse(text);
   } catch (e) {
-    return fail(`不是合法的 JSON：${String(e)}`);
+    return fail(t("不是合法的 JSON：", "invalid JSON: ") + String(e));
   }
-  if (!isRecord(raw) || !isRecord(raw.profiles) || !isRecord(raw.phases)) return fail("要有 profiles 和 phases 两个对象");
+  if (!isRecord(raw) || !isRecord(raw.profiles) || !isRecord(raw.phases)) return fail(t("要有 profiles 和 phases 两个对象", "must have two objects, profiles and phases"));
   const profiles = new Map(Object.entries(raw.profiles).map(([name, p]) => [name, parseProfile(name, p, warn)]));
   for (const key of Object.keys(raw.phases)) {
-    if (!PHASES.includes(key as Phase)) fail(`phases 里的 ${key} 不是阶段；阶段是 ${PHASES.join(" / ")}`);
+    if (!PHASES.includes(key as Phase)) fail(t(`phases 里的 ${key} 不是阶段；阶段是 ${PHASES.join(" / ")}`, `${key} in phases isn't a phase; phases are ${PHASES.join(" / ")}`));
   }
   const phases = {} as Record<Phase, string[]>;
   for (const phase of PHASES) {
     const list = raw.phases[phase];
     if (!Array.isArray(list) || list.length === 0 || !list.every((p) => typeof p === "string")) {
-      fail(`phases.${phase} 要是非空的档案名列表`);
+      fail(t(`phases.${phase} 要是非空的档案名列表`, `phases.${phase} must be a non-empty list of profile names`));
     }
-    for (const name of list as string[]) if (!profiles.has(name)) fail(`phases.${phase} 里的档案 ${name} 不在 profiles 里`);
+    for (const name of list as string[]) if (!profiles.has(name)) fail(t(`phases.${phase} 里的档案 ${name} 不在 profiles 里`, `profile ${name} in phases.${phase} isn't in profiles`));
     phases[phase] = list as string[];
   }
   // 只查阶段用到的档案：没启用的档案（比如还没填密钥的别家）不挡运行。
   for (const name of new Set(Object.values(phases).flat())) {
     for (const { where, variable } of profiles.get(name)!.refs) {
-      if (!envKeys.has(variable)) fail(`${where} 引用的 ${variable} 不在 ${SANDCASTLE_ENV_PATH} 里（或值为空）：sandcastle 只把那里列出的变量带进容器`);
+      if (!envKeys.has(variable)) fail(
+          t(
+            `${where} 引用的 ${variable} 不在 ${SANDCASTLE_ENV_PATH} 里（或值为空）：sandcastle 只把那里列出的变量带进容器`,
+            `${variable} referenced by ${where} isn't in ${SANDCASTLE_ENV_PATH} (or is empty): sandcastle only passes the variables listed there into the container`,
+          ),
+        );
     }
   }
   return { profiles, phases };
@@ -183,10 +199,10 @@ export function reloadModels() {
     const next = parseConfig(readFileSync(CONFIG_PATH, "utf8"), sandcastleEnvKeys(), (m) => warnings.push(m));
     for (const w of warnings) console.warn(`  ⚠ ${CONFIG_PATH}：${w}`);
     config = next;
-    console.log(`模型：${PHASES.map((p) => `${p}=${next.phases[p].join("→")}`).join("  ")}`);
+    console.log(`${t("模型：", "Models: ")}${PHASES.map((p) => `${p}=${next.phases[p].join("→")}`).join("  ")}`);
   } catch (e) {
     if (!config) throw e;
-    console.warn(`  ⚠ ${String(e)}；沿用上一次读到的配置`);
+    console.warn(`  ⚠ ${String(e)}${t("；沿用上一次读到的配置", "; keeping the previously loaded config")}`);
   }
 }
 
@@ -228,7 +244,7 @@ const blockedUntil = new Map<string, number>();
 /** 这个阶段的档案全都在等限额重置；untilAfterLimit 认它，等到 until 再从头跑。 */
 export class AllProfilesLimited extends Error {
   constructor(readonly phase: Phase, readonly until: number) {
-    super(`阶段 ${phase} 的档案都撞上了用量限额，最早 ${new Date(until).toLocaleString()} 恢复`);
+    super(t(`阶段 ${phase} 的档案都撞上了用量限额，最早 ${new Date(until).toLocaleString()} 恢复`, `every profile for phase ${phase} hit its usage limit; the earliest resets at ${new Date(until).toLocaleString()}`));
   }
 }
 
@@ -290,7 +306,7 @@ export async function runWithProfile<T extends AgentRun>(
   what: string,
   fn: (profile: Profile) => Promise<T>,
 ): Promise<{ run: T; profile: Profile }> {
-  if (!config) throw new Error("先调用 reloadModels()");
+  if (!config) throw new Error(t("先调用 reloadModels()", "call reloadModels() first"));
   for (;;) {
     const now = Date.now();
     const names = config.phases[phase];
@@ -309,8 +325,9 @@ export async function runWithProfile<T extends AgentRun>(
     const resetAt = limitResetAt(message, profile.resetTimeZone);
     const until = resetAt === null ? now + UNKNOWN_RESET_SKIP_MS : resetAt + RESET_SLACK_MS;
     blockedUntil.set(name, until);
-    const why = resetAt === null ? `认不出重置时间（${message.slice(-200).trim()}），` : "";
-    console.log(`  ⏸ ${what} 的档案 ${name} 撞上用量限额，${why}${new Date(until).toLocaleString()} 前跳过它`);
+    const why = resetAt === null ? t(`认不出重置时间（${message.slice(-200).trim()}），`, `couldn't read the reset time (${message.slice(-200).trim()}); `) : "";
+    const at = new Date(until).toLocaleString();
+    console.log(t(`  ⏸ ${what} 的档案 ${name} 撞上用量限额，${why}${at} 前跳过它`, `  ⏸ ${what}: profile ${name} hit its usage limit; ${why}skipping it until ${at}`));
   }
 }
 
@@ -390,7 +407,7 @@ export function recordUsage(issue: string, phase: Phase, run: AgentRun, name: st
     mkdirSync(".sandcastle/logs", { recursive: true });
     appendFileSync(USAGE_LOG, `${JSON.stringify(record)}\n`);
   } catch (e) {
-    console.warn(`  ⚠ 用量没写进 ${USAGE_LOG}：${String(e)}`);
+    console.warn(t(`  ⚠ 用量没写进 ${USAGE_LOG}：`, `  ⚠ Usage wasn't written to ${USAGE_LOG}: `) + String(e));
   }
   return record;
 }

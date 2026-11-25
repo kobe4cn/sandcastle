@@ -9,6 +9,7 @@ import { parseEnv } from "node:util";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import type { Forge } from "./forge.ts";
 import { inspectModels } from "./models.ts";
+import { setTermLanguage, t } from "./term.ts";
 import { CLAUDE_FILES, HOOK_FILE, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
 import { configDir, loadProject, type Labels, type Project } from "./profile.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
@@ -22,17 +23,20 @@ export type Runner = (cmd: string, args: string[]) => TryResult;
 const ENV_FILE = ".sandcastle/.env";
 const CLAUDE_KEYS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
 
-/** --fix 补建标签用的颜色和说明。 */
-const LABEL_META: Record<keyof Labels, [color: string, description: string]> = {
-  picked: ["5319e7", "交给 Sandcastle 无人值守地做"],
-  prepped: ["c5def5", "Sandcastle prep 已确认可实现"],
-  prOpen: ["0e8a16", "Sandcastle 已开 PR，等人审"],
-  stuck: ["d93f0b", "Sandcastle 做不下去，需要人介入（见评论）"],
-  decided: ["fef2c0", "agent 代拍板过设计决定，等人事后确认"],
-  flaky: ["fbca04", "偶发失败的测试（Sandcastle 门槛自动开票）"],
-  mainBroken: ["d73a4a", "main 上的兜底完整测试失败（Sandcastle 自动开票）"],
-  readyForAgent: ["0075ca", "可以交给 agent 做"],
-  readyForHuman: ["e4e669", "需要人来做"],
+/**
+ * --fix 补建标签用的颜色和说明（中文、英文）；说明写到平台上，按项目的 language 选。
+ * Colors and descriptions (Chinese, English) for labels created by --fix; descriptions go to the forge, so they follow the project's language.
+ */
+const LABEL_META: Record<keyof Labels, [color: string, zh: string, en: string]> = {
+  picked: ["5319e7", "交给 Sandcastle 无人值守地做", "Hand to Sandcastle to work unattended"],
+  prepped: ["c5def5", "Sandcastle prep 已确认可实现", "Sandcastle prep confirmed it can be implemented"],
+  prOpen: ["0e8a16", "Sandcastle 已开 PR，等人审", "Sandcastle opened a PR, waiting for review"],
+  stuck: ["d93f0b", "Sandcastle 做不下去，需要人介入（见评论）", "Sandcastle is stuck and needs a human (see comments)"],
+  decided: ["fef2c0", "agent 代拍板过设计决定，等人事后确认", "The agent made a design decision; confirm it afterwards"],
+  flaky: ["fbca04", "偶发失败的测试（Sandcastle 门槛自动开票）", "Flaky test (opened automatically by the Sandcastle gate)"],
+  mainBroken: ["d73a4a", "main 上的兜底完整测试失败（Sandcastle 自动开票）", "Fallback full test run on main failed (opened automatically by Sandcastle)"],
+  readyForAgent: ["0075ca", "可以交给 agent 做", "Ready for an agent"],
+  readyForHuman: ["e4e669", "需要人来做", "Needs a human"],
 };
 
 /** 流水线第一次用到时自己建（main.ts 里 ensureLabel），缺了不算问题。 */
@@ -59,22 +63,28 @@ export async function diagnose(opts: {
   const add = (name: string, level: Level, detail: string, fix?: string) => checks.push({ name, level, detail, fix });
   const rel = (p: string) => relative(cwd, p) || ".";
 
-  // ---- 仓库 ----
-  const top = run("git", ["-C", cwd, "rev-parse", "--show-toplevel"]);
-  if (!top.ok) add("仓库", "fail", "当前目录不是 git 仓库", "在目标项目的根目录运行");
-  else if (realpathSync(top.out.trim()) !== realpathSync(cwd))
-    add("仓库", "fail", `不在仓库根目录（根目录是 ${top.out.trim()}）`, "cd 到仓库根目录再运行");
-  else add("仓库", "ok", cwd);
-
-  // ---- 配置 ----
+  // 先读配置：之后所有检查项的输出都跟项目语言。
+  // Load the config first so every check's output follows the project's language.
   const dir = configDir(cwd, env);
   let project: Project | undefined;
+  let configError: unknown;
   try {
     project = await loadProject(dir);
-    add("配置", "ok", rel(join(dir, "sandcastle.config.ts")));
+    setTermLanguage(project.language, env);
   } catch (e) {
-    add("配置", "fail", errText(e), "没有配置先跑 sandpipe onboard");
+    configError = e;
   }
+
+  // ---- 仓库 ----
+  const top = run("git", ["-C", cwd, "rev-parse", "--show-toplevel"]);
+  if (!top.ok) add(t("仓库", "Repository"), "fail", t("当前目录不是 git 仓库", "The current directory isn't a git repository"), t("在目标项目的根目录运行", "Run it in the target project's root"));
+  else if (realpathSync(top.out.trim()) !== realpathSync(cwd))
+    add(t("仓库", "Repository"), "fail", t(`不在仓库根目录（根目录是 ${top.out.trim()}）`, `Not in the repository root (the root is ${top.out.trim()})`), t("cd 到仓库根目录再运行", "cd to the repository root and run again"));
+  else add(t("仓库", "Repository"), "ok", cwd);
+
+  // ---- 配置 ----
+  if (project) add(t("配置", "Config"), "ok", rel(join(dir, "sandcastle.config.ts")));
+  else add(t("配置", "Config"), "fail", errText(configError), t("没有配置先跑 sandpipe onboard", "No config yet: run sandpipe onboard first"));
   const forge = opts.forge ?? project?.forge;
 
   // ---- PROJECT.md 与提示词 ----
@@ -85,10 +95,18 @@ export async function diagnose(opts: {
         recursive: true,
       });
     const source = readFileSync(join(dir, "PROJECT.md"), "utf8");
-    const browser = doc.hasBrowser ? "有浏览器验收" : "没有「浏览器验收」：改页面的票会留给人看";
+    const browser = doc.hasBrowser
+      ? t("有浏览器验收", "has a browser check")
+      : t("没有「浏览器验收」：改页面的票会留给人看", "no browser check section: tickets that change pages are left for a human");
     const todo = source.match(TODO_MARK)?.length ?? 0;
-    if (todo) add("PROJECT.md", "warn", `还有 ${todo} 处「待补」，是没写完的草稿；${browser}`, "跑 onboard 让 agent 补全，或手工写完");
-    else add("PROJECT.md", "ok", `能渲染进提示词；${browser}`);
+    if (todo)
+      add(
+        "PROJECT.md",
+        "warn",
+        t(`还有 ${todo} 处「待补」，是没写完的草稿；${browser}`, `${todo} TODO marker(s) left, the draft isn't finished; ${browser}`),
+        t("跑 onboard 让 agent 补全，或手工写完", "Run onboard to let the agent finish it, or finish it by hand"),
+      );
+    else add("PROJECT.md", "ok", t(`能渲染进提示词；${browser}`, `renders into the prompts; ${browser}`));
   } catch (e) {
     add("PROJECT.md", "fail", errText(e));
   }
@@ -100,34 +118,47 @@ export async function diagnose(opts: {
     const summary = Object.entries(models.phases)
       .map(([p, list]) => `${p}=${list.join("→")}`)
       .join(" ");
-    if (models.warnings.length) add("models.json", "warn", `${summary}；${models.warnings.join("；")}`);
+    if (models.warnings.length) add("models.json", "warn", [summary, ...models.warnings].join(t("；", "; ")));
     else add("models.json", "ok", summary);
   } catch (e) {
-    add("models.json", "fail", errText(e), "照 templates/.sandcastle/models.json 改；引用的 ${VAR} 要在 .sandcastle/.env 里列出");
+    add(
+      "models.json",
+      "fail",
+      errText(e),
+      t("照 templates/.sandcastle/models.json 改；引用的 ${VAR} 要在 .sandcastle/.env 里列出", "Follow templates/.sandcastle/models.json; every ${VAR} it references must be listed in .sandcastle/.env"),
+    );
   }
 
   // ---- .env ----
   let agentToken: string | undefined;
   const envPath = join(cwd, ENV_FILE);
   if (!existsSync(envPath)) {
-    add(".env", "fail", `没有 ${ENV_FILE}`, `cp ${ENV_FILE}.example ${ENV_FILE}，填 token`);
+    add(".env", "fail", t(`没有 ${ENV_FILE}`, `No ${ENV_FILE}`), t(`cp ${ENV_FILE}.example ${ENV_FILE}，填 token`, `cp ${ENV_FILE}.example ${ENV_FILE} and fill in the tokens`));
   } else {
     const vars = parseEnv(readFileSync(envPath, "utf8"));
     const has = (k: string) => k in vars && Boolean(vars[k] || env[k]);
     const missing: string[] = [];
     // 有阶段用 Claude 自家的档案（没设 ANTHROPIC_BASE_URL）才要 Claude 凭据
-    if ((!models || models.used.some((p) => !p.thirdParty)) && !CLAUDE_KEYS.some(has)) missing.push(CLAUDE_KEYS.join(" 或 "));
+    if ((!models || models.used.some((p) => !p.thirdParty)) && !CLAUDE_KEYS.some(has)) missing.push(CLAUDE_KEYS.join(t(" 或 ", " or ")));
     if (forge && !has(forge.tokenEnv)) missing.push(forge.tokenEnv);
     const ignored = run("git", ["-C", cwd, "check-ignore", "-q", ENV_FILE]).ok;
-    if (!ignored) add(".env", "fail", `${ENV_FILE} 没被 git 忽略，token 会被提交`, "在 .sandcastle/.gitignore 里加一行 .env");
+    if (!ignored) add(
+        ".env",
+        "fail",
+        t(`${ENV_FILE} 没被 git 忽略，token 会被提交`, `${ENV_FILE} isn't ignored by git; tokens would be committed`),
+        t("在 .sandcastle/.gitignore 里加一行 .env", "Add a line .env to .sandcastle/.gitignore"),
+      );
     else if (missing.length)
       add(
         ".env",
         "fail",
-        `缺 ${missing.join("、")}（文件里要列出这个键；值可以空着、取宿主机的同名环境变量）`,
-        "Claude 订阅的 token 用 claude setup-token 生成",
+        t(
+          `缺 ${missing.join("、")}（文件里要列出这个键；值可以空着、取宿主机的同名环境变量）`,
+          `Missing ${missing.join(", ")} (the key must be listed in the file; the value may be empty to use the host's environment variable of the same name)`,
+        ),
+        t("Claude 订阅的 token 用 claude setup-token 生成", "Generate a Claude subscription token with claude setup-token"),
       );
-    else add(".env", "ok", "token 齐全，已被 git 忽略");
+    else add(".env", "ok", t("token 齐全，已被 git 忽略", "tokens present, ignored by git"));
     agentToken = forge ? vars[forge.tokenEnv] || env[forge.tokenEnv] : undefined;
   }
 
@@ -135,91 +166,115 @@ export async function diagnose(opts: {
   if (forge && project) {
     let reachable = false;
     try {
-      add(`平台（${forge.name}）`, "ok", forge.checkAccess());
+      add(t(`平台（${forge.name}）`, `Forge (${forge.name})`), "ok", forge.checkAccess());
       reachable = true;
     } catch (e) {
-      add(`平台（${forge.name}）`, "fail", errText(e));
+      add(t(`平台（${forge.name}）`, `Forge (${forge.name})`), "fail", errText(e));
     }
     if (reachable && agentToken) {
       try {
         add(`${forge.tokenEnv}`, "ok", forge.checkAgentToken(agentToken));
       } catch (e) {
-        add(`${forge.tokenEnv}`, "fail", errText(e), `重新生成 token，填进 ${ENV_FILE}`);
+        add(`${forge.tokenEnv}`, "fail", errText(e), t(`重新生成 token，填进 ${ENV_FILE}`, `Generate a new token and put it in ${ENV_FILE}`));
       }
     }
     if (reachable) {
       try {
         const existing = new Set(forge.listLabels());
         const missing = (Object.keys(project.labels) as (keyof Labels)[]).filter((k) => !existing.has(project.labels[k]));
-        const names = (keys: (keyof Labels)[]) => keys.map((k) => project.labels[k]).join("、");
+        const names = (keys: (keyof Labels)[]) => keys.map((k) => project.labels[k]).join(t("、", ", "));
         const required = missing.filter((k) => !AUTO_LABELS.includes(k));
-        const later = missing.length > required.length ? `；${names(missing.filter((k) => AUTO_LABELS.includes(k)))} 用到时自动建` : "";
-        if (!missing.length) add("标签", "ok", `${Object.keys(project.labels).length} 个都在`);
+        const auto = names(missing.filter((k) => AUTO_LABELS.includes(k)));
+        const later = missing.length > required.length ? t(`；${auto} 用到时自动建`, `; ${auto} are created when first needed`) : "";
+        const L = t("标签", "Labels");
+        if (!missing.length) add(L, "ok", t(`${Object.keys(project.labels).length} 个都在`, `all ${Object.keys(project.labels).length} present`));
         else if (opts.fix) {
-          for (const k of missing) forge.ensureLabel(project.labels[k], ...LABEL_META[k]);
-          add("标签", "ok", `补建了 ${names(missing)}`);
+          for (const k of missing) {
+            const [color, zh, en] = LABEL_META[k];
+            forge.ensureLabel(project.labels[k], color, project.language === "en" ? en : zh);
+          }
+          add(L, "ok", t(`补建了 ${names(missing)}`, `created ${names(missing)}`));
         } else if (required.length) {
-          add("标签", "fail", `缺 ${names(required)}：给票打标签会失败${later}`, "sandpipe doctor --fix 补建");
-        } else add("标签", "ok", `都在${later}`);
+          add(
+            L,
+            "fail",
+            t(`缺 ${names(required)}：给票打标签会失败${later}`, `Missing ${names(required)}: labelling tickets will fail${later}`),
+            t("sandpipe doctor --fix 补建", "sandpipe doctor --fix creates them"),
+          );
+        } else add(L, "ok", t(`都在${later}`, `present${later}`));
       } catch (e) {
-        add("标签", "fail", errText(e));
+        add(t("标签", "Labels"), "fail", errText(e));
       }
     }
 
     const ref = `refs/heads/${project.baseBranch}`;
     const remote = run("git", ["-C", cwd, "ls-remote", "--exit-code", project.remote, ref]);
-    if (remote.ok) add("远端分支", "ok", `${project.remote}/${project.baseBranch}`);
+    if (remote.ok) add(t("远端分支", "Remote branch"), "ok", `${project.remote}/${project.baseBranch}`);
     else
       add(
-        "远端分支",
+        t("远端分支", "Remote branch"),
         "fail",
-        `${project.remote} 上没有 ${project.baseBranch}：${firstLine(remote.out)}`,
-        "检查配置里的 remote / baseBranch",
+        t(`${project.remote} 上没有 ${project.baseBranch}：`, `${project.baseBranch} doesn't exist on ${project.remote}: `) + firstLine(remote.out),
+        t("检查配置里的 remote / baseBranch", "Check remote / baseBranch in the config"),
       );
   }
 
   // ---- 沙箱镜像 ----
   if (project?.customSandbox) {
-    add("沙箱镜像", "ok", "配置里自定义了 sandbox，不查 podman");
+    add(t("沙箱镜像", "Sandbox image"), "ok", t("配置里自定义了 sandbox，不查 podman", "the config sets its own sandbox; podman not checked"));
   } else if (project) {
     const image = defaultImageName(cwd);
     const containerfile = [join(dir, "Containerfile"), join(cwd, ".sandcastle/Containerfile")].find(existsSync);
     const build = containerfile
       ? `podman build -t ${image} -f ${rel(containerfile)} ${rel(dirname(containerfile))}`
-      : "先跑 onboard 生成 Containerfile";
+      : t("先跑 onboard 生成 Containerfile", "Run onboard first to generate the Containerfile");
     const info = run("podman", ["info", "--format", "{{.Host.Arch}}"]);
-    if (!info.ok) add("沙箱镜像", "fail", `podman 用不了：${firstLine(info.out)}`, "装 podman；macOS 上 podman machine start");
-    else if (!run("podman", ["image", "exists", image]).ok) add("沙箱镜像", "fail", `没有镜像 ${image}`, build);
-    else add("沙箱镜像", "ok", `${image}（改了 Containerfile 要重建：${build}）`);
+    const S = t("沙箱镜像", "Sandbox image");
+    if (!info.ok) add(S, "fail", t("podman 用不了：", "podman isn't usable: ") + firstLine(info.out), t("装 podman；macOS 上 podman machine start", "Install podman; on macOS, podman machine start"));
+    else if (!run("podman", ["image", "exists", image]).ok) add(S, "fail", t(`没有镜像 ${image}`, `No image ${image}`), build);
+    else add(S, "ok", t(`${image}（改了 Containerfile 要重建：${build}）`, `${image} (rebuild after changing the Containerfile: ${build})`));
   }
 
   // ---- 上下文预算 hook ----
   const settingsPath = join(cwd, ".claude/settings.json");
   const registered = existsSync(settingsPath) && readFileSync(settingsPath, "utf8").includes(HOOK_FILE);
   const present = existsSync(join(cwd, ".claude/hooks", HOOK_FILE));
-  if (registered && present) add("上下文 hook", "ok", `.claude/hooks/${HOOK_FILE}`);
+  if (registered && present) add(t("上下文 hook", "Context hook"), "ok", `.claude/hooks/${HOOK_FILE}`);
   else
     add(
-      "上下文 hook",
+      t("上下文 hook", "Context hook"),
       "warn",
-      `${present ? "" : "没有 hook 文件；"}${registered ? "" : "settings.json 里没登记；"}会话到预算时不会提醒收尾`,
-      "跑 onboard 补上（不覆盖已有文件）",
+      t(
+        `${present ? "" : "没有 hook 文件；"}${registered ? "" : "settings.json 里没登记；"}会话到预算时不会提醒收尾`,
+        `${present ? "" : "no hook file; "}${registered ? "" : "not registered in settings.json; "}sessions won't be told to wrap up at the budget`,
+      ),
+      t("跑 onboard 补上（不覆盖已有文件）", "Run onboard to add it (existing files aren't overwritten)"),
     );
 
   // ---- .gitignore ----
   const ignorePath = join(cwd, ".gitignore");
   if (mergeGitignore(existsSync(ignorePath) ? readFileSync(ignorePath, "utf8") : "") === undefined)
-    add(".gitignore", "ok", "流水线的工作目录都已忽略");
-  else add(".gitignore", "warn", "缺 .browser-check/ 等工作目录：implementer 的 git add -A 会把截图和验收说明提交进去", "跑 onboard 补上");
+    add(".gitignore", "ok", t("流水线的工作目录都已忽略", "the pipeline's working directories are ignored"));
+  else
+    add(
+      ".gitignore",
+      "warn",
+      t(
+        "缺 .browser-check/ 等工作目录：implementer 的 git add -A 会把截图和验收说明提交进去",
+        "Missing .browser-check/ and other working directories: the implementer's git add -A would commit screenshots and acceptance notes",
+      ),
+      t("跑 onboard 补上", "Run onboard to add them"),
+    );
 
   // ---- 编辑器类型：.sandcastle/tsconfig.json 指向这份工具的声明文件，且不提交 ----
   const read = (f: string) => (existsSync(join(cwd, f)) ? readFileSync(join(cwd, f), "utf8") : "");
   const typesIssues = [
-    read(".sandcastle/tsconfig.json") !== typesTsconfig() && "tsconfig.json 缺失或指向别的版本",
-    mergeSandcastleIgnore(read(".sandcastle/.gitignore")) !== undefined && ".sandcastle/.gitignore 缺条目",
+    read(".sandcastle/tsconfig.json") !== typesTsconfig() && t("tsconfig.json 缺失或指向别的版本", "tsconfig.json is missing or points at another version"),
+    mergeSandcastleIgnore(read(".sandcastle/.gitignore")) !== undefined && t(".sandcastle/.gitignore 缺条目", ".sandcastle/.gitignore is missing entries"),
   ].filter(Boolean);
-  if (!typesIssues.length) add("编辑器类型", "ok", ".sandcastle/tsconfig.json 指向当前版本的声明文件");
-  else add("编辑器类型", "warn", `${typesIssues.join("；")}：编辑器里 import "sandpipe" 没有类型`, "sandpipe update");
+  const E = t("编辑器类型", "Editor types");
+  if (!typesIssues.length) add(E, "ok", t(".sandcastle/tsconfig.json 指向当前版本的声明文件", ".sandcastle/tsconfig.json points at the current version's declarations"));
+  else add(E, "warn", typesIssues.join(t("；", "; ")) + t('：编辑器里 import "sandpipe" 没有类型', ': import "sandpipe" has no types in the editor'), "sandpipe update");
 
   // ---- .claude/ 里本工具的文件是否是当前版本 ----
   const stale = Object.entries(CLAUDE_FILES)
@@ -228,8 +283,9 @@ export async function diagnose(opts: {
       return !existsSync(path) || readFileSync(path, "utf8") !== toolFile(src);
     })
     .map(([file]) => file);
-  if (!stale.length) add("Claude 文件", "ok", "hook、子代理、skill 都是当前版本");
-  else add("Claude 文件", "warn", `和当前版本不一致或缺失：${stale.join("、")}`, "sandpipe update");
+  const C = t("Claude 文件", "Claude files");
+  if (!stale.length) add(C, "ok", t("hook、子代理、skill 都是当前版本", "hook, subagent and skill are current"));
+  else add(C, "warn", t("和当前版本不一致或缺失：", "Outdated or missing: ") + stale.join(t("、", ", ")), "sandpipe update");
 
   // ---- 沙箱里的 worktree 从远端基础分支建：hook、.gitignore 要已经推上去才生效 ----
   if (project) {
@@ -239,22 +295,27 @@ export async function diagnose(opts: {
       const r = run("git", ["-C", cwd, "show", `${base}:${f}`]);
       return !r.ok || r.out.trim() !== readFileSync(join(cwd, f), "utf8").trim();
     });
-    if (!unpushed.length) add("已推送", "ok", `沙箱用到的 .claude/、.gitignore 和 ${base} 一致`);
+    const P = t("已推送", "Pushed");
+    if (!unpushed.length) add(P, "ok", t(`沙箱用到的 .claude/、.gitignore 和 ${base} 一致`, `.claude/ and .gitignore used by the sandbox match ${base}`));
     else
       add(
-        "已推送",
+        P,
         "warn",
-        `${unpushed.join("、")} 和 ${base} 不一致（按本地的远端分支比较）：沙箱从 ${base} 建分支，上下文 hook 和忽略规则在沙箱里不生效`,
-        `提交并推送 .claude/、.gitignore（.sandcastle/ 里除 .env、logs 外也建议提交）`,
+        t(
+          `${unpushed.join("、")} 和 ${base} 不一致（按本地的远端分支比较）：沙箱从 ${base} 建分支，上下文 hook 和忽略规则在沙箱里不生效`,
+          `${unpushed.join(", ")} differ from ${base} (compared with the local remote-tracking branch): the sandbox branches from ${base}, so the context hook and ignore rules won't apply there`,
+        ),
+        t("提交并推送 .claude/、.gitignore（.sandcastle/ 里除 .env、logs 外也建议提交）", "Commit and push .claude/ and .gitignore (committing .sandcastle/ apart from .env and logs is recommended too)"),
       );
   }
 
   // ---- 版本 ----
   if (opts.latest) {
     const latest = await opts.latest();
-    if (!latest) add("版本", "warn", `${VERSION}；查不到最新版本（网络或还没发版）`);
-    else if (newer(latest, VERSION)) add("版本", "warn", `${VERSION}，最新是 ${latest}`, `sandpipe upgrade，然后 sandpipe update`);
-    else add("版本", "ok", `${VERSION} 是最新`);
+    const V = t("版本", "Version");
+    if (!latest) add(V, "warn", t(`${VERSION}；查不到最新版本（网络或还没发版）`, `${VERSION}; couldn't look up the latest version (network, or not released yet)`));
+    else if (newer(latest, VERSION)) add(V, "warn", t(`${VERSION}，最新是 ${latest}`, `${VERSION}, latest is ${latest}`), t("sandpipe upgrade，然后 sandpipe update", "sandpipe upgrade, then sandpipe update"));
+    else add(V, "ok", t(`${VERSION} 是最新`, `${VERSION} is the latest`));
   }
 
   return checks;
@@ -276,7 +337,7 @@ const MARK: Record<Level, string> = { ok: "✓", warn: "⚠", fail: "✗" };
 
 export function formatChecks(checks: Check[]): string {
   return checks
-    .flatMap((c) => [`${MARK[c.level]} ${c.name}：${c.detail}`, ...(c.level !== "ok" && c.fix ? [`    → ${c.fix}`] : [])])
+    .flatMap((c) => [`${MARK[c.level]} ${c.name}${t("：", ": ")}${c.detail}`, ...(c.level !== "ok" && c.fix ? [`    → ${c.fix}`] : [])])
     .join("\n");
 }
 
@@ -286,7 +347,9 @@ export async function doctor(argv: string[]) {
   const failed = checks.filter((c) => c.level === "fail").length;
   const warned = checks.filter((c) => c.level === "warn").length;
   console.log(
-    failed ? `\n${failed} 项不通过${warned ? `，${warned} 项警告` : ""}。` : `\n可以跑了${warned ? `（${warned} 项警告）` : ""}。`,
+    failed
+      ? t(`\n${failed} 项不通过${warned ? `，${warned} 项警告` : ""}。`, `\n${failed} failed${warned ? `, ${warned} warning(s)` : ""}.`)
+      : t(`\n可以跑了${warned ? `（${warned} 项警告）` : ""}。`, `\nReady to run${warned ? ` (${warned} warning(s))` : ""}.`),
   );
   if (failed) process.exitCode = 1;
 }

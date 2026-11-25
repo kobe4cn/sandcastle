@@ -4,6 +4,7 @@
 import { basename } from "node:path";
 import type { Forge, ForgePr, ForgeIssue, MergeMethod } from "../forge.ts";
 import { sh } from "../shell.ts";
+import { t } from "../term.ts";
 
 /** 跑一次 gh，返回 trim 过的 stdout；失败抛错。env 给了就整个替换环境变量。测试里换成记录 argv 的假实现。 */
 export type GhRunner = (args: string[], env?: NodeJS.ProcessEnv) => string;
@@ -53,14 +54,19 @@ export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefin
       try {
         gh(["auth", "status", "--active"]);
       } catch (e) {
-        throw new Error(`gh 没登录（先 gh auth login）：${(e as Error).message.split("\n")[0]}`);
+        throw new Error(t("gh 没登录（先 gh auth login）：", "gh isn't logged in (run gh auth login first): ") + (e as Error).message.split("\n")[0]);
       }
       const repo = gh(["repo", "view", "--json", "nameWithOwner,viewerPermission", "-q", '.nameWithOwner + " " + .viewerPermission']);
       const [name, permission] = repo.split(" ");
       if (!["ADMIN", "MAINTAIN", "WRITE"].includes(permission ?? "")) {
-        throw new Error(`对 ${name} 只有 ${permission} 权限：流水线要推分支、改标签、合并 PR，至少要 WRITE`);
+        throw new Error(
+          t(
+            `对 ${name} 只有 ${permission} 权限：流水线要推分支、改标签、合并 PR，至少要 WRITE`,
+            `Only ${permission} permission on ${name}: the pipeline pushes branches, edits labels and merges PRs, so it needs at least WRITE`,
+          ),
+        );
       }
-      return `gh 已登录，仓库 ${name}（${permission}）`;
+      return t(`gh 已登录，仓库 ${name}（${permission}）`, `gh logged in, repository ${name} (${permission})`);
     },
     checkAgentToken(token) {
       // 沙箱里的 agent 只用这个 token：读写 issue、读 PR 与评论。只读探一下，不留痕迹。
@@ -73,12 +79,17 @@ export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefin
           gh(["api", `repos/${repo}/${path}?per_page=1`, "--silent"], env);
         } catch (e) {
           const msg = String((e as { stderr?: unknown }).stderr || (e as Error).message).split("\n").find(Boolean) ?? "";
-          throw new Error(`GH_TOKEN 读不了 ${repo} 的 ${what}（${msg.trim()}）：fine-grained token 要给这个仓库 Issues 读写、Pull requests 只读`);
+          throw new Error(
+            t(
+              `GH_TOKEN 读不了 ${repo} 的 ${what}（${msg.trim()}）：fine-grained token 要给这个仓库 Issues 读写、Pull requests 只读`,
+              `GH_TOKEN can't read ${repo}'s ${what} (${msg.trim()}): the fine-grained token needs Issues read/write and Pull requests read on this repository`,
+            ),
+          );
         }
       };
       probe("issue", "issues");
       probe("PR", "pulls");
-      return `GH_TOKEN 能读 ${repo} 的 issue 和 PR（写权限要等实际改标签时才知道）`;
+      return t(`GH_TOKEN 能读 ${repo} 的 issue 和 PR（写权限要等实际改标签时才知道）`, `GH_TOKEN can read ${repo}'s issues and PRs (write access is only known when labels are actually edited)`);
     },
     listLabels: () => lines(gh(["label", "list", "--limit", "1000", "--json", "name", "-q", ".[].name"])),
 
