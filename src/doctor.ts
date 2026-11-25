@@ -213,6 +213,24 @@ export async function diagnose(opts: {
   if (!stale.length) add("Claude 文件", "ok", "hook、子代理、skill 都是当前版本");
   else add("Claude 文件", "warn", `和当前版本不一致或缺失：${stale.join("、")}`, "sandcastle-pipeline update");
 
+  // ---- 沙箱里的 worktree 从远端基础分支建：hook、.gitignore 要已经推上去才生效 ----
+  if (project) {
+    const base = `${project.remote}/${project.baseBranch}`;
+    const needed = [".claude/settings.json", `.claude/hooks/${HOOK_FILE}`, ".gitignore"].filter((f) => existsSync(join(cwd, f)));
+    const unpushed = needed.filter((f) => {
+      const r = run("git", ["-C", cwd, "show", `${base}:${f}`]);
+      return !r.ok || r.out.trim() !== readFileSync(join(cwd, f), "utf8").trim();
+    });
+    if (!unpushed.length) add("已推送", "ok", `沙箱用到的 .claude/、.gitignore 和 ${base} 一致`);
+    else
+      add(
+        "已推送",
+        "warn",
+        `${unpushed.join("、")} 和 ${base} 不一致（按本地的远端分支比较）：沙箱从 ${base} 建分支，上下文 hook 和忽略规则在沙箱里不生效`,
+        `提交并推送 .claude/、.gitignore（.sandcastle/ 里除 .env、logs 外也建议提交）`,
+      );
+  }
+
   // ---- 版本 ----
   if (opts.latest) {
     const latest = await opts.latest();

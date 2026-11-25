@@ -13,9 +13,14 @@ import { nodeRepo } from "./fixtures.ts";
 
 /** git 本地命令真跑；连远端和 podman 的换成假的。 */
 const runner =
-  (opts: { image: boolean }): Runner =>
+  (opts: { image: boolean; pushed?: boolean }): Runner =>
   (cmd, args) => {
     if (cmd === "git" && args.includes("ls-remote")) return { ok: true, out: "abc\trefs/heads/main" };
+    // git show origin/main:<文件>：默认当作已推送，返回工作区里的内容
+    if (cmd === "git" && args.includes("show")) {
+      if (opts.pushed === false) return { ok: false, out: "fatal: invalid object name 'origin/main'" };
+      return { ok: true, out: readFileSync(join(args[1]!, args.at(-1)!.split(":")[1]!), "utf8") };
+    }
     if (cmd === "podman") return args[0] === "image" ? { ok: opts.image, out: "" } : { ok: true, out: "arm64" };
     return trySh(cmd, args);
   };
@@ -56,6 +61,7 @@ describe("diagnose", () => {
       "上下文 hook": "ok",
       ".gitignore": "ok",
       "Claude 文件": "ok",
+      已推送: "ok",
     });
     const text = formatChecks(first);
     expect(text).toContain("cp .sandcastle/.env.example .sandcastle/.env");
@@ -196,5 +202,17 @@ describe("diagnose：.claude/ 文件与版本", () => {
     const ok = await diagnose({ ...base, latest: async () => VERSION });
     expect(check(ok, "版本")?.level).toBe("ok");
     expect(check(await diagnose(base), "版本")).toBeUndefined();
+  });
+});
+
+describe("diagnose：沙箱用到的文件是否已推送", () => {
+  it("远端没有 .claude/ 和 .gitignore：警告并提示提交推送", async () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true, pushed: false }), forge: fakeGh([], []) });
+    const c = checks.find((x) => x.name === "已推送")!;
+    expect(c.level).toBe("warn");
+    expect(c.detail).toContain(".claude/settings.json");
+    expect(c.fix).toContain("推送");
   });
 });

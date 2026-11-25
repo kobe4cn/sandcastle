@@ -6,7 +6,7 @@ import { detectProject, parseRemoteUrl } from "../src/detect.ts";
 import { containerfileSource, installFiles, mergeGitignore, mergeSettings, onboardPrompt, updateClaudeFiles } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { parseProjectDoc } from "../src/project-doc.ts";
-import { nodeRepo } from "./fixtures.ts";
+import { nodeRepo, pythonRepo } from "./fixtures.ts";
 
 const containerTemplate = readFileSync(new URL("../templates/.sandcastle/Containerfile", import.meta.url), "utf8");
 
@@ -42,6 +42,19 @@ describe("detectProject", () => {
     });
     expect(f.topDirs).toEqual(["app", "deploy", "drizzle", "test"]);
     expect(f.docs).toContain("CLAUDE.md");
+  });
+
+  it("python + uv：mypy 配了 files 就不加 .，英文提交，没有服务和网页", () => {
+    const f = detectProject(pythonRepo());
+    expect(f).toMatchObject({
+      language: "python",
+      install: "uv sync",
+      commands: { typecheck: "uv run mypy", lint: "uv run ruff check .", test: "uv run pytest" },
+      services: [],
+      webUi: false,
+      commitLanguage: "en",
+    });
+    expect(detectProject(pythonRepo('[project]\nname = "x"\n[tool.ruff]\n[dependency-groups]\ndev = ["mypy"]\n')).commands.typecheck).toBe("uv run mypy .");
   });
 });
 

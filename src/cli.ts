@@ -7,7 +7,7 @@
 //                       [--fix] 缺的标签直接建上
 //   sandcastle-pipeline baseline    在沙箱里对 origin/main 跑一次完整门槛，只报告不开票（接入新项目时，见 docs/onboarding-checklist.md）
 //   sandcastle-pipeline update      把项目 .claude/ 里本工具的 hook、子代理、skill 刷成当前版本（升级后跑）
-//   sandcastle-pipeline upgrade     装最新发布的版本（npm i -g <releases 的最新包>）
+//   sandcastle-pipeline upgrade     装最新发布的版本（用安装时的 npm 或 pnpm 装 releases 的最新包）
 //   sandcastle-pipeline --version
 const [cmd = "run", ...rest] = process.argv.slice(2);
 
@@ -21,10 +21,10 @@ else if (cmd === "update") {
   const changed = (await import("./onboard.ts")).updateClaudeFiles(process.cwd());
   console.log(changed.length ? changed.map((f) => `✓ ${f}`).join("\n") : "都是当前版本，没有改动。");
 } else if (cmd === "upgrade") {
-  const { UPGRADE_COMMAND } = await import("./version.ts");
+  const command = (await import("./version.ts")).upgradeCommand();
   const { execSync } = await import("node:child_process");
-  console.log(UPGRADE_COMMAND);
-  execSync(UPGRADE_COMMAND, { stdio: "inherit" });
+  console.log(command);
+  execSync(command, { stdio: "inherit" });
   console.log("装好了。到各项目里跑 sandcastle-pipeline update 刷新 .claude/ 下的文件。");
 } else if (cmd === "--version" || cmd === "-v") console.log((await import("./version.ts")).VERSION);
 else {

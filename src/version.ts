@@ -13,7 +13,14 @@ export const VERSION = pkg.version;
 export const RELEASES_REPO = pkg.sandcastle.releases;
 export const ASSET = "sandcastle-pipeline.tgz";
 export const LATEST_URL = `https://github.com/${RELEASES_REPO}/releases/latest/download/${ASSET}`;
-export const UPGRADE_COMMAND = `npm i -g ${LATEST_URL}`;
+/**
+ * 用装本工具的那个包管理器升级。pnpm 装的包实际放在它的 store 里：旧版是 …/.pnpm/…，
+ * 新版是 …/store/v11/links/…（PNPM_HOME 可以随便设，所以不靠目录名里有没有 pnpm）。其余按 npm。
+ */
+export function upgradeCommand(installedAt: string = fileURLToPath(import.meta.url)): string {
+  const pnpm = /[\\/]\.pnpm[\\/]|[\\/]store[\\/]v\d+[\\/]links[\\/]/.test(installedAt);
+  return pnpm ? `pnpm add -g ${LATEST_URL}` : `npm i -g ${LATEST_URL}`;
+}
 
 /** 最新 Release 的版本号（去掉 v）；网络不通、还没发版时返回 undefined。 */
 export async function latestVersion(fetcher: typeof fetch = fetch): Promise<string | undefined> {

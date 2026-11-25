@@ -173,7 +173,9 @@ function otherLanguageFacts(root: string, language: Language) {
             : "pip install -e .",
       copyToWorktree: [] as string[],
       commands: {
-        typecheck: /mypy/.test(pyproject) ? `${prefix}mypy .` : /pyright/.test(pyproject) ? `${prefix}pyright` : undefined,
+        typecheck: /mypy/.test(pyproject)
+          ? `${prefix}mypy${/\[tool\.mypy\][^[]*\bfiles\s*=/.test(pyproject) ? "" : " ."}` // 项目配了 files 就按它的范围
+          : /pyright/.test(pyproject) ? `${prefix}pyright` : undefined,
         lint: /ruff/.test(pyproject) ? `${prefix}ruff check .` : undefined,
         test: `${prefix}pytest`,
         testFile: `${prefix}pytest <file>`,

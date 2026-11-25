@@ -1,0 +1,71 @@
+# 端到端测试计划
+
+测试项目：`kobe4cn/sandcastle-e2e`（private），本地在 `~/dev/sandcastle-e2e`。它是 Python + uv + pytest + ruff + mypy 写的 SQLite 记账 CLI，提交信息用英文，没有网页界面，没有外部服务。
+它和 duckdb_crm 差别很大（换了语言，没有 PG，没有页面），所以也用来验证通用性。
+
+每一项记录结果（✓ / ✗ + 问题）。发现的问题先修，补上单元测试，再从出问题的那一步接着测。
+
+## A. 安装
+
+- [ ] A1 从 Release 链接 `npm i -g` 安装，确认 `--version`
+- [ ] A2 `pnpm add -g <同一链接>` 安装
+- [ ] A3 在项目根目录以外的目录运行：给出明确提示，不崩溃
+
+## B. onboard（开着 agent）
+
+- [ ] B1 探测结果：python、uv、`uv sync`、`uv run mypy .`、`uv run ruff check .`、`uv run pytest`、github、main、commitLanguage en、没有 webUi、没有 services
+- [ ] B2 生成的 `sandcastle.config.ts` 能加载；`gate.typecheck` 有值；`autoMerge: false`、`maxParallel: 1`
+- [ ] B3 agent 写的 PROJECT.md：没有「待补」，内容符合本项目（金额用分、LEDGER_DB、英文提交），没有照抄 shop-admin 示例
+- [ ] B4 Containerfile 是 Python 版（有 uv，没有 playwright），`podman build` 能建成
+- [ ] B5 `.gitignore`、`.claude/settings.json` hook、`.claude/skills/prep-ticket` 已装好
+- [ ] B6 再跑一次 onboard，什么都不覆盖
+
+## C. doctor
+
+- [ ] C1 没有 `.env`：✗，并给出修法
+- [ ] C2 填好 `.env`、还没建标签：⚠/✗ 提示缺标签
+- [ ] C3 `doctor --fix` 建好标签，GitHub 上能看到；再跑全部 ✓
+- [ ] C4 镜像不存在时 ✗，并给出 build 命令
+
+## D. baseline
+
+- [ ] D1 在沙箱里对 origin/main 跑完整门槛：通过，输出 GATE_TIME
+- [ ] D2 门槛故意失败（本地临时把 gate.script 改成会失败）：报告失败，退出码非 0，不开票
+- [ ] D3 结束后沙箱和 worktree 都清理掉
+
+## E. 票（`autoMerge: false`、`maxParallel: 1`）
+
+- [ ] E1 金丝雀票：加 `ledger --version`。检查：
+  - prep 写了 `## Implementation guide`，打了 prepped
+  - 开出 PR，PR 正文有 Review、Gate、用量
+  - 没有合并，打了 pr-open，评论说明是因为 autoMerge: false
+  - 提交信息是英文
+- [ ] E2 人打回：在 E1 的 PR 上评论 `/sandcastle …` 提修改意见。下一轮去掉 pr-open，按意见改完后 PR 更新
+- [ ] E3 大票（超过 3 条验收标准，比如「月度预算」功能）：prep 拆成子票，子票继承 Sandcastle 标签、写了 Blocked by，父票去掉标签
+- [ ] E4 要人拍板的票（含糊的需求）：打 stuck 并评论原因，或者自己拍板后打 decided
+- [ ] E5 人合并 E1 的 PR 后，下一轮清理：关掉 issue，删掉分支和 worktree
+
+## F. 自动合并与并行（`autoMerge: true`、`maxParallel: 2`）
+
+- [ ] F1 两张互不相关的票（改不同的文件）并行做完，都自动合并，issue 都关闭
+- [ ] F2 两张改同一个文件的票：plan 时排开不并行，或者后合并的那张走 rebase 路径，最后都能合进去
+- [ ] F3 显式依赖：B 票写 `## Blocked by #A`，A 关掉之前 B 不开工
+- [ ] F4 E3 拆出来的子票按依赖顺序做完
+
+## G. 收尾检查
+
+- [ ] G1 `.sandcastle/logs/` 没有异常；`podman ps -a` 没有残留的沙箱；`git worktree list` 干净
+- [ ] G2 用量统计是否合理（每张票的 token）
+
+## H. 升级
+
+- [ ] H1 修完问题后发 v0.1.1；装着 0.1.0 时 doctor 提示有新版本
+- [ ] H2 `sandcastle-pipeline upgrade` 升到 0.1.1
+- [ ] H3 `sandcastle-pipeline update` 刷新 `.claude/` 下的文件
+
+## 不在本次范围
+
+- `GATE_TIER` / main 兜底完整测试 / `GATE_FLAKY`：门槛需要按依赖选测试，或者自己实现重跑。本项目的门槛是完整测试，用不到。留到 duckdb_crm 验收时测。
+- 页面验收和截图：本项目没有页面，留到 duckdb_crm 验收时测。
+- 外部 PR 打回：需要另一个账号开 PR，以后再测。
+- GitLab：还没实现。

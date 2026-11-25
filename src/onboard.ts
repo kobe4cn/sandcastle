@@ -38,11 +38,11 @@ export function configSource(f: ProjectFacts, importFrom: string): string {
       : "  // forge: githubForge(),  // 默认 GitHub（宿主机的 gh）";
   const services = f.services.length
     ? [
-        `    // 探测到 docker compose 里的服务：${f.services.join("、")}。沙箱（podman）经 host.containers.internal 访问宿主机上的它们；`,
-        "    // 每张票用独立的库名 / 前缀（加 runId），并行的沙箱才不会互相清表。例：",
-        "    //   DATABASE_URL: `postgres://user:pass@host.containers.internal:5432/app_test_i${runId}`,",
+        `      // 探测到 docker compose 里的服务：${f.services.join("、")}。沙箱（podman）经 host.containers.internal 访问宿主机上的它们；`,
+        "      // 每张票用独立的库名 / 前缀（加 runId），并行的沙箱才不会互相清表。例：",
+        "      //   DATABASE_URL: `postgres://user:pass@host.containers.internal:5432/app_test_i${runId}`,",
       ]
-    : ["    // 测试依赖外部服务（数据库、缓存、对象存储）时，在这里给每张票独立的库名 / 前缀（加 runId）。"];
+    : ["      // 测试依赖外部服务（数据库、缓存、对象存储）时，在这里给每张票独立的库名 / 前缀（加 runId）。"];
   return [
     "// Sandcastle 项目配置：编排脚本里随项目变的部分（由 sandcastle-pipeline onboard 生成，按需修改）。",
     "// 字段说明见 sandcastle-pipeline 的 docs/config.md。",
@@ -72,7 +72,7 @@ export function configSource(f: ProjectFacts, importFrom: string): string {
     "  },",
     "",
     "  gate: {",
-    "    // 合并门槛：退出码 0 算通过。输出约定（GATE_TIER / GATE_FLAKY）见 src/profile.ts 的 GateConfig，可以不用。",
+    "    // 合并门槛：退出码 0 算通过。输出约定（GATE_TIER / GATE_FLAKY，可以不用）见 docs/config.md。",
     `    script: () => ${q(gate)},`,
     `    testFile: /${f.testFilePattern.replace(/\//g, "\\/")}/,`,
     `    typecheck: ${q(f.commands.typecheck ?? f.commands.lint ?? "true")},`,
