@@ -1,5 +1,11 @@
 # 更新记录
 
+## Unreleased
+
+- onboard 生成缺口清单 `.sandcastle/OPEN-QUESTIONS.md`（提交进仓库），取代原来只打印到终端、只存在 `logs/` 里的拿不准的点。每条一行 `- [类别] 问题 → 写到哪`，类别是 `规范` / `意图`（英文项目 `convention` / `intent`）；清单已存在就不碰。写完校验格式，结尾提示剩几条，以及在 Claude Code 里运行 `/fill-project-docs`。
+- onboard 的 agent 可写的文件从只有 PROJECT.md 改成一个列表（PROJECT.md 和缺口清单）。
+- 探测文档时认 `GLOSSARY.md`。
+
 ## 0.1.4
 
 - npm 页面上 README 的相对链接（中文版、配置说明、接入清单）不再 404：`package.json` 的 `repository` 指向公开的 releases 仓库，发版时把 README 和文档同步过去。

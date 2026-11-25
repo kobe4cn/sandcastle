@@ -10,8 +10,10 @@
 //      .sandcastle/models.json、.env.example、.gitignore、Containerfile
 //      .claude/ 下的 hook、子代理、skill（CLAUDE_FILES，给 agent 看，只有一种语言），并在 .claude/settings.json 里登记 hook
 //      the hook, subagent and skill under .claude/ (CLAUDE_FILES, agent-facing, one language only), registering the hook in .claude/settings.json
-// 3. 补全 PROJECT.md（默认开，--no-agent 跳过）：宿主机上跑一次 claude -p，读代码把草稿写完整，只许改这一个文件；写完按 parseProjectDoc 校验。
-//    Complete PROJECT.md (on by default, --no-agent skips it): one claude -p on the host reads the code and finishes the draft, editing only that file; then validated with parseProjectDoc.
+// 3. 补全 PROJECT.md（默认开，--no-agent 跳过）：宿主机上跑一次 claude -p，读代码把草稿写完整，拿不准的写进缺口清单 OPEN-QUESTIONS.md；
+//    只许改这两个文件（清单已存在时只许改 PROJECT.md）；写完按 parseProjectDoc 和 parseOpenQuestions 校验。
+//    Complete PROJECT.md (on by default, --no-agent skips it): one claude -p on the host reads the code, finishes the draft and puts open points into OPEN-QUESTIONS.md;
+//    it may edit only those two files (only PROJECT.md if the list already exists); then validated with parseProjectDoc and parseOpenQuestions.
 
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { execFileSync } from "node:child_process";
@@ -22,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { detectProject, type ProjectFacts } from "./detect.ts";
 import type { Language } from "./i18n.ts";
 import { DEFAULT_LABELS } from "./profile.ts";
+import { OPEN_QUESTIONS, readOpenQuestions } from "./open-questions.ts";
 import { parseProjectDoc, SECTIONS, SECTIONS_EN } from "./project-doc.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { RELEASES_REPO } from "./version.ts";
@@ -487,27 +490,75 @@ export function installFiles(root: string, f: ProjectFacts, lang: Language = f.c
 // ---------------------------------------------------------------------------
 
 /**
- * 补全 PROJECT.md 的提示词。提示词本身是中文；英文项目在开头加一条输出语言规则（和流水线提示词的做法一样）。
- * Prompt for completing PROJECT.md. The prompt itself is Chinese; English projects get an output-language rule up front (as the pipeline prompts do).
+ * onboard 的 agent 默认能写的文件：PROJECT.md 和缺口清单。以后 `--questions-only` 只传缺口清单。
+ * Files the onboard agent may write by default: PROJECT.md and the open questions list. `--questions-only` will pass just the list.
  */
-export function onboardPrompt(f: ProjectFacts, lang: Language = f.commitLanguage): string {
+export const AGENT_WRITABLE = [".sandcastle/PROJECT.md", OPEN_QUESTIONS];
+
+/**
+ * 这次 agent 能写哪些文件：缺口清单和其他生成文件一样，已经存在就不让 agent 碰。要在 agent 跑之前算。
+ * Which files the agent may write this time: like other generated files, an existing open questions list is left alone. Compute before the agent runs.
+ */
+export function agentWritable(root: string): string[] {
+  return existsSync(join(root, OPEN_QUESTIONS)) ? AGENT_WRITABLE.filter((p) => p !== OPEN_QUESTIONS) : [...AGENT_WRITABLE];
+}
+
+/**
+ * 缺口清单的格式说明（提示词正文是中文，英文项目的类别和标题换法写在开头的输出语言规则里）。
+ * Format notes for the open questions list (the prompt body is Chinese; English projects get the category and heading swap in the output-language rule up front).
+ */
+const QUESTIONS_FORMAT = [
+  `把拿不准、需要人补的点写进 \`${OPEN_QUESTIONS}\`，这份文件会提交进仓库，之后由人在 Claude Code 里逐条补完：`,
+  "",
+  "- 以 `# 缺口清单` 开头，下面每条一行：`- [类别] 问题 → 写到哪`。不编号、不加 ID，箭头只用 `→`。",
+  "- 类别只有两种：`规范`（代码风格、测试写法、提交约定这类能从代码推一部分、但你拿不准的）和 `意图`（业务规则、领域术语、红线、设计原因这类只能由人说出来的）。",
+  "- 「写到哪」写答案该进哪份文档：PROJECT.md 的哪一节，或术语表、ADR 之类的文件。",
+  "- 什么算缺口：意图层面的信息（术语表、红线、设计原因）在代码和文档里都找不到，或者规范拿不准。代码里查得到的事实不算，自己查清楚写进 PROJECT.md。",
+  "- 没有缺口时只写标题那一行。",
+  "",
+  "示例：",
+  "",
+  "```markdown",
+  "# 缺口清单",
+  "",
+  "- [意图] 哪些操作必须交给人（红线）？ → PROJECT.md「必须停下」",
+  "- [规范] 提交信息用中文还是英文？ → PROJECT.md「提交」",
+  "- [意图] 项目还没有术语表 → GLOSSARY.md",
+  "```",
+].join("\n");
+
+/**
+ * 补全 PROJECT.md 的提示词。提示词本身是中文；英文项目在开头加一条输出语言规则（和流水线提示词的做法一样）。
+ * `writable` 是 agent 能写的文件；缺口清单不在里面时，提示词要求 agent 不要动它。
+ * Prompt for completing PROJECT.md. The prompt itself is Chinese; English projects get an output-language rule up front (as the pipeline prompts do).
+ * `writable` lists the files the agent may write; when the open questions list isn't among them, the prompt tells the agent to leave it alone.
+ */
+export function onboardPrompt(f: ProjectFacts, lang: Language = f.commitLanguage, writable: string[] = AGENT_WRITABLE): string {
   const facts = JSON.stringify({ ...f, root: undefined }, null, 2);
+  const listWritable = writable.includes(OPEN_QUESTIONS);
+  const questions = listWritable ? QUESTIONS_FORMAT : `\`${OPEN_QUESTIONS}\` 已存在，不要动它；拿不准的点在最后的输出里另起一段「拿不准的点」，每条一行。`;
   const rule =
     lang === "en"
-      ? `Output language: write PROJECT.md in English and use the English section titles instead of the Chinese ones in the template below (${(Object.keys(SECTIONS) as (keyof typeof SECTIONS)[]).map((k) => `${SECTIONS[k]} → \`## ${SECTIONS_EN[k]}\``).join(", ")}). Write your final notes in English too. The instructions below are in Chinese; read them, but answer in English.\n\n`
+      ? `Output language: write PROJECT.md in English and use the English section titles instead of the Chinese ones in the template below (${(Object.keys(SECTIONS) as (keyof typeof SECTIONS)[]).map((k) => `${SECTIONS[k]} → \`## ${SECTIONS_EN[k]}\``).join(", ")}). ` +
+        (listWritable
+          ? `Write the open questions list in English too: start it with \`# Open questions\`, use the categories \`[convention]\` / \`[intent]\` instead of \`[规范]\` / \`[意图]\`, and name PROJECT.md sections by their English titles in the targets. `
+          : "") +
+        `Write your final notes in English too. The instructions below are in Chinese; read them, but answer in English.\n\n`
       : "";
   return rule + tool("prompts/onboard.md")
+    .replace("{{WRITABLE}}", () => writable.map((p) => `\`${p}\``).join("、"))
+    .replace("{{QUESTIONS}}", () => questions)
     .replace("{{FACTS}}", () => facts)
     .replace("{{TEMPLATE}}", () => tool("templates/.sandcastle/PROJECT.md"))
     .replace("{{EXAMPLE}}", () => tool("templates/example-PROJECT.md"));
 }
 
-function runAgent(root: string, f: ProjectFacts, model: string, lang: Language): string {
+function runAgent(root: string, f: ProjectFacts, model: string, lang: Language, writable: string[]): string {
   const allowed = [
     "Read",
     "Grep",
     "Glob",
-    "Edit(.sandcastle/PROJECT.md)",
+    ...writable.map((p) => `Edit(${p})`),
     "Bash(git log:*)",
     "Bash(git ls-files:*)",
     "Bash(ls:*)",
@@ -518,7 +569,7 @@ function runAgent(root: string, f: ProjectFacts, model: string, lang: Language):
   ];
   return execFileSync(
     "claude",
-    ["-p", onboardPrompt(f, lang), "--model", model, "--allowedTools", allowed.join(","), "--output-format", "text"],
+    ["-p", onboardPrompt(f, lang, writable), "--model", model, "--allowedTools", allowed.join(","), "--output-format", "text"],
     {
       cwd: root,
       encoding: "utf8",
@@ -570,6 +621,9 @@ export function onboard(argv: string[], root = process.cwd()) {
     console.warn(t("  ⚠ 远端是 GitLab：GitLab Forge 还没做，文件照常生成，但先别跑", "  ⚠ The remote is GitLab: the GitLab forge isn't done yet. Files are generated, but don't run it yet"));
 
   const docExisted = existsSync(join(root, ".sandcastle/PROJECT.md"));
+  // 在生成文件和 agent 之前算：清单已存在就不让 agent 碰。
+  // Computed before generating files and running the agent: an existing open questions list is off limits.
+  const writable = agentWritable(root);
   for (const o of installFiles(root, f, lang))
     console.log(`  ${o.status === "skipped" || o.status === "unchanged" ? "·" : "✓"} ${o.file}${t("：", ": ")}${statusText(o.status)}`);
 
@@ -578,7 +632,7 @@ export function onboard(argv: string[], root = process.cwd()) {
   } else {
     console.log(t(`\n让 agent（${model}）读代码补全 .sandcastle/PROJECT.md，几分钟……`, `\nAsking the agent (${model}) to read the code and complete .sandcastle/PROJECT.md, a few minutes…`));
     try {
-      const notes = runAgent(root, f, model, lang);
+      const notes = runAgent(root, f, model, lang, writable);
       mkdirSync(join(root, ".sandcastle/logs"), { recursive: true });
       writeFileSync(join(root, ".sandcastle/logs/onboard.md"), notes);
       console.log(`\n${notes.trim()}\n${t("（已存到 .sandcastle/logs/onboard.md）", "(saved to .sandcastle/logs/onboard.md)")}`);
@@ -594,6 +648,18 @@ export function onboard(argv: string[], root = process.cwd()) {
     console.warn(t("⚠ PROJECT.md 校验没过：", "⚠ PROJECT.md is invalid: ") + (e as Error).message);
   }
 
+  let remaining = 0;
+  try {
+    const questions = readOpenQuestions(root);
+    if (questions === null) console.warn(t("⚠ 没有生成缺口清单", "⚠ No open questions list was generated"));
+    else {
+      remaining = questions.length;
+      console.log(t(`✓ 缺口清单还有 ${remaining} 条`, `✓ ${remaining} open question(s) left`));
+    }
+  } catch (e) {
+    console.warn(t("⚠ 缺口清单校验没过：", "⚠ The open questions list is invalid: ") + (e as Error).message);
+  }
+
   // 给网页链接而不是本机路径：pnpm 全局装的包路径很长，在终端里没法点。
   // Print a web link rather than a local path: packages installed globally with pnpm live under a very long path that can't be clicked in a terminal.
   const checklist = `https://github.com/${RELEASES_REPO}/blob/HEAD/${manual("onboarding-checklist", lang)}`;
@@ -601,17 +667,22 @@ export function onboard(argv: string[], root = process.cwd()) {
     [
       "",
       t("接下来：", "Next:"),
-      t(
-        "  1. 看一遍 .sandcastle/PROJECT.md 和 sandcastle.config.ts（门槛、测试隔离），改成符合项目实际的样子",
-        "  1. Read .sandcastle/PROJECT.md and sandcastle.config.ts (gate, test isolation) and make them match the project",
-      ),
-      t("  2. cp .sandcastle/.env.example .sandcastle/.env，填 token", "  2. cp .sandcastle/.env.example .sandcastle/.env and fill in the tokens"),
-      `  3. ${t("建镜像：", "Build the image: ")}podman build -t ${defaultImageName(root)} -f .sandcastle/Containerfile .sandcastle`,
-      t("  4. sandpipe doctor --fix 检查一遍（顺带建好标签）", "  4. sandpipe doctor --fix to check everything (and create the labels)"),
-      t(
-        `  5. 之后按 ${checklist}：baseline 跑一次完整门槛 → 金丝雀票 → 真实小票 → 打开自动合并`,
-        `  5. Then follow ${checklist}: baseline full gate → canary ticket → real small tickets → enable auto-merge`,
-      ),
+      ...[
+        t(
+          "看一遍 .sandcastle/PROJECT.md 和 sandcastle.config.ts（门槛、测试隔离），改成符合项目实际的样子",
+          "Read .sandcastle/PROJECT.md and sandcastle.config.ts (gate, test isolation) and make them match the project",
+        ),
+        ...(remaining > 0
+          ? [t(`在 Claude Code 里运行 /fill-project-docs，补完缺口清单（还剩 ${remaining} 条）`, `Run /fill-project-docs in Claude Code to work through the open questions (${remaining} left)`)]
+          : []),
+        t("cp .sandcastle/.env.example .sandcastle/.env，填 token", "cp .sandcastle/.env.example .sandcastle/.env and fill in the tokens"),
+        `${t("建镜像：", "Build the image: ")}podman build -t ${defaultImageName(root)} -f .sandcastle/Containerfile .sandcastle`,
+        t("sandpipe doctor --fix 检查一遍（顺带建好标签）", "sandpipe doctor --fix to check everything (and create the labels)"),
+        t(
+          `之后按 ${checklist}：baseline 跑一次完整门槛 → 金丝雀票 → 真实小票 → 打开自动合并`,
+          `Then follow ${checklist}: baseline full gate → canary ticket → real small tickets → enable auto-merge`,
+        ),
+      ].map((step, i) => `  ${i + 1}. ${step}`),
     ].join("\n"),
   );
 }

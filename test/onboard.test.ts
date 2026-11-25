@@ -1,10 +1,10 @@
 // onboard：探测项目事实、生成配置与 PROJECT.md 草稿、登记 hook。生成的文件要能被流水线直接加载。
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { configSource, containerfileSource, hasGlobalSkill, installFiles, installGlobalSkill, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboardPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
+import { agentWritable, configSource, containerfileSource, hasGlobalSkill, installFiles, installGlobalSkill, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboardPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { parseProjectDoc } from "../src/project-doc.ts";
 import { nodeRepo, pythonRepo } from "./fixtures.ts";
@@ -44,6 +44,12 @@ describe("detectProject", () => {
     });
     expect(f.topDirs).toEqual(["app", "deploy", "drizzle", "test"]);
     expect(f.docs).toContain("CLAUDE.md");
+  });
+
+  it("有 GLOSSARY.md 的仓库，文档列表里有它", () => {
+    const root = nodeRepo();
+    writeFileSync(join(root, "GLOSSARY.md"), "# 术语表\n");
+    expect(detectProject(root).docs).toContain("GLOSSARY.md");
   });
 
   it("python + uv：mypy 配了 files 就不加 .，英文提交，没有服务和网页", () => {
@@ -206,6 +212,36 @@ describe("onboardPrompt", () => {
     expect(p).not.toMatch(/\{\{[A-Z_]+\}\}/);
     expect(p).toContain('"packageManager": "pnpm"');
     expect(p).toContain("shop-admin");
+  });
+
+  it("默认允许写缺口清单，并写明格式；清单不在可写列表里时要求不要动它", () => {
+    const f = detectProject(nodeRepo());
+    const p = onboardPrompt(f);
+    expect(p).toContain("OPEN-QUESTIONS.md");
+    expect(p).toContain("→");
+    expect(p).toContain("[意图]");
+    expect(p).not.toContain("需要人确认");
+    expect(p).not.toContain("待补");
+    const only = onboardPrompt(f, "zh", [".sandcastle/PROJECT.md"]);
+    expect(only).not.toMatch(/\{\{[A-Z_]+\}\}/);
+    expect(only).toContain("不要动它");
+    expect(only).not.toContain("[意图]");
+  });
+
+  it("英文变体：清单类别用 [convention] / [intent]，没有残留占位符", () => {
+    const p = onboardPrompt(detectProject(pythonRepo()), "en");
+    expect(p).not.toMatch(/\{\{[A-Z_]+\}\}/);
+    expect(p).toContain("[intent]");
+    expect(p).toContain("[convention]");
+    expect(p).toContain("# Open questions");
+  });
+
+  it("agentWritable：清单已存在时只给 PROJECT.md", () => {
+    const root = nodeRepo();
+    expect(agentWritable(root)).toEqual([".sandcastle/PROJECT.md", ".sandcastle/OPEN-QUESTIONS.md"]);
+    mkdirSync(join(root, ".sandcastle"), { recursive: true });
+    writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "# 缺口清单\n");
+    expect(agentWritable(root)).toEqual([".sandcastle/PROJECT.md"]);
   });
 });
 

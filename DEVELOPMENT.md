@@ -20,7 +20,7 @@
 | `src/cli.ts` | 命令行入口：`run`（默认）、`onboard`、`doctor`、`baseline` |
 | `src/doctor.ts` | 跑之前的检查：配置、PROJECT.md、models.json、.env、平台登录与权限、标签、远端分支、镜像、hook、.gitignore |
 | `src/main.ts` | 编排（调度、build、land）。不含项目细节，不直接调 gh |
-| `src/detect.ts` `src/onboard.ts` `prompts/onboard.md` | 接入新项目：探测、生成配置、agent 补全 PROJECT.md |
+| `src/detect.ts` `src/onboard.ts` `src/open-questions.ts` `prompts/onboard.md` | 接入新项目：探测、生成配置、agent 补全 PROJECT.md 并写缺口清单 |
 | `src/forge.ts` | **Forge** 接口：托管平台上的 issue / 标签 / PR / 合并 |
 | `src/forges/github.ts` | GitHub 实现（gh CLI） |
 | `src/profile.ts` | **ProjectProfile**：项目配置（测试隔离、门槛、安装、一致性检查、文案）与默认值 |
@@ -39,8 +39,8 @@
    - 探测语言、包管理、命令、托管平台、文档、测试、迁移、compose 里的服务（`src/detect.ts`，只读文件和 git）；
    - 生成 `.sandcastle/` 下的 `sandcastle.config.ts`、`PROJECT.md` 草稿、`models.json`、`.env.example`、`.gitignore`、`Containerfile`，
      装 `.claude/hooks/sandcastle-context.mjs`（上下文预算）与 `screenshot-checker` 子代理，并在 `.claude/settings.json` 里登记 hook；已存在的文件一律跳过；
-   - 让宿主机的 claude（默认 opus，`--model` 换，`--no-agent` 跳过）读代码把 `PROJECT.md` 写完整，只许改这一个文件；
-     拿不准的点和 `sandcastle.config.ts` 的建议打印出来，并存进 `.sandcastle/logs/onboard.md`。
+   - 让宿主机的 claude（默认 opus，`--model` 换，`--no-agent` 跳过）读代码把 `PROJECT.md` 写完整，只许改 PROJECT.md 和缺口清单 `.sandcastle/OPEN-QUESTIONS.md`（已存在的不动）；
+     写完用 `parseOpenQuestions` 校验；`sandcastle.config.ts` 的建议打印出来，并存进 `.sandcastle/logs/onboard.md`。
 2. 看一遍 `PROJECT.md`（项目知识，给 agent 看）与 `sandcastle.config.ts`（怎么跑：测试隔离、门槛），填 `.sandcastle/.env`，建镜像。
 3. `npx tsx <本仓库>/src/cli.ts doctor`：逐项给出 ✓ / ⚠ / ✗ 和修法，有 ✗ 退出码为 1；`--fix` 把缺的标签建上（只有这一项会写东西）。
 4. `npx tsx <本仓库>/src/cli.ts baseline`：在沙箱里对 `origin/main` 跑一次完整门槛，只报告、不开票。

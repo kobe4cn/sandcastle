@@ -50,6 +50,7 @@ const DOC_CANDIDATES = [
   "CLAUDE.md",
   "AGENTS.md",
   "CONTEXT.md",
+  "GLOSSARY.md",
   "CODING_STANDARDS.md",
   "CONTRIBUTING.md",
   "ARCHITECTURE.md",
