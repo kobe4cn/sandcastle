@@ -3,7 +3,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { containerfileSource, installFiles, mergeGitignore, mergeSettings, onboardPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
+import { configSource, containerfileSource, installFiles, projectDocDraft, mergeGitignore, mergeSettings, onboardPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { parseProjectDoc } from "../src/project-doc.ts";
 import { nodeRepo, pythonRepo } from "./fixtures.ts";
@@ -63,7 +63,7 @@ describe("installFiles", () => {
     const root = nodeRepo();
     const f = detectProject(root);
     const first = installFiles(root, f);
-    expect(first.every((o) => o.status === "写入")).toBe(true);
+    expect(first.every((o) => o.status === "written")).toBe(true);
 
     const project = await loadProject(join(root, ".sandcastle"));
     expect(project.install.onSandboxReady).toBe(f.install);
@@ -82,7 +82,7 @@ describe("installFiles", () => {
 
     writeFileSync(join(root, ".sandcastle/PROJECT.md"), "人改过");
     const second = installFiles(root, f);
-    expect(second.filter((o) => o.status === "写入")).toEqual([]);
+    expect(second.filter((o) => o.status === "written")).toEqual([]);
     expect(readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8")).toBe("人改过");
   });
 });
@@ -122,7 +122,7 @@ describe("编辑器类型", () => {
     rmSync(tsconfigPath);
     writeFileSync(ignorePath, ".env\nlogs/\nworktrees/\n");
     expect(updateClaudeFiles(root)).toEqual([".sandcastle/.gitignore", ".sandcastle/tsconfig.json"]);
-    expect(readFileSync(ignorePath, "utf8")).toMatch(/^\.env\nlogs\/\nworktrees\/\n\n# Sandcastle.*\ntsconfig\.json\n$/);
+    expect(readFileSync(ignorePath, "utf8")).toMatch(/^\.env\nlogs\/\nworktrees\/\n\n# Sandcastle：.*\n# Sandcastle: .*\ntsconfig\.json\n$/);
     expect(updateClaudeFiles(root)).toEqual([]);
   });
 });
@@ -143,7 +143,7 @@ describe("mergeSettings", () => {
 describe("mergeGitignore", () => {
   it("补上缺的工作目录，已有的（带不带 / 前缀、尾斜杠）不重复；都有时不改", () => {
     const out = mergeGitignore("node_modules\n/.browser-check\n")!;
-    expect(out).toMatch(/^node_modules\n\/\.browser-check\n\n# Sandcastle.*\n\.playwright-cli\/\n\.pr-notes\/\n$/);
+    expect(out).toMatch(/^node_modules\n\/\.browser-check\n\n# Sandcastle：.*\n# Sandcastle: .*\n\.playwright-cli\/\n\.pr-notes\/\n$/);
     expect(mergeGitignore(out)).toBeUndefined();
     expect(mergeGitignore("")).toContain(".browser-check/");
   });
@@ -171,5 +171,31 @@ describe("onboardPrompt", () => {
     expect(p).not.toMatch(/\{\{[A-Z_]+\}\}/);
     expect(p).toContain('"packageManager": "pnpm"');
     expect(p).toContain("shop-admin");
+  });
+});
+
+describe("生成文件的语言 / language of generated files", () => {
+  const han = /\p{Script=Han}/u;
+  it("配置和 Containerfile 的注释中英成对：每行中文注释后面跟一行英文", () => {
+    const f = { ...detectProject(nodeRepo()), language: "python" as const };
+    for (const src of [configSource(f, "sandpipe"), containerfileSource(containerTemplate, f)]) {
+      const comments = src.split("\n").map((l) => l.trim()).filter((l) => /^(\/\/|#) /.test(l) && !l.startsWith("//   "));
+      for (const [i, l] of comments.entries()) if (han.test(l)) expect(comments.slice(i + 1).find((x) => !han.test(x)), l).toBeDefined();
+      expect(comments.filter((l) => han.test(l)).length).toBeGreaterThan(0);
+      expect(comments.filter((l) => !han.test(l)).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("英文项目：PROJECT.md 草稿用英文标题和 TODO，能通过校验；配置写 language: en；提示词开头是输出语言", () => {
+    const f = detectProject(pythonRepo());
+    const draft = projectDocDraft(f, "en");
+    expect(draft).toContain("## Overview");
+    expect(draft).toContain("<!-- TODO:");
+    expect(draft).not.toMatch(han);
+    expect(parseProjectDoc(draft).commit).toMatch(/English/);
+    expect(configSource(f, "sandpipe", "en")).toContain('language: "en",');
+    expect(onboardPrompt(f, "en")).toMatch(/^Output language: .*概况 → `## Overview`/);
+    expect(onboardPrompt(f, "zh")).not.toMatch(/^Output language/);
+    expect(parseProjectDoc(projectDocDraft(f, "zh")).overview).toBeDefined();
   });
 });

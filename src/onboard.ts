@@ -1,66 +1,88 @@
 // sandpipe onboard：把 Sandcastle 装进一个新项目（在项目根目录运行）。
+// sandpipe onboard: install Sandcastle into a new project (run in the project root).
 //
 // 1. 探测（detect.ts，只读文件和 git）：语言、包管理、命令、托管平台、文档、测试、迁移、依赖的服务。
-// 2. 生成文件，已存在的一律跳过、不覆盖：
-//      .sandcastle/sandcastle.config.ts  怎么跑（安装、隔离、门槛），按探测结果填好
-//      .sandcastle/PROJECT.md            项目知识草稿（探测到的事实 + 待补的章节）
+//    Detect (detect.ts, reads files and git only): language, package manager, commands, forge, docs, tests, migrations, services.
+// 2. 生成文件，已存在的一律跳过、不覆盖。注释都是中英两行；PROJECT.md 草稿和配置的 language 按 --lang（没给时按提交信息的语言）：
+//    Generate files, skipping any that exist. Comments are always a Chinese line plus an English line; the PROJECT.md draft and the config's language follow --lang (default: the commit message language):
+//      .sandcastle/sandcastle.config.ts  怎么跑（安装、隔离、门槛） / how to run (install, isolation, gate)
+//      .sandcastle/PROJECT.md            项目知识草稿 / project knowledge draft
 //      .sandcastle/models.json、.env.example、.gitignore、Containerfile
-//      .claude/ 下的上下文预算 hook、screenshot-checker 子代理、prep-ticket skill（CLAUDE_FILES），并在 .claude/settings.json 里登记 hook
-// 3. 补全 PROJECT.md（默认开，--no-agent 跳过）：宿主机上跑一次 claude -p，读代码把草稿写成完整的 PROJECT.md，
-//    只许改这一个文件；写完按 parseProjectDoc 校验。需要人确认的点打印出来并存进 .sandcastle/logs/onboard.md。
+//      .claude/ 下的 hook、子代理、skill（CLAUDE_FILES，给 agent 看，只有一种语言），并在 .claude/settings.json 里登记 hook
+//      the hook, subagent and skill under .claude/ (CLAUDE_FILES, agent-facing, one language only), registering the hook in .claude/settings.json
+// 3. 补全 PROJECT.md（默认开，--no-agent 跳过）：宿主机上跑一次 claude -p，读代码把草稿写完整，只许改这一个文件；写完按 parseProjectDoc 校验。
+//    Complete PROJECT.md (on by default, --no-agent skips it): one claude -p on the host reads the code and finishes the draft, editing only that file; then validated with parseProjectDoc.
 
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { execFileSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detectProject, type ProjectFacts } from "./detect.ts";
+import type { Language } from "./i18n.ts";
 import { DEFAULT_LABELS } from "./profile.ts";
-import { parseProjectDoc } from "./project-doc.ts";
+import { parseProjectDoc, SECTIONS, SECTIONS_EN } from "./project-doc.ts";
+import { setTermLanguage, t, termLanguage } from "./term.ts";
 
 export const TOOL_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const HOOK_FILE = "sandcastle-context.mjs";
 
 // ---------------------------------------------------------------------------
-// 生成内容（纯函数，便于测试）
+// 生成内容（纯函数，便于测试） / Generated content (pure functions, easy to test)
 // ---------------------------------------------------------------------------
 
 const q = (s: string) => JSON.stringify(s);
+/** 按语言二选一（PROJECT.md 草稿正文、终端以外的单语内容）。 / Pick by language (PROJECT.md draft body and other single-language content). */
+const pick = (lang: Language) => (zh: string, en: string) => (lang === "en" ? en : zh);
+/** 生成文件里的注释：中文一行、英文一行。 / Comments in generated files: one Chinese line, one English line. */
+const note = (indent: string, zh: string, en: string) => [`${indent}// ${zh}`, `${indent}// ${en}`];
 
-export function configSource(f: ProjectFacts, importFrom: string): string {
+/** 用户手册在工具里的路径，按语言选中文版或英文版。 / Path of a user manual in the tool, Chinese or English copy by language. */
+export const manual = (name: "config" | "onboarding-checklist", lang: Language) => `docs/${name}${lang === "en" ? "" : ".zh-CN"}.md`;
+
+export function configSource(f: ProjectFacts, importFrom: string, lang: Language = f.commitLanguage): string {
   const gateSteps = [f.commands.typecheck, f.commands.lint, f.commands.test].filter(Boolean) as string[];
-  const gate = gateSteps.length
-    ? gateSteps.join(" && ")
-    : "echo '门槛还没配：改 .sandcastle/sandcastle.config.ts 的 gate.script' && exit 1";
+  const gate = gateSteps.length ? gateSteps.join(" && ") : "echo 'gate.script not configured / 门槛还没配：.sandcastle/sandcastle.config.ts' && exit 1";
   const forgeLine =
     f.forge.kind === "gitlab"
-      ? "  // forge: gitlabForge(),  // 远端是 GitLab：GitLab Forge 还没做，接入前先别跑"
-      : "  // forge: githubForge(),  // 默认 GitHub（宿主机的 gh）";
+      ? note("  ", "forge: gitlabForge(),  远端是 GitLab：GitLab Forge 还没做，接入前先别跑", "forge: gitlabForge(),  the remote is GitLab: the GitLab forge isn't done yet, don't run it")
+      : note("  ", "forge: githubForge(),  默认 GitHub（宿主机的 gh）", "forge: githubForge(),  GitHub by default (the host's gh)");
   const services = f.services.length
     ? [
-        `      // 探测到 docker compose 里的服务：${f.services.join("、")}。沙箱（podman）经 host.containers.internal 访问宿主机上的它们；`,
-        "      // 每张票用独立的库名 / 前缀（加 runId），并行的沙箱才不会互相清表。例：",
+        ...note(
+          "      ",
+          `探测到 docker compose 里的服务：${f.services.join("、")}。沙箱（podman）经 host.containers.internal 访问宿主机上的它们；每张票用独立的库名 / 前缀（加 runId），并行的沙箱才不会互相清表。例：`,
+          `Services found in docker compose: ${f.services.join(", ")}. The sandbox (podman) reaches them on the host via host.containers.internal; give each ticket its own database name / prefix (add runId) so parallel sandboxes don't wipe each other's tables. E.g.:`,
+        ),
         "      //   DATABASE_URL: `postgres://user:pass@host.containers.internal:5432/app_test_i${runId}`,",
       ]
-    : ["      // 测试依赖外部服务（数据库、缓存、对象存储）时，在这里给每张票独立的库名 / 前缀（加 runId）。"];
+    : note(
+        "      ",
+        "测试依赖外部服务（数据库、缓存、对象存储）时，在这里给每张票独立的库名 / 前缀（加 runId）。",
+        "If tests use external services (database, cache, object storage), give each ticket its own database name / prefix here (add runId).",
+      );
   return [
-    "// Sandcastle 项目配置：编排脚本里随项目变的部分（由 sandpipe onboard 生成，按需修改）。",
-    "// 字段说明见 sandpipe 的 docs/config.md。",
+    ...note("", "Sandcastle 项目配置：编排脚本里随项目变的部分（由 sandpipe onboard 生成，按需修改）。", "Sandcastle project config: the project-specific part of the pipeline (generated by sandpipe onboard, edit as needed)."),
+    ...note("", "字段说明见 sandpipe 的 docs/config.zh-CN.md。", "Fields are described in sandpipe's docs/config.md."),
     `import { defineProject } from ${q(importFrom)};`,
     "",
     "export default defineProject({",
-    forgeLine,
+    ...forgeLine,
     ...(f.remote !== "origin" ? [`  remote: ${q(f.remote)},`] : []),
     ...(f.baseBranch !== "main" ? [`  baseBranch: ${q(f.baseBranch)},`] : []),
-    "  // issue、PR、评论用什么语言写（\"zh\" / \"en\"），按最近的提交信息判断",
-    `  language: ${q(f.commitLanguage)},`,
-    "  // 试跑期：只开 PR 不合并、一次一张。按 docs/onboarding-checklist.md 走完前几张票再打开自动合并、调高并行数。",
+    ...note("  ", "issue、PR、评论和终端输出用什么语言（\"zh\" / \"en\"）", "Language for issues, PRs, comments and terminal output (\"zh\" / \"en\")"),
+    `  language: ${q(lang)},`,
+    ...note(
+      "  ",
+      "试跑期：只开 PR 不合并、一次一张。按 docs/onboarding-checklist.zh-CN.md 走完前几张票再打开自动合并、调高并行数。",
+      "Trial period: open PRs without merging, one ticket at a time. Follow docs/onboarding-checklist.md through the first few tickets before enabling auto-merge and raising parallelism.",
+    ),
     "  autoMerge: false,",
-    "  // 同时实现几张票：受测试依赖的服务（连接数）与机器负载限制",
+    ...note("  ", "同时实现几张票：受测试依赖的服务（连接数）与机器负载限制", "How many tickets to implement at once: limited by the services the tests use (connections) and machine load"),
     "  maxParallel: 1,",
     "",
     "  install: {",
-    "    // 沙箱建好后装依赖（容器是 linux，宿主机拷进来的原生包可能用不了）",
+    ...note("    ", "沙箱建好后装依赖（容器是 linux，宿主机拷进来的原生包可能用不了）", "Install dependencies once the sandbox is ready (the container is linux; native packages copied from the host may not work)"),
     `    onSandboxReady: ${q(f.install)},`,
     ...(f.copyToWorktree.length ? [`    copyToWorktree: ${JSON.stringify(f.copyToWorktree)},`] : []),
     "  },",
@@ -70,11 +92,15 @@ export function configSource(f: ProjectFacts, importFrom: string): string {
     ...services,
     "      SANDCASTLE_RUN_ID: runId,",
     "    }),",
-    "    // cleanup: async (runId) => { /* 关沙箱后删掉这张票的测试库 */ },",
+    ...note("    ", "cleanup: async (runId) => { /* 关沙箱后删掉这张票的测试库 */ },", "cleanup: async (runId) => { /* drop this ticket's test database after the sandbox closes */ },"),
     "  },",
     "",
     "  gate: {",
-    "    // 合并门槛：退出码 0 算通过。输出约定（GATE_TIER / GATE_FLAKY，可以不用）见 docs/config.md。",
+    ...note(
+      "    ",
+      "合并门槛：退出码 0 算通过。输出约定（GATE_TIER / GATE_FLAKY，可以不用）见 docs/config.zh-CN.md。",
+      "Merge gate: exit code 0 means pass. Output conventions (GATE_TIER / GATE_FLAKY, optional) are in docs/config.md.",
+    ),
     `    script: () => ${q(gate)},`,
     `    testFile: /${f.testFilePattern.replace(/\//g, "\\/")}/,`,
     `    typecheck: ${q(f.commands.typecheck ?? f.commands.lint ?? "true")},`,
@@ -82,12 +108,19 @@ export function configSource(f: ProjectFacts, importFrom: string): string {
     "",
     ...(f.migrations
       ? [
-          `  // 迁移（${f.migrations.tool}，${f.migrations.dir}/）：两张票各加一个迁移时 rebase 没有文本冲突也可能分叉，`,
-          "  // 可以配 integrity 在合并前检查（比如迁移链是否接在 main 最新的迁移之后），见 docs/config.md。",
+          ...note(
+            "  ",
+            `迁移（${f.migrations.tool}，${f.migrations.dir}/）：两张票各加一个迁移时 rebase 没有文本冲突也可能分叉，可以配 integrity 在合并前检查（比如迁移链是否接在 main 最新的迁移之后）。`,
+            `Migrations (${f.migrations.tool}, ${f.migrations.dir}/): when two tickets each add one, the chain can fork without a text conflict on rebase; set integrity to check before merging (e.g. that the chain follows main's latest migration).`,
+          ),
           "",
         ]
       : []),
-    "  // 几张票会同时往末尾追加的索引文件（CHANGELOG、测试目录……），列在这里的不算「改同一个文件」，可以并行。",
+    ...note(
+      "  ",
+      "几张票会同时往末尾追加的索引文件（CHANGELOG、测试目录……），列在这里的不算「改同一个文件」，可以并行。",
+      "Index files several tickets append to at once (CHANGELOG, test catalog…); files listed here don't count as \"changing the same file\", so those tickets can run in parallel.",
+    ),
     "  appendOnlyFiles: [],",
     "});",
     "",
@@ -96,61 +129,93 @@ export function configSource(f: ProjectFacts, importFrom: string): string {
 
 const bullet = (items: string[]) => items.map((s) => `- ${s}`).join("\n");
 
-/** PROJECT.md 草稿：探测得到的事实先填上，其余留注释给 agent / 人补。 */
-export function projectDocDraft(f: ProjectFacts): string {
+/** 草稿里还没写完的地方用这个开头（doctor 按它数）。 / Marker for unfinished parts of the draft (doctor counts these). */
+export const TODO_MARK = /<!--\s*(待补|TODO)/g;
+
+/**
+ * PROJECT.md 草稿：探测得到的事实先填上，其余留注释给 agent / 人补。英文项目用英文章节标题。
+ * PROJECT.md draft: detected facts filled in, the rest left as comments for the agent or a human. English projects get English section titles.
+ */
+export function projectDocDraft(f: ProjectFacts, lang: Language = f.commitLanguage): string {
+  const L = pick(lang);
+  const h = (key: keyof typeof SECTIONS) => `## ${lang === "en" ? SECTIONS_EN[key] : SECTIONS[key]}`;
+  const todo = (zh: string, en: string) => L(`<!-- 待补：${zh} -->`, `<!-- TODO: ${en} -->`);
+  const list = (items: string[]) => items.join(L("、", ", "));
   const c = f.commands;
   const cmdLines = [
-    c.typecheck && `类型检查：\`${c.typecheck}\``,
-    c.lint && `lint：\`${c.lint}\``,
-    c.testFile && `跑单个测试文件：\`${c.testFile}\``,
-    c.format && `格式化：\`${c.format}\``,
+    c.typecheck && L(`类型检查：\`${c.typecheck}\``, `Type check: \`${c.typecheck}\``),
+    c.lint && `lint${L("：", ": ")}\`${c.lint}\``,
+    c.testFile && L(`跑单个测试文件：\`${c.testFile}\``, `Run one test file: \`${c.testFile}\``),
+    c.format && L(`格式化：\`${c.format}\``, `Format: \`${c.format}\``),
   ].filter(Boolean) as string[];
   const docLines = f.docs.filter((d) => !/^README\.md$/.test(d)).map((d) => `\`${d}\``);
+  const commitLang = f.commitLanguage === "zh" ? L("中文", "Chinese") : L("英文", "English");
   const sections = [
-    `# PROJECT.md（${f.name}）`,
+    L(`# PROJECT.md（${f.name}）`, `# PROJECT.md (${f.name})`),
     "",
-    "<!-- 由 sandpipe onboard 生成的草稿。章节规则见 sandpipe 的 templates/.sandcastle/PROJECT.md。 -->",
+    L(
+      "<!-- 由 sandpipe onboard 生成的草稿。章节规则见 sandpipe 的 templates/.sandcastle/PROJECT.md。 -->",
+      "<!-- Draft generated by sandpipe onboard. Section rules are in sandpipe's templates/.sandcastle/PROJECT.md. -->",
+    ),
     "",
-    "## 概况",
+    h("overview"),
     "",
-    "<!-- 待补：这是什么项目、给谁用；入口在哪。 -->",
+    todo("这是什么项目、给谁用；入口在哪。", "what this project is, who uses it, where the entry points are."),
     "",
     bullet([
-      `语言：${f.language}${f.packageManager ? `（包管理 ${f.packageManager}）` : ""}`,
-      `顶层目录：${f.topDirs.map((d) => `\`${d}/\``).join("、") || "（无）"}`,
+      L(`语言：${f.language}${f.packageManager ? `（包管理 ${f.packageManager}）` : ""}`, `Language: ${f.language}${f.packageManager ? ` (package manager ${f.packageManager})` : ""}`),
+      `${L("顶层目录：", "Top-level directories: ")}${list(f.topDirs.map((d) => `\`${d}/\``)) || L("（无）", "(none)")}`,
     ]),
     "",
     ...(f.services.length
-      ? ["## 运行环境", "", `测试依赖的服务：${f.services.join("、")}。连接已经由环境变量配好，不要改连接配置。`, ""]
-      : []),
-    "## 开发命令",
-    "",
-    cmdLines.length ? bullet(cmdLines) : "<!-- 待补：类型检查、lint、跑单个测试文件的命令 -->",
-    "",
-    "## 测试",
-    "",
-    f.testDirs.length ? bullet([`测试在 ${f.testDirs.map((d) => `\`${d}/\``).join("、")}`]) : "<!-- 待补：测试放哪、用什么框架 -->",
-    "",
-    ...(docLines.length ? ["## 领域与文档", "", bullet([`先读：${docLines.join("、")}`]), ""] : []),
-    ...(f.migrations
       ? [
-          "## 合并冲突",
+          h("environment"),
           "",
-          bullet([`${f.migrations.tool} 迁移（\`${f.migrations.dir}/\`）冲突时不要手工合并，rebase 结束后删掉本票的迁移重新生成。`]),
+          L(`测试依赖的服务：${list(f.services)}。连接已经由环境变量配好，不要改连接配置。`, `Services the tests use: ${list(f.services)}. Connections are already configured via environment variables; don't change them.`),
           "",
         ]
       : []),
-    "## 提交",
+    h("commands"),
+    "",
+    cmdLines.length ? bullet(cmdLines) : todo("类型检查、lint、跑单个测试文件的命令", "commands for type checking, lint, and running one test file"),
+    "",
+    h("testing"),
+    "",
+    f.testDirs.length
+      ? bullet([L(`测试在 ${list(f.testDirs.map((d) => `\`${d}/\``))}`, `Tests live in ${list(f.testDirs.map((d) => `\`${d}/\``))}`)])
+      : todo("测试放哪、用什么框架", "where tests live and which framework"),
+    "",
+    ...(docLines.length ? [h("domain"), "", bullet([`${L("先读：", "Read first: ")}${list(docLines)}`]), ""] : []),
+    ...(f.migrations
+      ? [
+          h("conflicts"),
+          "",
+          bullet([
+            L(
+              `${f.migrations.tool} 迁移（\`${f.migrations.dir}/\`）冲突时不要手工合并，rebase 结束后删掉本票的迁移重新生成。`,
+              `Don't merge ${f.migrations.tool} migration (\`${f.migrations.dir}/\`) conflicts by hand: after the rebase, delete this ticket's migrations and regenerate them.`,
+            ),
+          ]),
+          "",
+        ]
+      : []),
+    h("commit"),
     "",
     bullet([
-      `按仓库现有风格写${f.commitLanguage === "zh" ? "中文" : "英文"}提交信息（看 \`git log -n 3 --format=%B ${f.remote}/${f.baseBranch}\`）。`,
+      L(
+        `按仓库现有风格写${commitLang}提交信息（看 \`git log -n 3 --format=%B ${f.remote}/${f.baseBranch}\`）。`,
+        `Write commit messages in ${commitLang}, following the repo's existing style (see \`git log -n 3 --format=%B ${f.remote}/${f.baseBranch}\`).`,
+      ),
     ]),
     "",
   ];
   return sections.join("\n");
 }
 
-/** 基于模板的 Containerfile：没有网页界面就去掉浏览器验收那段。 */
+/**
+ * 基于模板的 Containerfile：没有网页界面就去掉浏览器验收那段，按项目语言补工具链。
+ * Containerfile from the template: drop the browser-check block when there's no web UI, add the project's toolchain.
+ */
 export function containerfileSource(template: string, f: ProjectFacts): string {
   let out = template;
   if (!f.webUi) out = out.replace(/# 浏览器验收[\s\S]*?rm -rf \/var\/lib\/apt\/lists\/\*\n\n/, "");
@@ -161,16 +226,22 @@ export function containerfileSource(template: string, f: ProjectFacts): string {
     rust: "RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*\n\n",
   };
   const extra = toolchain[f.language];
-  if (extra) out = out.replace("# Build-args for UID/GID", `# ${f.language} 工具链\n${extra}# Build-args for UID/GID`);
+  if (extra) out = out.replace(/^# 对齐 UID\/GID/m, (m) => `# ${f.language} 工具链\n# ${f.language} toolchain\n${extra}${m}`);
   if (f.forge.kind === "gitlab")
-    out = out.replace("# Install GitHub CLI", "# TODO：远端是 GitLab，要装 glab（GitLab Forge 还没做）\n# Install GitHub CLI");
+    out = out.replace(
+      /^# 装 GitHub CLI/m,
+      (m) => `# TODO：远端是 GitLab，要装 glab（GitLab Forge 还没做）\n# TODO: the remote is GitLab, install glab (the GitLab forge isn't done yet)\n${m}`,
+    );
   return out;
 }
 
-/** 流水线在 worktree 里写、不提交的目录（浏览器验收产物、playwright-cli 会话、验收说明）。 */
+/** 流水线在 worktree 里写、不提交的目录（浏览器验收产物、playwright-cli 会话、验收说明）。 / Directories the pipeline writes in the worktree and never commits (browser-check output, playwright-cli sessions, acceptance notes). */
 export const WORKSPACE_IGNORES = [".browser-check/", ".playwright-cli/", ".pr-notes/"];
 
-/** 往 .gitignore 内容里补上缺的条目（带一行说明注释）；已有的不重复加。返回新内容，不用改时返回 undefined。 */
+/**
+ * 往 .gitignore 内容里补上缺的条目（带一行说明注释）；已有的不重复加。返回新内容，不用改时返回 undefined。
+ * Add missing entries to .gitignore content (with a one-line comment), skipping existing ones. Returns the new content, or undefined when nothing changes.
+ */
 export function mergeIgnore(existing: string, entries: string[], comment: string): string | undefined {
   const have = new Set(existing.split("\n").map((l) => l.trim().replace(/^\//, "")));
   const missing = entries.filter((p) => !have.has(p) && !(p.endsWith("/") && have.has(p.slice(0, -1))));
@@ -179,14 +250,23 @@ export function mergeIgnore(existing: string, entries: string[], comment: string
   return `${existing}${sep}# ${comment}\n${missing.join("\n")}\n`;
 }
 
-/** 项目根目录 .gitignore 补上流水线的工作目录。 */
+/** 项目根目录 .gitignore 补上流水线的工作目录。 / Add the pipeline's working directories to the root .gitignore. */
 export const mergeGitignore = (existing: string) =>
-  mergeIgnore(existing, WORKSPACE_IGNORES, "Sandcastle：沙箱里浏览器验收的截图与结论、playwright-cli 会话、验收说明（编排脚本读出后附到 PR，不提交）");
+  mergeIgnore(
+    existing,
+    WORKSPACE_IGNORES,
+    "Sandcastle：沙箱里浏览器验收的截图与结论、playwright-cli 会话、验收说明（编排脚本读出后附到 PR，不提交）\n" +
+      "# Sandcastle: browser-check screenshots and results, playwright-cli sessions, acceptance notes (attached to the PR by the pipeline, not committed)",
+  );
 
-/** .sandcastle/ 下不提交的文件（和 templates/.sandcastle/gitignore 一致；老项目由 update 补上缺的）。 */
+/** .sandcastle/ 下不提交的文件；onboard 按它生成 .sandcastle/.gitignore，老项目由 update 补上缺的。 / Files under .sandcastle/ that aren't committed; onboard writes .sandcastle/.gitignore from this, and update adds what older projects lack. */
 export const SANDCASTLE_IGNORES = [".env", "logs/", "worktrees/", "tsconfig.json"];
 export const mergeSandcastleIgnore = (existing: string) =>
-  mergeIgnore(existing, SANDCASTLE_IGNORES, "Sandcastle：密钥、日志、worktree，以及指向本机工具路径的 tsconfig.json");
+  mergeIgnore(
+    existing,
+    SANDCASTLE_IGNORES,
+    "Sandcastle：密钥、日志、worktree，以及指向本机工具路径的 tsconfig.json\n# Sandcastle: secrets, logs, worktrees, and tsconfig.json pointing at this machine's tool path",
+  );
 
 /** 声明文件在工具里的位置（npm run build 生成）。 */
 export const TYPES_ENTRY = join(TOOL_ROOT, "dist/types/index.d.ts");
@@ -254,14 +334,18 @@ export function mergeSettings(existing: Settings): { settings: Settings; changed
 // 写文件
 // ---------------------------------------------------------------------------
 
-type Outcome = { file: string; status: "写入" | "已存在，跳过" | "已更新" | "无需改动" };
+type Outcome = { file: string; status: "written" | "skipped" | "updated" | "unchanged" };
+
+/** 终端上显示的状态。 / How a status is shown in the terminal. */
+const statusText = (s: Outcome["status"]) =>
+  ({ written: t("写入", "written"), skipped: t("已存在，跳过", "exists, skipped"), updated: t("已更新", "updated"), unchanged: t("无需改动", "unchanged") })[s];
 
 function writeIfMissing(root: string, file: string, content: string | (() => string)): Outcome {
   const path = join(root, file);
-  if (existsSync(path)) return { file, status: "已存在，跳过" };
+  if (existsSync(path)) return { file, status: "skipped" };
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, typeof content === "string" ? content : content());
-  return { file, status: "写入" };
+  return { file, status: "written" };
 }
 
 /** 工具里的文件；标签名占位符按默认标签填上（给人和交互式 claude 看的副本）。 */
@@ -294,22 +378,26 @@ export function updateClaudeFiles(root: string): string[] {
   return changed;
 }
 
-export function installFiles(root: string, f: ProjectFacts): Outcome[] {
+/**
+ * 装文件，已存在的跳过。lang 定 PROJECT.md 草稿的语言和配置里的 language。
+ * Install the files, skipping existing ones. lang sets the PROJECT.md draft language and the config's language.
+ */
+export function installFiles(root: string, f: ProjectFacts, lang: Language = f.commitLanguage): Outcome[] {
   const out: Outcome[] = [
-    writeIfMissing(root, ".sandcastle/sandcastle.config.ts", () => configSource(f, "sandpipe")),
-    writeIfMissing(root, ".sandcastle/PROJECT.md", () => projectDocDraft(f)),
+    writeIfMissing(root, ".sandcastle/sandcastle.config.ts", () => configSource(f, "sandpipe", lang)),
+    writeIfMissing(root, ".sandcastle/PROJECT.md", () => projectDocDraft(f, lang)),
     // 让 Node 把 .sandcastle/ 下的 .ts 当 ESM 加载（项目可能没有 package.json，或者是 CommonJS）
+    // Make Node load .sandcastle/*.ts as ESM (the project may have no package.json, or be CommonJS)
     writeIfMissing(root, ".sandcastle/package.json", '{ "type": "module" }\n'),
     writeIfMissing(root, ".sandcastle/models.json", () => tool("templates/.sandcastle/models.json")),
     writeIfMissing(root, ".sandcastle/.env.example", () => tool("templates/.sandcastle/.env.example")),
-    writeIfMissing(root, ".sandcastle/.gitignore", () => tool("templates/.sandcastle/gitignore") /* npm 打包会丢掉 .gitignore，模板里不带点 */),
     writeIfMissing(root, ".sandcastle/Containerfile", () => containerfileSource(tool("templates/.sandcastle/Containerfile"), f)),
     ...Object.entries(CLAUDE_FILES).map(([file, src]) => writeIfMissing(root, file, () => tool(src))),
   ];
   for (const file of syncLocalFiles(root)) {
     const o = out.find((x) => x.file === file);
-    if (o) o.status = o.status === "写入" ? "写入" : "已更新";
-    else out.push({ file, status: "写入" });
+    if (o) o.status = o.status === "written" ? "written" : "updated";
+    else out.push({ file, status: "written" });
   }
   const settingsPath = join(root, ".claude/settings.json");
   const existing = existsSync(settingsPath) ? (JSON.parse(readFileSync(settingsPath, "utf8")) as Settings) : {};
@@ -322,8 +410,8 @@ export function installFiles(root: string, f: ProjectFacts): Outcome[] {
   const ignoreBefore = existsSync(ignorePath) ? readFileSync(ignorePath, "utf8") : "";
   const ignoreAfter = mergeGitignore(ignoreBefore);
   if (ignoreAfter !== undefined) writeFileSync(ignorePath, ignoreAfter);
-  out.push({ file: ".gitignore", status: ignoreAfter === undefined ? "无需改动" : ignoreBefore ? "已更新" : "写入" });
-  out.push({ file: ".claude/settings.json", status: changed ? (Object.keys(existing).length ? "已更新" : "写入") : "无需改动" });
+  out.push({ file: ".gitignore", status: ignoreAfter === undefined ? "unchanged" : ignoreBefore ? "updated" : "written" });
+  out.push({ file: ".claude/settings.json", status: changed ? (Object.keys(existing).length ? "updated" : "written") : "unchanged" });
   return out;
 }
 
@@ -331,15 +419,23 @@ export function installFiles(root: string, f: ProjectFacts): Outcome[] {
 // agent 补全 PROJECT.md
 // ---------------------------------------------------------------------------
 
-export function onboardPrompt(f: ProjectFacts): string {
+/**
+ * 补全 PROJECT.md 的提示词。提示词本身是中文；英文项目在开头加一条输出语言规则（和流水线提示词的做法一样）。
+ * Prompt for completing PROJECT.md. The prompt itself is Chinese; English projects get an output-language rule up front (as the pipeline prompts do).
+ */
+export function onboardPrompt(f: ProjectFacts, lang: Language = f.commitLanguage): string {
   const facts = JSON.stringify({ ...f, root: undefined }, null, 2);
-  return tool("prompts/onboard.md")
+  const rule =
+    lang === "en"
+      ? `Output language: write PROJECT.md in English and use the English section titles instead of the Chinese ones in the template below (${(Object.keys(SECTIONS) as (keyof typeof SECTIONS)[]).map((k) => `${SECTIONS[k]} → \`## ${SECTIONS_EN[k]}\``).join(", ")}). Write your final notes in English too. The instructions below are in Chinese; read them, but answer in English.\n\n`
+      : "";
+  return rule + tool("prompts/onboard.md")
     .replace("{{FACTS}}", () => facts)
     .replace("{{TEMPLATE}}", () => tool("templates/.sandcastle/PROJECT.md"))
     .replace("{{EXAMPLE}}", () => tool("templates/example-PROJECT.md"));
 }
 
-function runAgent(root: string, f: ProjectFacts, model: string): string {
+function runAgent(root: string, f: ProjectFacts, model: string, lang: Language): string {
   const allowed = [
     "Read",
     "Grep",
@@ -355,7 +451,7 @@ function runAgent(root: string, f: ProjectFacts, model: string): string {
   ];
   return execFileSync(
     "claude",
-    ["-p", onboardPrompt(f), "--model", model, "--allowedTools", allowed.join(","), "--output-format", "text"],
+    ["-p", onboardPrompt(f, lang), "--model", model, "--allowedTools", allowed.join(","), "--output-format", "text"],
     {
       cwd: root,
       encoding: "utf8",
@@ -374,58 +470,78 @@ export function onboard(argv: string[], root = process.cwd()) {
   const noAgent = argv.includes("--no-agent");
   const modelIdx = argv.indexOf("--model");
   const model = modelIdx >= 0 ? argv[modelIdx + 1] : "opus";
+  const langArg = argv.includes("--lang") ? argv[argv.indexOf("--lang") + 1] : undefined;
+  if (langArg !== undefined && langArg !== "zh" && langArg !== "en") throw new Error(t(`--lang 只能是 zh 或 en，收到「${langArg}」`, `--lang must be zh or en, got "${langArg}"`));
 
   const f = detectProject(root);
+  // 生成的文件和之后的终端输出用同一种语言：--lang，没给时按提交信息。
+  // Generated files and the terminal output from here on use one language: --lang, else the commit messages'.
+  const lang: Language = langArg ?? f.commitLanguage;
+  setTermLanguage(lang);
+  const none = t("（无）", "(none)");
+  const list = (xs: string[]) => xs.join(t("、", ", ")) || none;
   console.log(
-    `探测：${f.name}（${f.language}${f.packageManager ? ` / ${f.packageManager}` : ""}），远端 ${f.remote} → ${f.forge.kind}${f.forge.path ? ` ${f.forge.path}` : ""}，基线 ${f.baseBranch}`,
+    t(
+      `探测：${f.name}（${f.language}${f.packageManager ? ` / ${f.packageManager}` : ""}），远端 ${f.remote} → ${f.forge.kind}${f.forge.path ? ` ${f.forge.path}` : ""}，基线 ${f.baseBranch}`,
+      `Detected: ${f.name} (${f.language}${f.packageManager ? ` / ${f.packageManager}` : ""}), remote ${f.remote} → ${f.forge.kind}${f.forge.path ? ` ${f.forge.path}` : ""}, base ${f.baseBranch}`,
+    ),
   );
+  const cmds = Object.entries(f.commands)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(t("；", "; "));
+  console.log(`  ${t("命令：", "Commands: ")}${cmds || t("（没探测到）", "(none detected)")}`);
+  const migrations = f.migrations ? `${f.migrations.tool} ${f.migrations.dir}` : none;
   console.log(
-    `  命令：${
-      Object.entries(f.commands)
-        .filter(([, v]) => v)
-        .map(([k, v]) => `${k}=${v}`)
-        .join("；") || "（没探测到）"
-    }`,
+    t(
+      `  文档：${list(f.docs)}；测试目录：${list(f.testDirs)}；服务：${list(f.services)}；迁移：${migrations}；网页界面：${f.webUi ? "有" : "无"}`,
+      `  Docs: ${list(f.docs)}; test dirs: ${list(f.testDirs)}; services: ${list(f.services)}; migrations: ${migrations}; web UI: ${f.webUi ? "yes" : "no"}`,
+    ),
   );
-  console.log(
-    `  文档：${f.docs.join("、") || "（无）"}；测试目录：${f.testDirs.join("、") || "（无）"}；服务：${f.services.join("、") || "（无）"}；迁移：${f.migrations ? `${f.migrations.tool} ${f.migrations.dir}` : "（无）"}；网页界面：${f.webUi ? "有" : "无"}`,
-  );
-  if (f.forge.kind === "gitlab") console.warn("  ⚠ 远端是 GitLab：GitLab Forge 还没做，文件照常生成，但先别跑");
+  if (f.forge.kind === "gitlab")
+    console.warn(t("  ⚠ 远端是 GitLab：GitLab Forge 还没做，文件照常生成，但先别跑", "  ⚠ The remote is GitLab: the GitLab forge isn't done yet. Files are generated, but don't run it yet"));
 
   const docExisted = existsSync(join(root, ".sandcastle/PROJECT.md"));
-  for (const o of installFiles(root, f))
-    console.log(`  ${o.status === "已存在，跳过" || o.status === "无需改动" ? "·" : "✓"} ${o.file}：${o.status}`);
+  for (const o of installFiles(root, f, lang))
+    console.log(`  ${o.status === "skipped" || o.status === "unchanged" ? "·" : "✓"} ${o.file}${t("：", ": ")}${statusText(o.status)}`);
 
   if (noAgent || docExisted) {
-    if (docExisted) console.log("PROJECT.md 已存在，不再让 agent 重写。");
+    if (docExisted) console.log(t("PROJECT.md 已存在，不再让 agent 重写。", "PROJECT.md already exists; not asking the agent to rewrite it."));
   } else {
-    console.log(`\n让 agent（${model}）读代码补全 .sandcastle/PROJECT.md，几分钟……`);
+    console.log(t(`\n让 agent（${model}）读代码补全 .sandcastle/PROJECT.md，几分钟……`, `\nAsking the agent (${model}) to read the code and complete .sandcastle/PROJECT.md, a few minutes…`));
     try {
-      const notes = runAgent(root, f, model);
+      const notes = runAgent(root, f, model, lang);
       mkdirSync(join(root, ".sandcastle/logs"), { recursive: true });
       writeFileSync(join(root, ".sandcastle/logs/onboard.md"), notes);
-      console.log(`\n${notes.trim()}\n（已存到 .sandcastle/logs/onboard.md）`);
+      console.log(`\n${notes.trim()}\n${t("（已存到 .sandcastle/logs/onboard.md）", "(saved to .sandcastle/logs/onboard.md)")}`);
     } catch (e) {
-      console.warn(`  ⚠ agent 补全失败，PROJECT.md 保留草稿：${String((e as Error).message).slice(0, 300)}`);
+      console.warn(t("  ⚠ agent 补全失败，PROJECT.md 保留草稿：", "  ⚠ The agent failed; PROJECT.md keeps the draft: ") + String((e as Error).message).slice(0, 300));
     }
   }
 
   try {
     parseProjectDoc(readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8"));
-    console.log("✓ PROJECT.md 校验通过");
+    console.log(t("✓ PROJECT.md 校验通过", "✓ PROJECT.md is valid"));
   } catch (e) {
-    console.warn(`⚠ PROJECT.md 校验没过：${(e as Error).message}`);
+    console.warn(t("⚠ PROJECT.md 校验没过：", "⚠ PROJECT.md is invalid: ") + (e as Error).message);
   }
 
+  const checklist = join(TOOL_ROOT, manual("onboarding-checklist", lang));
   console.log(
     [
       "",
-      "接下来：",
-      "  1. 看一遍 .sandcastle/PROJECT.md 和 sandcastle.config.ts（门槛、测试隔离），改成符合项目实际的样子",
-      "  2. cp .sandcastle/.env.example .sandcastle/.env，填 token",
-      `  3. 建镜像：podman build -t ${defaultImageName(root)} -f .sandcastle/Containerfile .sandcastle`,
-      "  4. sandpipe doctor --fix 检查一遍（顺带建好标签）",
-      `  5. 之后按 ${join(TOOL_ROOT, "docs/onboarding-checklist.md")}：baseline 跑一次完整门槛 → 金丝雀票 → 真实小票 → 打开自动合并`,
+      t("接下来：", "Next:"),
+      t(
+        "  1. 看一遍 .sandcastle/PROJECT.md 和 sandcastle.config.ts（门槛、测试隔离），改成符合项目实际的样子",
+        "  1. Read .sandcastle/PROJECT.md and sandcastle.config.ts (gate, test isolation) and make them match the project",
+      ),
+      t("  2. cp .sandcastle/.env.example .sandcastle/.env，填 token", "  2. cp .sandcastle/.env.example .sandcastle/.env and fill in the tokens"),
+      `  3. ${t("建镜像：", "Build the image: ")}podman build -t ${defaultImageName(root)} -f .sandcastle/Containerfile .sandcastle`,
+      t("  4. sandpipe doctor --fix 检查一遍（顺带建好标签）", "  4. sandpipe doctor --fix to check everything (and create the labels)"),
+      t(
+        `  5. 之后按 ${checklist}：baseline 跑一次完整门槛 → 金丝雀票 → 真实小票 → 打开自动合并`,
+        `  5. Then follow ${checklist}: baseline full gate → canary ticket → real small tickets → enable auto-merge`,
+      ),
     ].join("\n"),
   );
 }

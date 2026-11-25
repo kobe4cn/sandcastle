@@ -1,6 +1,12 @@
 # sandpipe：开发说明
 
-使用说明见 README.md（会随安装包发布）。这份只在私有仓库里。
+使用说明见 README.md（英文）和 README.zh-CN.md（中文），会随安装包发布。这份只在私有仓库里。
+
+## 文档的语言
+
+- 给人看的手册（README、`docs/config`、`docs/onboarding-checklist`）中英各一份：`X.md` 是英文，`X.zh-CN.md` 是中文。改一份就同步另一份；`test/docs-i18n.test.ts` 检查两份的标题结构和表格行数一致。
+- 给 agent 看的（`prompts/`、`claude/`）只有一份，不翻译。
+- `docs/internal/` 是内部文档（设计说明、测试计划），只用中文，不发布。
 
 在 [`@ai-hero/sandcastle`](https://github.com/mattpocock/sandcastle)（沙箱、跑 agent、worktree）之上的 issue → PR → 合并流水线，
 从 duckdb_crm 的 `.sandcastle/` 抽出来：prep 拆票写指引、确定性排期（blocker、同文件冲突）、implement + review（revise 打回）、
@@ -24,7 +30,7 @@
 | `templates/.sandcastle/` | 装到新项目的 PROJECT.md 模板、配置模板、Containerfile、models.json |
 | `claude/` | 上下文预算 hook、screenshot-checker 子代理、prep-ticket skill |
 | `examples/duckdb_crm/` | 第一个接入方的完整配置 |
-| `docs/` | 状态机、票的大小规则等（从 duckdb_crm 复制，尚未通用化） |
+| `docs/` | 用户手册（中英两份）；`docs/internal/` 是内部文档 |
 
 ## 在项目里用
 
@@ -70,7 +76,7 @@ npm run build      # esbuild 打包、压缩到 dist/（npm pack 前自动跑）
 2. 提交，`git tag v<版本> && git push --tags`。
 3. `.github/workflows/release.yml` 跑类型检查和测试，`npm pack` 后把 `sandpipe.tgz` 发到公开仓库 `package.json` 的 `sandcastle.releases`。
 
-公开的只有安装包（压缩过的 JS、提示词、模板、`docs/config.md`、`docs/onboarding-checklist.md`），见 `package.json` 的 `files`。
+公开的只有安装包（压缩过的 JS、提示词、模板、`docs/config`、`docs/onboarding-checklist` 的中英两份），见 `package.json` 的 `files`。
 `examples/`、其余 `docs/`、测试和源码都不发布。往这些发布的文件里写东西时，不要写进具体项目（比如 duckdb_crm）的内部信息。
 
 一次性准备：
@@ -81,7 +87,7 @@ npm run build      # esbuild 打包、压缩到 dist/（npm pack 前自动跑）
 
 - 第 1、2 步已完成：抽出 Forge 与 ProjectProfile，duckdb_crm 的项目差异全在 `examples/duckdb_crm/sandcastle.config.ts`。
 - 第 4 步已完成：提示词通用化，项目知识收进 `PROJECT.md`（duckdb_crm 的见 `examples/duckdb_crm/PROJECT.md`）。
-- `docs/` 里除 config.md、onboarding-checklist.md 外仍是 duckdb_crm 的写法，不发布。
+- `docs/internal/` 里的 sandcastle.md 等仍是 duckdb_crm 的写法，不发布。
 - 第 9 步已完成：打包（esbuild）、发版流程、`update` / `upgrade`、prep-ticket skill 通用化并由 onboard 安装。
 - 第 6、7、8 步已完成：`onboard`、`doctor`、接入检查清单（`baseline` 命令与 `autoMerge` 开关）。
 - 还没有 GitLab Forge。

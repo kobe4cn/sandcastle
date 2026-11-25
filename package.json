@@ -26,8 +26,11 @@
     "templates",
     "claude",
     "docs/onboarding-checklist.md",
+    "docs/onboarding-checklist.zh-CN.md",
     "docs/config.md",
+    "docs/config.zh-CN.md",
     "README.md",
+    "README.zh-CN.md",
     "CHANGELOG.md"
   ],
   "sandcastle": {

@@ -1,5 +1,11 @@
 # 更新记录
 
+## 未发布
+
+- 用户手册中英两份：`README.md`、`docs/config.md`、`docs/onboarding-checklist.md` 是英文，同名的 `.zh-CN.md` 是中文。内部文档移到 `docs/internal/`。
+- onboard 生成的文件（`sandcastle.config.ts`、`.gitignore`、`.env.example`、`Containerfile`）注释都是中英两行。
+- `sandpipe onboard --lang zh|en`：PROJECT.md 草稿（章节标题、待补标记）和配置里的 `language` 按它写，没给时按提交信息判断。
+
 ## 0.1.2
 
 - 新增配置 `language: "zh" | "en"`（默认 `zh`）：issue、PR、评论用什么语言写。onboard 按提交历史判断并写进配置。

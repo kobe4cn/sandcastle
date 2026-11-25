@@ -30,7 +30,7 @@
 //                    接着改：只做普通 push，不 rebase、不合并、不删分支，结果评论在 PR 上留给人合并。
 //
 // 每个阶段用哪个模型（Claude 订阅或别家的 Anthropic 兼容接口）、撞限额时换哪个：.sandcastle/models.json（models.ts）。
-// 标签状态机见 docs/sandcastle.md。
+// 标签状态机见 docs/config.md 的「标签」；完整的设计说明见 docs/internal/sandcastle.md。
 //
 // 随项目变的部分（托管平台、测试隔离、门槛、合并前检查、自动开票的文案）都在目标项目的
 // .sandcastle/sandcastle.config.ts（profile.ts 的 ProjectProfile）；托管平台的操作都走 Forge（forge.ts）。

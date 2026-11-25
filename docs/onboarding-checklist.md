@@ -1,55 +1,57 @@
-# 新项目接入检查清单
+# New project onboarding checklist
 
-从 `onboard` 到放手让 Sandcastle 自动合并，按顺序走；某一步没过就停下修，不要跳。
-命令都在目标项目根目录跑；配置放在别处时先 `export SANDCASTLE_PROJECT_DIR=<目录>`。
+[中文](onboarding-checklist.zh-CN.md) | English
 
-## 0. 生成配置
+Go in order, from `onboard` to letting Sandcastle merge on its own. If a step fails, stop and fix it; don't skip ahead.
+Run every command in the target project's root; if the config lives elsewhere, first `export SANDCASTLE_PROJECT_DIR=<dir>`.
 
-- [ ] `sandpipe onboard`，生成 `.sandcastle/`，agent 补全 PROJECT.md
-- [ ] 人看一遍 `PROJECT.md`：去掉所有 `<!-- 待补` 标记，命令、目录、约定都和项目实际一致
-- [ ] 人看一遍 `sandcastle.config.ts`：
-  - `install.onSandboxReady` 在 linux 容器里能装好依赖
-  - `isolation.env` 让每张票用独立的库名或前缀（并行时互不清表）；有外部服务时配上 `cleanup`
-  - `gate.script` 就是你愿意据此合并的门槛；有迁移时考虑配 `integrity`
-  - 保持 onboard 生成的 `autoMerge: false`、`maxParallel: 1`
-- [ ] `cp .sandcastle/.env.example .sandcastle/.env`，填好 token
-- [ ] 按 onboard 最后打印的命令建镜像（`podman build -t sandcastle:<项目> …`）
+## 0. Generate the config
 
-## 1. doctor 全过
+- [ ] `sandpipe onboard` generates `.sandcastle/`, and the agent fills in PROJECT.md
+- [ ] A human reads `PROJECT.md`: remove every `<!-- TODO` marker; commands, directories and conventions match the project
+- [ ] A human reads `sandcastle.config.ts`:
+  - `install.onSandboxReady` installs dependencies in a linux container
+  - `isolation.env` gives each ticket its own database name or prefix (so parallel tickets don't wipe each other's tables); set `cleanup` when there are external services
+  - `gate.script` is a gate you're willing to merge on; consider `integrity` if there are migrations
+  - Keep the `autoMerge: false` and `maxParallel: 1` that onboard generated
+- [ ] `cp .sandcastle/.env.example .sandcastle/.env` and fill in the tokens
+- [ ] Build the image with the command onboard printed at the end (`podman build -t sandcastle:<project> …`)
 
-- [ ] `sandpipe doctor --fix`：没有 ✗。⚠ 要逐条看过，确认可以接受
+## 1. doctor passes
 
-## 2. 门槛基线
+- [ ] `sandpipe doctor --fix`: no ✗. Read every ⚠ and confirm it's acceptable
 
-- [ ] `sandpipe baseline`：在沙箱里对 `origin/main` 跑一次完整门槛，必须通过
-  - 没过：要么 main 本来就坏，要么 `gate.script` / `isolation` / `install` 在沙箱里不对。修好再跑，不要带着红的基线做票
-  - 通过但提示有偶发失败：记下 `GATE_FLAKY` 列出的文件，先修，或者暂时从门槛里排除
-- [ ] 记下这次门槛用了多久（输出里的 `GATE_TIME`），作为之后判断门槛是否变慢的参照
+## 2. Gate baseline
 
-## 3. 金丝雀票（只开 PR）
+- [ ] `sandpipe baseline`: runs the full gate once against `origin/main` in a sandbox, and it must pass
+  - If it fails: either main is already broken, or `gate.script` / `isolation` / `install` is wrong in the sandbox. Fix it and rerun; don't work tickets on a red baseline
+  - If it passes but reports flaky failures: note the files listed by `GATE_FLAKY` and fix them first, or exclude them from the gate for now
+- [ ] Note how long the gate took (`GATE_TIME` in the output), as a reference for spotting a slower gate later
 
-- [ ] 开一张几乎不会失败的小票，比如改一处文案或补一条注释，打上 `Sandcastle` 标签
-- [ ] `SANDCASTLE_ONLY=<票号> sandpipe`
-- [ ] 核对：
-  - prep 写了 `## Implementation guide`，标签按状态机走（见 docs/config.md 的「标签」）
-  - PR 正文有 Review、Gate、用量；改了页面时有验收说明
-  - 因为 `autoMerge: false`，PR 留着等人合并，评论写明原因
-  - `.sandcastle/logs/` 里没有异常；沙箱、worktree 和测试库都清干净了
-- [ ] 人审过后手动合并
+## 3. Canary ticket (PR only)
 
-## 4. 真实小票（人工合并）
+- [ ] Open a small ticket that can hardly fail, such as changing a piece of copy or adding a comment, and label it `Sandcastle`
+- [ ] `SANDCASTLE_ONLY=<number> sandpipe`
+- [ ] Check:
+  - prep wrote `## Implementation guide`, and the labels follow the state machine (see "Labels" in docs/config.md)
+  - The PR body has Review, Gate and Usage; acceptance notes are there when pages changed
+  - Because of `autoMerge: false`, the PR is left for a human to merge, with a comment saying why
+  - Nothing odd in `.sandcastle/logs/`; the sandbox, worktree and test databases are all cleaned up
+- [ ] Merge by hand after a human review
 
-- [ ] 挑一张真实的小票（验收标准不超过 3 条），同样用 `SANDCASTLE_ONLY` 跑
-- [ ] 人审 PR：改动是否在票的范围内，测试是否真的覆盖了验收标准，reviewer 的结论你是否同意
-- [ ] 如果涉及迁移、页面、跨模块，再各跑一张这种类型的票
-- [ ] 连续几张票（建议 3 张以上）reviewer 给 merge 时你也都会合，才进下一步
+## 4. Real small tickets (merged by hand)
 
-## 5. 放开
+- [ ] Pick a real small ticket (at most 3 acceptance criteria) and run it the same way with `SANDCASTLE_ONLY`
+- [ ] Review the PR: does the change stay within the ticket, do the tests really cover the acceptance criteria, do you agree with the reviewer's verdict
+- [ ] If migrations, pages or cross-module changes are involved, run one ticket of each kind
+- [ ] Move on only after several tickets in a row (3 or more suggested) where the reviewer said merge and you would have merged too
 
-- [ ] `sandcastle.config.ts` 去掉 `autoMerge: false`（默认就是自动合并）
-- [ ] `maxParallel` 逐步调高；上限看测试依赖的服务（比如数据库连接数）和机器负载
-- [ ] 前几轮去掉 `SANDCASTLE_ONLY` 跑全部带标签的票时，留意：兜底完整测试是否通过，有没有自动开出 `main-broken` / `flaky` 票
+## 5. Let go
 
-## 回退
+- [ ] Remove `autoMerge: false` from `sandcastle.config.ts` (auto-merge is the default)
+- [ ] Raise `maxParallel` gradually; the limit depends on the services the tests use (such as database connections) and machine load
+- [ ] For the first few runs without `SANDCASTLE_ONLY` over all labelled tickets, watch whether the fallback full run passes and whether `main-broken` / `flaky` tickets get opened
 
-出问题时把 `autoMerge` 改回 `false`、`maxParallel` 改回 `1`，回到第 3、4 步。
+## Rolling back
+
+When something goes wrong, set `autoMerge` back to `false` and `maxParallel` back to `1`, and return to steps 3 and 4.

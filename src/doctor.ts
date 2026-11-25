@@ -9,7 +9,7 @@ import { parseEnv } from "node:util";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import type { Forge } from "./forge.ts";
 import { inspectModels } from "./models.ts";
-import { CLAUDE_FILES, HOOK_FILE, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
+import { CLAUDE_FILES, HOOK_FILE, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
 import { configDir, loadProject, type Labels, type Project } from "./profile.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { trySh, type TryResult } from "./shell.ts";
@@ -86,7 +86,7 @@ export async function diagnose(opts: {
       });
     const source = readFileSync(join(dir, "PROJECT.md"), "utf8");
     const browser = doc.hasBrowser ? "有浏览器验收" : "没有「浏览器验收」：改页面的票会留给人看";
-    const todo = source.match(/<!--\s*待补/g)?.length ?? 0;
+    const todo = source.match(TODO_MARK)?.length ?? 0;
     if (todo) add("PROJECT.md", "warn", `还有 ${todo} 处「待补」，是没写完的草稿；${browser}`, "跑 onboard 让 agent 补全，或手工写完");
     else add("PROJECT.md", "ok", `能渲染进提示词；${browser}`);
   } catch (e) {

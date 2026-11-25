@@ -249,7 +249,7 @@ export async function loadProject(dir = configDir()): Promise<Project> {
   registerSelfResolver();
   const file = join(dir, CONFIG_FILE);
   if (!existsSync(file))
-    throw new Error(`找不到 ${file}：在项目根目录运行、用 SANDCASTLE_PROJECT_DIR 指定配置目录，或先写好项目配置（见 templates/.sandcastle/sandcastle.config.ts）。`);
+    throw new Error(`找不到 ${file}：在项目根目录运行、用 SANDCASTLE_PROJECT_DIR 指定配置目录，或先跑 sandpipe onboard 生成项目配置（字段见 docs/config.md）。`);
   const mod = (await import(pathToFileURL(file).href)) as { default?: ProjectProfile };
   if (!mod.default) throw new Error(`${file} 没有 default export（应为 export default defineProject({...})）。`);
   return resolveProject(mod.default);
