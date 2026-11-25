@@ -525,13 +525,28 @@ const questionsFormat = (factsHandling: string, lang: Language) => [
   "示例：",
   "",
   "```markdown",
-  "# 缺口清单",
-  "",
-  "- [意图] 哪些操作必须交给人（红线）？ → PROJECT.md「必须停下」",
-  "- [规范] 提交信息用中文还是英文？ → PROJECT.md「提交」",
-  "- [意图] 项目还没有术语表 → GLOSSARY.md",
+  ...(lang === "en" ? QUESTIONS_EXAMPLE_EN : QUESTIONS_EXAMPLE),
   "```",
 ].join("\n");
+
+/**
+ * 缺口清单示例：中文项目一套、英文项目一套，节名和所在项目的 PROJECT.md 一致。
+ * Open questions examples: one for Chinese projects, one for English ones, with section names matching that project's PROJECT.md.
+ */
+const QUESTIONS_EXAMPLE = [
+  "# 缺口清单",
+  "",
+  `- [意图] 哪些操作必须交给人（红线）？ → PROJECT.md「${SECTIONS.redLines}」`,
+  `- [规范] 提交信息用中文还是英文？ → PROJECT.md「${SECTIONS.commit}」`,
+  "- [意图] 项目还没有术语表 → GLOSSARY.md",
+];
+const QUESTIONS_EXAMPLE_EN = [
+  "# Open questions",
+  "",
+  `- [intent] Which operations must be left to a human (red lines)? → PROJECT.md「${SECTIONS_EN.redLines}」`,
+  `- [convention] Are commit messages in Chinese or English? → PROJECT.md「${SECTIONS_EN.commit}」`,
+  "- [intent] The project has no glossary yet → GLOSSARY.md",
+];
 
 /**
  * 英文项目的清单写法：标题和类别换成英文。

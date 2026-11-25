@@ -316,11 +316,16 @@ describe("questionsPrompt / --questions-only", () => {
       expect(p).not.toContain(en.join("、"));
       expect(p).toContain("不能新建");
     }
-    for (const p of [questionsPrompt(detectProject(pythonRepo()), "en", projectMd), onboardPrompt(detectProject(pythonRepo()), "en")]) {
+    const qEn = questionsPrompt(detectProject(pythonRepo()), "en", projectMd);
+    const oEn = onboardPrompt(detectProject(pythonRepo()), "en");
+    for (const p of [qEn, oEn]) {
       for (const s of en) expect(p).toContain(s);
       expect(p).not.toContain(zh.join("、"));
       expect(p).toContain("不能新建");
     }
+    // 完整 onboard 带着中文模板（开头的规则把节名映射成英文），只有 --questions-only 能断言一个中文节名都没有。
+    // A full onboard carries the Chinese template (the rule up front maps titles to English); only --questions-only can assert no Chinese title at all.
+    for (const s of zh) expect(qEn).not.toContain(s);
   });
 
   it("questionsOnlyPrecheck：清单已存在 / 没有 PROJECT.md / 都满足", () => {
