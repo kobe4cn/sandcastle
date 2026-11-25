@@ -113,6 +113,33 @@ describe("updateClaudeFiles", () => {
     expect(updateClaudeFiles(root)).toEqual([]);
     expect(readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8")).toBe("人改过");
   });
+
+  it("onboard 装上 fill-project-docs skill 和 NOTICE；update 只覆盖改过的，再跑没有改动", () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    const skill = join(root, ".claude/skills/fill-project-docs/SKILL.md");
+    const original = readFileSync(skill, "utf8");
+    expect(original).toContain("name: fill-project-docs");
+    const notice = readFileSync(join(root, ".claude/skills/fill-project-docs/NOTICE"), "utf8");
+    expect(notice).toContain("Matt Pocock");
+    expect(notice).toContain("MIT");
+    writeFileSync(skill, "旧版");
+    expect(updateClaudeFiles(root)).toEqual([".claude/skills/fill-project-docs/SKILL.md"]);
+    expect(readFileSync(skill, "utf8")).toBe(original);
+    expect(updateClaudeFiles(root)).toEqual([]);
+  });
+
+  it("fill-project-docs：description 写明何时用，正文涵盖清单、答案写到哪和自检", () => {
+    const skill = readFileSync(new URL("../claude/skills/fill-project-docs/SKILL.md", import.meta.url), "utf8");
+    const description = skill.match(/^description: (.+)$/m)?.[1] ?? "";
+    expect(description).toMatch(/onboard/);
+    expect(description).toMatch(/doctor/);
+    for (const s of ["OPEN-QUESTIONS", "GLOSSARY.md", "CONTEXT.md", "ADR", "必须停下", "Stop and ask", "领域与文档", "Domain and docs", "sandpipe doctor"]) {
+      expect(skill).toContain(s);
+    }
+    // 不能有标签占位符：toolFile 会替换它
+    expect(skill).not.toMatch(/\{\{L_/);
+  });
 });
 
 describe("全局 prep-ticket skill", () => {

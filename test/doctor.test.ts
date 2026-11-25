@@ -257,6 +257,14 @@ describe("diagnose：.claude/ 文件与版本", () => {
     expect(check(await diagnose(base), "版本")).toBeUndefined();
   });
 
+  it("fill-project-docs skill 被改过：警告并提示 update", async () => {
+    const root = readyRepo();
+    writeFileSync(join(root, ".claude/skills/fill-project-docs/SKILL.md"), "旧版");
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+    expect(check(checks, "Claude 文件")).toMatchObject({ level: "warn", fix: "sandpipe update" });
+    expect(check(checks, "Claude 文件")?.detail).toContain(".claude/skills/fill-project-docs/SKILL.md");
+  });
+
   it("全局 skill 装过但不是当前版本：警告（它会盖过项目里的）；没装或已是当前版本：不提", async () => {
     const root = readyRepo();
     const home = mkdtempSync(join(tmpdir(), "home-"));

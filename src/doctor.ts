@@ -331,7 +331,7 @@ export async function diagnose(opts: {
     })
     .map(([file]) => file);
   const C = t("Claude 文件", "Claude files");
-  if (!stale.length) add(C, "ok", t("hook、子代理、skill 都是当前版本", "hook, subagent and skill are current"));
+  if (!stale.length) add(C, "ok", t("hook、子代理、skills 都是当前版本", "hook, subagent and skills are current"));
   else add(C, "warn", t("和当前版本不一致或缺失：", "Outdated or missing: ") + stale.join(t("、", ", ")), "sandpipe update");
   // 全局 skill 盖过项目里的同名 skill：装过的话它也得是当前版本
   // The global skill shadows the project's copy: if installed, it must be current too

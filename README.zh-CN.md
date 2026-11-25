@@ -60,7 +60,7 @@ SANDCASTLE_ONLY=12 sandpipe    # 只做 #12；不设就处理全部带标签的�
 | `.sandcastle/models.json` | 各阶段（prep / implement / review …）用哪个模型 |
 | `.sandcastle/.env` | token，不提交 |
 | `.sandcastle/Containerfile` | 沙箱镜像 |
-| `.claude/` | 上下文预算 hook、截图查看子代理、`/prep-ticket` skill |
+| `.claude/` | 上下文预算 hook、截图查看子代理、`/prep-ticket` 和 `/fill-project-docs` skill |
 
 ## 命令
 

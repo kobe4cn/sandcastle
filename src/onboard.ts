@@ -8,8 +8,8 @@
 //      .sandcastle/sandcastle.config.ts  怎么跑（安装、隔离、门槛） / how to run (install, isolation, gate)
 //      .sandcastle/PROJECT.md            项目知识草稿 / project knowledge draft
 //      .sandcastle/models.json、.env.example、.gitignore、Containerfile
-//      .claude/ 下的 hook、子代理、skill（CLAUDE_FILES，给 agent 看，只有一种语言），并在 .claude/settings.json 里登记 hook
-//      the hook, subagent and skill under .claude/ (CLAUDE_FILES, agent-facing, one language only), registering the hook in .claude/settings.json
+//      .claude/ 下的 hook、子代理、skills（CLAUDE_FILES，给 agent 看，只有一种语言），并在 .claude/settings.json 里登记 hook
+//      the hook, subagent and skills under .claude/ (CLAUDE_FILES, agent-facing, one language only), registering the hook in .claude/settings.json
 // 3. 补全 PROJECT.md（默认开，--no-agent 跳过）：宿主机上跑一次 claude -p，读代码把草稿写完整，拿不准的写进缺口清单 OPEN-QUESTIONS.md；
 //    只许改这两个文件（清单已存在时只许改 PROJECT.md）；写完按 parseProjectDoc 和 parseOpenQuestions 校验。
 //    Complete PROJECT.md (on by default, --no-agent skips it): one claude -p on the host reads the code, finishes the draft and puts open points into OPEN-QUESTIONS.md;
@@ -387,6 +387,8 @@ export const CLAUDE_FILES: Record<string, string> = {
   ".claude/agents/screenshot-checker.md": "claude/agents/screenshot-checker.md",
   ".claude/skills/prep-ticket/SKILL.md": "claude/skills/prep-ticket/SKILL.md",
   ".claude/skills/prep-ticket/ticket-sizing.md": "prompts/ticket-sizing.md",
+  ".claude/skills/fill-project-docs/SKILL.md": "claude/skills/fill-project-docs/SKILL.md",
+  ".claude/skills/fill-project-docs/NOTICE": "claude/skills/fill-project-docs/NOTICE",
 };
 
 /**

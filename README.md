@@ -60,7 +60,7 @@ New projects only open PRs by default and don't auto-merge (`autoMerge: false`),
 | `.sandcastle/models.json` | Which model each phase (prep / implement / review …) uses |
 | `.sandcastle/.env` | Tokens, not committed |
 | `.sandcastle/Containerfile` | Sandbox image |
-| `.claude/` | Context budget hook, screenshot-viewing subagent, `/prep-ticket` skill |
+| `.claude/` | Context budget hook, screenshot-viewing subagent, `/prep-ticket` and `/fill-project-docs` skills |
 
 ## Commands
 
