@@ -48,6 +48,26 @@ const note = (indent: string, zh: string, en: string) => [`${indent}// ${zh}`, `
 /** 用户手册在工具里的路径，按语言选中文版或英文版。 / Path of a user manual in the tool, Chinese or English copy by language. */
 export const manual = (name: "config" | "onboarding-checklist", lang: Language) => `docs/${name}${lang === "en" ? "" : ".zh-CN"}.md`;
 
+/**
+ * 探测到的服务 → 宿主机 .env 里按惯例的键名；perTicketDb 表示要加库名后缀（每张票独立的库），否则只换主机。
+ * Detected service → conventional key in the host's .env; perTicketDb means add a database-name suffix (one database per ticket), otherwise only swap the host.
+ */
+const SERVICE_ENV_KEYS: Record<string, { key: string; perTicketDb: boolean }> = {
+  postgres: { key: "DATABASE_URL", perTicketDb: true },
+  mysql: { key: "DATABASE_URL", perTicketDb: true },
+  mongodb: { key: "MONGODB_URI", perTicketDb: true },
+  redis: { key: "REDIS_URL", perTicketDb: false },
+  s3: { key: "S3_ENDPOINT", perTicketDb: false },
+  elasticsearch: { key: "ELASTICSEARCH_URL", perTicketDb: false },
+  rabbitmq: { key: "RABBITMQ_URL", perTicketDb: false },
+  kafka: { key: "KAFKA_BROKERS", perTicketDb: false },
+  clickhouse: { key: "CLICKHOUSE_URL", perTicketDb: false },
+};
+
+/** 按服务顺序取键名，同名只留第一个。 / Keys in service order, keeping the first of each name. */
+const serviceEnvKeys = (services: string[]) =>
+  services.flatMap((s) => SERVICE_ENV_KEYS[s] ?? []).filter((k, i, all) => all.findIndex((x) => x.key === k.key) === i);
+
 export function configSource(f: ProjectFacts, importFrom: string, lang: Language = f.commitLanguage): string {
   const gateSteps = [f.commands.typecheck, f.commands.lint, f.commands.test].filter(Boolean) as string[];
   const gate = gateSteps.length ? gateSteps.join(" && ") : "echo 'gate.script not configured / 门槛还没配：.sandcastle/sandcastle.config.ts' && exit 1";
@@ -55,24 +75,57 @@ export function configSource(f: ProjectFacts, importFrom: string, lang: Language
     f.forge.kind === "gitlab"
       ? note("  ", "forge: gitlabForge(),  远端是 GitLab：GitLab Forge 还没做，接入前先别跑", "forge: gitlabForge(),  the remote is GitLab: the GitLab forge isn't done yet, don't run it")
       : note("  ", "forge: githubForge(),  默认 GitHub（宿主机的 gh）", "forge: githubForge(),  GitHub by default (the host's gh)");
-  const services = f.services.length
+  const keys = serviceEnvKeys(f.services);
+  const isolation = keys.length
     ? [
+        "  isolation: {",
+        ...note(
+          "    ",
+          `探测到 docker compose 里的服务：${f.services.join("、")}。每次运行从项目根的 .env 读连接串，localhost 换成 host.containers.internal（沙箱经它访问宿主机），要分库的加 _i<runId> 后缀，并行的沙箱才不会互相清表。`,
+          `Services found in docker compose: ${f.services.join(", ")}. Each run reads the connection strings from the project root's .env, swaps localhost for host.containers.internal (how the sandbox reaches the host) and adds an _i<runId> suffix where a database is shared, so parallel sandboxes don't wipe each other's tables.`,
+        ),
+        ...note(
+          "    ",
+          "下面的键名是按惯例猜的，改成项目实际用的（看 .env.example 和代码里读的变量）；URL 没写库名时 withDbSuffix 会报错，宁可停下也不让测试打到开发库。",
+          "The key names below are guesses by convention; change them to what the project actually uses (see .env.example and the variables the code reads). withDbSuffix throws when a URL has no database name, so tests stop rather than hit the dev database.",
+        ),
+        "    env: (runId) => {",
+        '      const host = readHostEnv(".env");',
+        "      const suffix = `_i${runId}`;",
+        "      const env: Record<string, string> = { SANDCASTLE_RUN_ID: runId };",
+        ...keys.map(({ key, perTicketDb }) =>
+          perTicketDb
+            ? `      if (host.${key}) env.${key} = withDbSuffix(toContainerHost(host.${key}), suffix);`
+            : `      if (host.${key}) env.${key} = toContainerHost(host.${key});`,
+        ),
+        "      return env;",
+        "    },",
+        ...note(
+          "    ",
+          "关沙箱后删掉这张票的测试库：在宿主机上跑回收脚本（失败只警告），用时从 sandpipe 再 import runHostScript。例：",
+          "Drop this ticket's test database after the sandbox closes: run a cleanup script on the host (failures only warn); import runHostScript from sandpipe when you use it. E.g.:",
+        ),
+        '    //   cleanup: async (runId) => { await runHostScript("node", ["scripts/drop-test-db.ts", `_i${runId}`], `#${runId} drop test db`); },',
+        "  },",
+      ]
+    : [
+        "  isolation: {",
+        "    env: (runId) => ({",
         ...note(
           "      ",
-          `探测到 docker compose 里的服务：${f.services.join("、")}。沙箱（podman）经 host.containers.internal 访问宿主机上的它们；每张票用独立的库名 / 前缀（加 runId），并行的沙箱才不会互相清表。例：`,
-          `Services found in docker compose: ${f.services.join(", ")}. The sandbox (podman) reaches them on the host via host.containers.internal; give each ticket its own database name / prefix (add runId) so parallel sandboxes don't wipe each other's tables. E.g.:`,
+          "测试依赖外部服务（数据库、缓存、对象存储）时，在这里给每张票独立的库名 / 前缀（加 runId）。",
+          "If tests use external services (database, cache, object storage), give each ticket its own database name / prefix here (add runId).",
         ),
-        "      //   DATABASE_URL: `postgres://user:pass@host.containers.internal:5432/app_test_i${runId}`,",
-      ]
-    : note(
-        "      ",
-        "测试依赖外部服务（数据库、缓存、对象存储）时，在这里给每张票独立的库名 / 前缀（加 runId）。",
-        "If tests use external services (database, cache, object storage), give each ticket its own database name / prefix here (add runId).",
-      );
+        "      SANDCASTLE_RUN_ID: runId,",
+        "    }),",
+        ...note("    ", "cleanup: async (runId) => { /* 关沙箱后删掉这张票的测试库 */ },", "cleanup: async (runId) => { /* drop this ticket's test database after the sandbox closes */ },"),
+        "  },",
+      ];
+  const imports = keys.length ? "defineProject, readHostEnv, toContainerHost, withDbSuffix" : "defineProject";
   return [
     ...note("", "Sandcastle 项目配置：编排脚本里随项目变的部分（由 sandpipe onboard 生成，按需修改）。", "Sandcastle project config: the project-specific part of the pipeline (generated by sandpipe onboard, edit as needed)."),
     ...note("", "字段说明见 sandpipe 的 docs/config.zh-CN.md。", "Fields are described in sandpipe's docs/config.md."),
-    `import { defineProject } from ${q(importFrom)};`,
+    `import { ${imports} } from ${q(importFrom)};`,
     "",
     "export default defineProject({",
     ...forgeLine,
@@ -95,13 +148,7 @@ export function configSource(f: ProjectFacts, importFrom: string, lang: Language
     ...(f.copyToWorktree.length ? [`    copyToWorktree: ${JSON.stringify(f.copyToWorktree)},`] : []),
     "  },",
     "",
-    "  isolation: {",
-    "    env: (runId) => ({",
-    ...services,
-    "      SANDCASTLE_RUN_ID: runId,",
-    "    }),",
-    ...note("    ", "cleanup: async (runId) => { /* 关沙箱后删掉这张票的测试库 */ },", "cleanup: async (runId) => { /* drop this ticket's test database after the sandbox closes */ },"),
-    "  },",
+    ...isolation,
     "",
     "  gate: {",
     ...note(

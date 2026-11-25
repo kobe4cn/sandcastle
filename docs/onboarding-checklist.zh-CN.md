@@ -12,6 +12,7 @@
 - [ ] 人看一遍 `sandcastle.config.ts`：
   - `install.onSandboxReady` 在 linux 容器里能装好依赖
   - `isolation.env` 让每张票用独立的库名或前缀（并行时互不清表）；有外部服务时配上 `cleanup`
+    - 探测到 compose 服务时 onboard 已生成初稿：从项目根 `.env` 读连接串、换主机、数据库加 `_i<runId>`；里面的键名（`DATABASE_URL`、`REDIS_URL`……）是按惯例猜的，改成项目实际用的
     - config 读项目根的 `.env` / `.env.test` 时，在 `isolation.hostEnvFiles` 里写上，并在宿主机准备好这些文件（通常被 gitignore，新克隆的仓库没有；`sandpipe doctor` 会警告）
   - `gate.script` 就是你愿意据此合并的门槛；有迁移时考虑配 `integrity`
   - 保持 onboard 生成的 `autoMerge: false`、`maxParallel: 1`

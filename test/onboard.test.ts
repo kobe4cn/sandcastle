@@ -77,7 +77,19 @@ describe("installFiles", () => {
     expect(project.install.onSandboxReady).toBe(f.install);
     expect(project.gate.script({ baseRef: "origin/main" })).toBe("pnpm typecheck && pnpm lint && pnpm test");
     expect(project.gate.testFile.test("test/a.test.ts")).toBe(true);
-    expect(project.isolation.env("12")).toEqual({ SANDCASTLE_RUN_ID: "12" });
+    // 探测到 postgres + redis：从项目根 .env 读连接串，换成容器能访问的主机，库名加 _i<runId>；没有 .env 时只有 runId
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(root);
+    try {
+      expect(project.isolation.env("12")).toEqual({ SANDCASTLE_RUN_ID: "12" });
+      writeFileSync(join(root, ".env"), "DATABASE_URL=postgres://u:p@localhost:5432/app\nREDIS_URL=redis://127.0.0.1:6379\n");
+      expect(project.isolation.env("12")).toEqual({
+        SANDCASTLE_RUN_ID: "12",
+        DATABASE_URL: "postgres://u:p@host.containers.internal:5432/app_i12",
+        REDIS_URL: "redis://host.containers.internal:6379",
+      });
+    } finally {
+      cwd.mockRestore();
+    }
     // 新项目试跑期：只开 PR 不合并、一次一张（docs/onboarding-checklist.md）
     expect(project).toMatchObject({ autoMerge: false, maxParallel: 1, language: f.commitLanguage });
 
@@ -92,6 +104,36 @@ describe("installFiles", () => {
     const second = installFiles(root, f);
     expect(second.filter((o) => o.status === "written")).toEqual([]);
     expect(readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8")).toBe("人改过");
+  });
+});
+
+describe("configSource", () => {
+  it("没探测到服务：import 行和 isolation 区块不变，不读宿主机 .env", () => {
+    const src = configSource({ ...detectProject(nodeRepo()), services: [] }, "sandpipe");
+    expect(src).toContain('import { defineProject } from "sandpipe";');
+    expect(src).not.toContain("readHostEnv");
+    expect(src).toContain(
+      [
+        "  isolation: {",
+        "    env: (runId) => ({",
+        "      // 测试依赖外部服务（数据库、缓存、对象存储）时，在这里给每张票独立的库名 / 前缀（加 runId）。",
+        "      // If tests use external services (database, cache, object storage), give each ticket its own database name / prefix here (add runId).",
+        "      SANDCASTLE_RUN_ID: runId,",
+        "    }),",
+        "    // cleanup: async (runId) => { /* 关沙箱后删掉这张票的测试库 */ },",
+        "    // cleanup: async (runId) => { /* drop this ticket's test database after the sandbox closes */ },",
+        "  },",
+      ].join("\n"),
+    );
+  });
+
+  it("有服务：按服务猜键名、去重（postgres 和 mysql 都是 DATABASE_URL），只给要分库的加后缀", () => {
+    const src = configSource({ ...detectProject(nodeRepo()), services: ["postgres", "mysql", "redis"] }, "sandpipe");
+    expect(src).toContain('import { defineProject, readHostEnv, toContainerHost, withDbSuffix } from "sandpipe";');
+    expect(src.match(/env\.DATABASE_URL = /g)).toHaveLength(1);
+    expect(src).toContain("if (host.DATABASE_URL) env.DATABASE_URL = withDbSuffix(toContainerHost(host.DATABASE_URL), suffix);");
+    expect(src).toContain("if (host.REDIS_URL) env.REDIS_URL = toContainerHost(host.REDIS_URL);");
+    expect(src).toContain("runHostScript");
   });
 });
 

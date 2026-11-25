@@ -59,6 +59,8 @@ describe("diagnose", () => {
       仓库: "ok",
       配置: "ok",
       宿主机依赖: "ok",
+      // 探测到服务时生成的 isolation.env 读项目根的 .env，刚 onboard 时还没有
+      "宿主机 env 文件": "warn",
       "PROJECT.md": "warn",
       项目知识: "warn",
       "models.json": "ok",
@@ -114,6 +116,7 @@ function readyRepo() {
   const root = nodeRepo();
   installFiles(root, detectProject(root));
   writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=y\n");
+  writeFileSync(join(root, ".env"), "DATABASE_URL=postgres://u:p@localhost:5432/app\n");
   const doc = join(root, ".sandcastle/PROJECT.md");
   writeFileSync(doc, readFileSync(doc, "utf8").replace(/<!--[\s\S]*?-->/g, ""));
   writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "");
@@ -245,6 +248,7 @@ describe("diagnose 的出错分支", () => {
 
   it("没声明 hostEnvFiles：扫 config 源码里的 .env 字面量，排除 .sandcastle/ 下的、示例文件和 .envrc", async () => {
     const root = readyRepo();
+    rmSync(join(root, ".env"));
     const config = join(root, ".sandcastle/sandcastle.config.ts");
     writeFileSync(
       config,
