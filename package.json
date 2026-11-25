@@ -8,7 +8,7 @@
     ".": "./src/index.ts"
   },
   "bin": {
-    "sandcastle-pipeline": "./src/main.ts"
+    "sandcastle-pipeline": "./src/cli.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

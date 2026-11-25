@@ -8,7 +8,9 @@
 
 | 路径 | 内容 |
 |---|---|
+| `src/cli.ts` | 命令行入口：`run`（默认）、`onboard` |
 | `src/main.ts` | 编排（调度、build、land）。不含项目细节，不直接调 gh |
+| `src/detect.ts` `src/onboard.ts` `prompts/onboard.md` | 接入新项目：探测、生成配置、agent 补全 PROJECT.md |
 | `src/forge.ts` | **Forge** 接口：托管平台上的 issue / 标签 / PR / 合并 |
 | `src/forges/github.ts` | GitHub 实现（gh CLI） |
 | `src/profile.ts` | **ProjectProfile**：项目配置（测试隔离、门槛、安装、一致性检查、文案）与默认值 |
@@ -23,8 +25,14 @@
 
 ## 在项目里用
 
-1. 把 `templates/.sandcastle/` 拷进项目，填 `PROJECT.md`（项目知识，给 agent 看）和 `sandcastle.config.ts`（怎么跑，给脚本用）。
-2. 在项目根目录：`npx tsx <本仓库>/src/main.ts`（`SANDCASTLE_ONLY=12,13` 只做这几张票）。
+1. 在项目根目录 `npx tsx <本仓库>/src/cli.ts onboard`：
+   - 探测语言、包管理、命令、托管平台、文档、测试、迁移、compose 里的服务（`src/detect.ts`，只读文件和 git）；
+   - 生成 `.sandcastle/` 下的 `sandcastle.config.ts`、`PROJECT.md` 草稿、`models.json`、`.env.example`、`.gitignore`、`Containerfile`，
+     装 `.claude/hooks/sandcastle-context.mjs`（上下文预算）与 `screenshot-checker` 子代理，并在 `.claude/settings.json` 里登记 hook；已存在的文件一律跳过；
+   - 让宿主机的 claude（默认 opus，`--model` 换，`--no-agent` 跳过）读代码把 `PROJECT.md` 写完整，只许改这一个文件；
+     拿不准的点和 `sandcastle.config.ts` 的建议打印出来，并存进 `.sandcastle/logs/onboard.md`。
+2. 看一遍 `PROJECT.md`（项目知识，给 agent 看）与 `sandcastle.config.ts`（怎么跑：测试隔离、门槛），填 `.sandcastle/.env`，建镜像。
+3. 跑：`npx tsx <本仓库>/src/cli.ts`（`SANDCASTLE_ONLY=12,13` 只做这几张票）。
 
 不想往项目里放 `PROJECT.md` / `sandcastle.config.ts`（试用、配置放别处）时，设 `SANDCASTLE_PROJECT_DIR=<配置目录>`，例如 `SANDCASTLE_PROJECT_DIR=<本仓库>/examples/duckdb_crm`。`models.json`、`.env`、`logs/` 仍在项目的 `.sandcastle/` 里。
 
@@ -52,4 +60,5 @@ npm test
 - 第 1、2 步已完成：抽出 Forge 与 ProjectProfile，duckdb_crm 的项目差异全在 `examples/duckdb_crm/sandcastle.config.ts`。
 - 第 4 步已完成：提示词通用化，项目知识收进 `PROJECT.md`（duckdb_crm 的见 `examples/duckdb_crm/PROJECT.md`）。
 - `docs/` 与 `claude/skills/prep-ticket` 仍是 duckdb_crm 的写法，打包成插件时再改。
-- 还没有 GitLab Forge、`onboard`、`doctor`。
+- 第 6 步已完成：`onboard`。
+- 还没有 GitLab Forge、`doctor`。

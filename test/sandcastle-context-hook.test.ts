@@ -60,12 +60,13 @@ describe('checkBudget：上下文到预算时要求收尾', () => {
     expect(lastContext(join(dir, 'missing.jsonl'))).toBe(0);
   });
 
-  it('不到 SOFT 不提醒；加上刚返回的大结果越过 SOFT 就提醒，implement 要求交接且不输出 COMPLETE', () => {
+  it('不到 SOFT 不提醒；加上刚返回的大结果越过 SOFT 就提醒，implement 做完的照常输出 COMPLETE、没做完的交接', () => {
     const p = transcript('soft', [SOFT - 10_000]);
     expect(checkBudget(post(p), env, new Map())).toBeUndefined();
     const reason = checkBudget(post(p, 'x'.repeat(40_000)), env, new Map());
     expect(reason).toContain('进度评论');
-    expect(reason).toContain('不要输出 <promise>COMPLETE</promise>');
+    expect(reason).toContain('都已做完、相关测试通过，提交后照常输出 <promise>COMPLETE</promise>');
+    expect(reason).toContain('这时不要输出 <promise>COMPLETE</promise>');
   });
 
   it('改文件的工具（Edit / Write 等）返回里的整份原文件不计入', () => {

@@ -1,6 +1,6 @@
 ---
 name: screenshot-checker
-description: 看一张浏览器验收截图，对照给定的核对点回文字结论。主模型看不到图片时（Sandcastle 的 glm 档案）用它看截图；一次只给一张。
+description: 看一张浏览器验收截图，对照给定的核对点回文字结论。主模型看不到图片时（Sandcastle 里标了 SANDCASTLE_NO_IMAGES 的档案）用它看截图；一次只给一张。
 tools: Read
 model: haiku
 ---

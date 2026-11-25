@@ -1,12 +1,13 @@
-// .claude/hooks/sandcastle-context.mjs —— Sandcastle 沙箱里的上下文预算守卫（docs/agents/sandcastle.md「上下文预算」）
+// .claude/hooks/sandcastle-context.mjs —— Sandcastle 沙箱里的上下文预算守卫（由 sandcastle-pipeline onboard 装进项目）
 // 只在 SANDCASTLE_PROFILE 有值时生效（编排脚本给容器里的 claude 设的），宿主机上的会话不受影响。
 //
 // PreToolUse(Read)：档案标了 SANDCASTLE_NO_IMAGES=1（主模型看不到图片，如 glm-5.3）时，主线程读图片一律拦下：
 //   看不到还照样计 token，一张 1280×720 截图约 6–7 万，一下就能把会话撑过 150k。
-//   看图交给 screenshot-checker 子代理（.claude/agents/screenshot-checker.md，model: haiku，glm 档案映射到能看图的 glm-5.3-flash），
+//   看图交给 screenshot-checker 子代理（.claude/agents/screenshot-checker.md，model: haiku，档案可把 haiku 映射到能看图的模型），
 //   每个子代理只许读一张图，自己的上下文也不过 150k。子代理里触发的 hook 输入带 agent_id / agent_type，主线程没有。
 // PostToolUse(*)：从会话记录取最近一条 assistant 消息的上下文（输入 + 缓存写 + 缓存读），加上刚返回的工具结果估算，
-//   到 SOFT 时要求收尾交接（implement 由下一个全新会话接着做，3 次会话做不完退回 prep 拆票），到 HARD 时要求立刻结束。
+//   到 SOFT 时要求收尾：implement 验收标准都做完的照常输出 COMPLETE（不然会多开一次只用来确认的会话，2026-11-25 #1274），
+//   没做完的交接给下一个全新会话（3 次会话做不完退回 prep 拆票）；到 HARD 时要求立刻结束。
 //   同一会话每多 STEP 才再提醒一次，避免每次工具调用都刷屏。
 import { closeSync, existsSync, openSync, readFileSync, readSync, statSync, writeFileSync } from 'node:fs';
 
@@ -66,7 +67,7 @@ export function checkRead(input, env, state = new Map()) {
   }
   return (
     `Blocked: 当前模型档案（${env.SANDCASTLE_PROFILE}）的主模型看不到图片，读 ${file} 不会有任何信息，却会占用约 7 万 token 上下文。` +
-    `看截图用 Agent 工具起 subagent_type: "${CHECKER}"，一次一张，prompt 里给截图路径和要核对的点（Browser check 条目、docs/agents/ui.md 的相关约定）；几张截图可以在同一条消息里并行起几个。` +
+    `看截图用 Agent 工具起 subagent_type: "${CHECKER}"，一次一张，prompt 里给截图路径和要核对的点（Browser check 条目、项目的页面约定）；几张截图可以在同一条消息里并行起几个。` +
     '它回文字结论，不占你的上下文。文字也能核对的（文案、结构、class、尺寸）先用 `playwright-cli snapshot` / `eval`。'
   );
 }
@@ -81,7 +82,8 @@ export function checkBudget(input, env, state) {
   state.set(input.session_id, ctx);
   const phase = env.SANDCASTLE_PHASE ?? '';
   const impl =
-    '收尾交接：把已经能通过测试的改动提交（提交信息写明完成了哪些验收标准）；在 issue 上留进度评论，写清已完成、未完成、下一步从哪个 file:line 接着做；然后结束会话，**不要输出 <promise>COMPLETE</promise>**。下一个全新会话会按这条评论接着做；3 次会话仍做不完，prep 会把剩下的拆成更小的票。';
+    '收尾：验收标准如果都已做完、相关测试通过，提交后照常输出 <promise>COMPLETE</promise>，不要再开始新的检查或改动。' +
+    '还有没做完的：把已经能通过测试的改动提交（提交信息写明完成了哪些验收标准）；在 issue 上留进度评论，写清已完成、未完成、下一步从哪个 file:line 接着做；然后结束会话，**这时不要输出 <promise>COMPLETE</promise>**。下一个全新会话会按这条评论接着做；3 次会话仍做不完，prep 会把剩下的拆成更小的票。';
   const other = '收尾：不再开始新的探索或改动，把手上这一项做完、提交，按提示词的要求输出结论；没来得及看的部分在输出里写明，交给下一轮。';
   // 没有阶段名（编排脚本还是旧进程，没传 SANDCASTLE_PHASE）时两种都给，由 agent 按自己的任务对号入座
   const handoff = phase === 'implement' ? impl : phase ? other : `若你在实现一张票（implement）——${impl}若是其他阶段（prep / review / revise / fix / rebase）——${other}`;
