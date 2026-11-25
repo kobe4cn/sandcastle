@@ -1,46 +1,14 @@
 // onboard：探测项目事实、生成配置与 PROJECT.md 草稿、登记 hook。生成的文件要能被流水线直接加载。
-import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
 import { containerfileSource, installFiles, mergeGitignore, mergeSettings, onboardPrompt } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { parseProjectDoc } from "../src/project-doc.ts";
+import { nodeRepo } from "./fixtures.ts";
 
 const containerTemplate = readFileSync(new URL("../templates/.sandcastle/Containerfile", import.meta.url), "utf8");
-
-function nodeRepo() {
-  const root = mkdtempSync(join(tmpdir(), "sc-onboard-"));
-  const w = (f: string, s: string) => {
-    mkdirSync(join(root, f, ".."), { recursive: true });
-    writeFileSync(join(root, f), s);
-  };
-  w(
-    "package.json",
-    JSON.stringify({
-      name: "shop",
-      packageManager: "pnpm@10.4.1+sha512.abc",
-      scripts: { typecheck: "tsc --noEmit", lint: "eslint .", test: "vitest run" },
-      dependencies: { react: "19", "drizzle-orm": "1" },
-      devDependencies: { vitest: "3", "drizzle-kit": "1", typescript: "5" },
-    }),
-  );
-  w("pnpm-lock.yaml", "");
-  w("compose.yml", "services:\n  db:\n    image: pgvector/pgvector:pg17\n");
-  w("deploy/docker-compose.dev.yml", "services:\n  cache:\n    image: 'redis:7'\n");
-  w("drizzle/0000_init/migration.sql", "");
-  w("CLAUDE.md", "# rules");
-  w("test/a.test.ts", "");
-  w("app/index.ts", "");
-  w("node_modules/x/index.js", "");
-  const git = (...a: string[]) => execFileSync("git", ["-C", root, ...a], { stdio: "ignore" });
-  git("init", "-q", "-b", "main");
-  git("remote", "add", "origin", "git@github.com:acme/shop.git");
-  git("-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", "加购物车");
-  return root;
-}
 
 describe("parseRemoteUrl", () => {
   it("认出 GitHub / GitLab 的 ssh 与 https 地址，自建 GitLab 带子组", () => {

@@ -178,6 +178,8 @@ export type Project = Required<
   labels: Labels;
   gate: GateConfig & { rerunMax: number; selectedDescription: string };
   integrity?: IntegrityCheck;
+  /** 配置里自己给了 sandbox（不是默认的 podman）：doctor 不查 podman 镜像。 */
+  customSandbox: boolean;
   beforeSchedule(): void;
   acceptancePrep?(branch: string): string;
   texts: Required<NonNullable<ProjectProfile["texts"]>>;
@@ -199,6 +201,7 @@ export function resolveProject(p: ProjectProfile): Project {
     mainCheckEvery: p.mainCheckEvery ?? 4,
     labels: { ...DEFAULT_LABELS, ...p.labels },
     sandbox: p.sandbox ?? ((env) => podman({ env })),
+    customSandbox: p.sandbox !== undefined,
     install: { copyToWorktree: [], ...p.install },
     isolation: p.isolation,
     gate: { rerunMax: 3, selectedDescription: "按依赖选的测试", ...p.gate },

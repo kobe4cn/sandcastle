@@ -9,6 +9,7 @@
 // 3. 补全 PROJECT.md（默认开，--no-agent 跳过）：宿主机上跑一次 claude -p，读代码把草稿写成完整的 PROJECT.md，
 //    只许改这一个文件；写完按 parseProjectDoc 校验。需要人确认的点打印出来并存进 .sandcastle/logs/onboard.md。
 
+import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -17,7 +18,7 @@ import { detectProject, type ProjectFacts } from "./detect.ts";
 import { parseProjectDoc } from "./project-doc.ts";
 
 const TOOL_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const HOOK_FILE = "sandcastle-context.mjs";
+export const HOOK_FILE = "sandcastle-context.mjs";
 
 // ---------------------------------------------------------------------------
 // 生成内容（纯函数，便于测试）
@@ -338,8 +339,8 @@ export function onboard(argv: string[], root = process.cwd()) {
       "接下来：",
       "  1. 看一遍 .sandcastle/PROJECT.md 和 sandcastle.config.ts（门槛、测试隔离），改成符合项目实际的样子",
       "  2. cp .sandcastle/.env.example .sandcastle/.env，填 token",
-      `  3. 建镜像：podman build -t <镜像名> -f .sandcastle/Containerfile .sandcastle（镜像名见 doctor 的输出）`,
-      `  4. sandcastle-pipeline doctor 检查一遍，然后给一张小票打上 Sandcastle 标签试跑：SANDCASTLE_ONLY=<票号> sandcastle-pipeline`,
+      `  3. 建镜像：podman build -t ${defaultImageName(root)} -f .sandcastle/Containerfile .sandcastle`,
+      `  4. sandcastle-pipeline doctor --fix 检查一遍（顺带建好标签），然后给一张小票打上 Sandcastle 标签试跑：SANDCASTLE_ONLY=<票号> sandcastle-pipeline`,
       `  （生成的配置 import 自 ${importSpecifier(root)}）`,
     ].join("\n"),
   );

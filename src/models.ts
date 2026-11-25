@@ -165,6 +165,14 @@ function parseConfig(text: string, envKeys: Set<string>, warn: (m: string) => vo
 
 let config: ModelsConfig | undefined;
 
+/** doctor 用：读一遍 models.json，返回各阶段用到的档案和警告；读不成直接抛。 */
+export function inspectModels(): { phases: Record<Phase, readonly string[]>; used: Profile[]; warnings: string[] } {
+  const warnings: string[] = [];
+  const c = parseConfig(readFileSync(CONFIG_PATH, "utf8"), sandcastleEnvKeys(), (m) => warnings.push(m));
+  const used = [...new Set(Object.values(c.phases).flat())].map((name) => c.profiles.get(name)!);
+  return { phases: c.phases, used, warnings };
+}
+
 /**
  * 每轮开头调用。第一次读不成直接抛（运行起不来）；之后读不成就警告并沿用上一份，不打断正在跑的运行。
  */

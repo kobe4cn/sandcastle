@@ -35,6 +35,14 @@ export type MergeMethod = "rebase" | "squash" | "merge";
 export interface Forge {
   /** 平台名，打日志用 */
   readonly name: string;
+  /** 沙箱里 agent 操作平台要的 token 变量名（写在 .sandcastle/.env 里），比如 GH_TOKEN。 */
+  readonly tokenEnv: string;
+
+  // ---- doctor ----
+  /** 宿主机的 CLI 已登录、能访问当前仓库；返回一行说明（账号、仓库），不行就抛错，错误里写怎么修。 */
+  checkAccess(): string;
+  /** 仓库里已有的全部标签名。 */
+  listLabels(): string[];
 
   // ---- issue ----
   /** 带全部 labels 的 open issue。必须用实时接口，不能用有延迟的搜索索引（刚打上的标签要立刻查得到）。 */

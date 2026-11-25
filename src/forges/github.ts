@@ -47,6 +47,22 @@ const lines = (out: string) => out.split("\n").filter(Boolean);
 export function githubForge(gh: GhRunner = (args) => sh("gh", args)): Forge {
   return {
     name: "github",
+    tokenEnv: "GH_TOKEN",
+
+    checkAccess() {
+      try {
+        gh(["auth", "status", "--active"]);
+      } catch (e) {
+        throw new Error(`gh 没登录（先 gh auth login）：${(e as Error).message.split("\n")[0]}`);
+      }
+      const repo = gh(["repo", "view", "--json", "nameWithOwner,viewerPermission", "-q", '.nameWithOwner + " " + .viewerPermission']);
+      const [name, permission] = repo.split(" ");
+      if (!["ADMIN", "MAINTAIN", "WRITE"].includes(permission ?? "")) {
+        throw new Error(`对 ${name} 只有 ${permission} 权限：流水线要推分支、改标签、合并 PR，至少要 WRITE`);
+      }
+      return `gh 已登录，仓库 ${name}（${permission}）`;
+    },
+    listLabels: () => lines(gh(["label", "list", "--limit", "1000", "--json", "name", "-q", ".[].name"])),
 
     listOpenIssues(labels) {
       // 用 `--label`（issues 列表接口，实时）而不是 `--search`（搜索索引）：索引有延迟，刚打上的标签要过一阵
