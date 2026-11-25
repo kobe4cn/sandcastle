@@ -120,4 +120,22 @@ describe("githubForge 发给 gh 的参数", () => {
     expect(forge.linkedPrIds("3")).toEqual(["5", "6"]);
     expect(calls[0]).toEqual(["issue", "view", "3", "--json", "closedByPullRequestsReferences", "--jq", ".closedByPullRequestsReferences[].number"]);
   });
+
+  it("doctor 用的 checkAccess / listLabels：没登录、权限不够都抛错并说明", () => {
+    const ok = fakeGh("", "acme/shop WRITE", "a\nb\n");
+    expect(ok.forge.checkAccess()).toBe("gh 已登录，仓库 acme/shop（WRITE）");
+    expect(ok.forge.listLabels()).toEqual(["a", "b"]);
+    expect(ok.calls).toEqual([
+      ["auth", "status", "--active"],
+      ["repo", "view", "--json", "nameWithOwner,viewerPermission", "-q", '.nameWithOwner + " " + .viewerPermission'],
+      ["label", "list", "--limit", "1000", "--json", "name", "-q", ".[].name"],
+    ]);
+    expect(ok.forge.tokenEnv).toBe("GH_TOKEN");
+
+    const loggedOut = githubForge(() => {
+      throw new Error("You are not logged into any GitHub hosts");
+    });
+    expect(() => loggedOut.checkAccess()).toThrow(/gh 没登录.*gh auth login/);
+    expect(() => fakeGh("", "acme/shop READ").forge.checkAccess()).toThrow("至少要 WRITE");
+  });
 });

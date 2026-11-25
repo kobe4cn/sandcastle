@@ -1,9 +1,9 @@
 // doctor：在 onboard 刚生成的项目上跑，逐项给出结论；--fix 补建缺的标签。
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectProject } from "../src/detect.ts";
-import { diagnose, formatChecks, type Runner } from "../src/doctor.ts";
+import { type Check, diagnose, formatChecks, type Runner } from "../src/doctor.ts";
 import { githubForge } from "../src/forges/github.ts";
 import { installFiles } from "../src/onboard.ts";
 import { DEFAULT_LABELS } from "../src/profile.ts";
@@ -88,5 +88,96 @@ describe("diagnose", () => {
     writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=y\n");
     const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(Object.values(DEFAULT_LABELS), []) });
     expect(checks.find((c) => c.name === ".env")).toMatchObject({ level: "fail", detail: expect.stringContaining("没被 git 忽略") });
+  });
+});
+
+/** onboard 生成、.env 填好、PROJECT.md 写完（去掉「待补」）的项目。 */
+function readyRepo() {
+  const root = nodeRepo();
+  installFiles(root, detectProject(root));
+  writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=y\n");
+  const doc = join(root, ".sandcastle/PROJECT.md");
+  writeFileSync(doc, readFileSync(doc, "utf8").replace(/<!--[\s\S]*?-->/g, ""));
+  return root;
+}
+const check = (checks: Check[], name: string) => checks.find((c) => c.name === name);
+const allLabels = Object.values(DEFAULT_LABELS);
+
+describe("diagnose 的出错分支", () => {
+  it("准备好的项目全部通过", async () => {
+    const root = readyRepo();
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+    expect(checks.filter((c) => c.level !== "ok")).toEqual([]);
+  });
+
+  it("在子目录运行、没有配置：仓库和配置都不通过", async () => {
+    const root = nodeRepo();
+    const checks = await diagnose({ cwd: join(root, "app"), env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+    expect(check(checks, "仓库")).toMatchObject({ level: "fail", detail: expect.stringContaining("不在仓库根目录") });
+    expect(check(checks, "配置")).toMatchObject({ level: "fail", fix: expect.stringContaining("onboard") });
+  });
+
+  it("PROJECT.md 有不认识的标题：不通过", async () => {
+    const root = readyRepo();
+    writeFileSync(join(root, ".sandcastle/PROJECT.md"), readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8") + "\n## 杂项\n\nx\n");
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+    expect(check(checks, "PROJECT.md")).toMatchObject({ level: "fail", detail: expect.stringContaining("杂项") });
+  });
+
+  it("models.json 能用但有警告（别家档案没设 limitPattern 等）：警告", async () => {
+    const root = readyRepo();
+    const profile = { model: "x", env: { ANTHROPIC_BASE_URL: "https://example.com" } };
+    const phases = Object.fromEntries(["prep", "implement", "review", "revise", "fix", "rebase"].map((p) => [p, ["other"]]));
+    writeFileSync(join(root, ".sandcastle/models.json"), JSON.stringify({ profiles: { other: profile }, phases }));
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+    expect(check(checks, "models.json")).toMatchObject({ level: "warn", detail: expect.stringContaining("limitPattern") });
+    // 全部阶段都发到别家：不要求 Claude 凭据
+    writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\n");
+    const again = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+    expect(check(again, ".env")?.level).toBe("ok");
+  });
+
+  it("podman 没起来：不通过，提示 podman machine start", async () => {
+    const root = readyRepo();
+    const run: Runner = (cmd, args) =>
+      cmd === "podman" ? { ok: false, out: "Cannot connect to Podman\nmore" } : runner({ image: true })(cmd, args);
+    const checks = await diagnose({ cwd: root, env: {}, run, forge: fakeGh(allLabels, []) });
+    expect(check(checks, "沙箱镜像")).toMatchObject({
+      level: "fail",
+      detail: "podman 用不了：Cannot connect to Podman",
+      fix: expect.stringContaining("podman machine start"),
+    });
+  });
+
+  it("配置里自定义了 sandbox：不查 podman", async () => {
+    const root = readyRepo();
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(
+      config,
+      readFileSync(config, "utf8").replace(
+        "export default defineProject({",
+        "export default defineProject({\n  sandbox: () => ({}) as never,",
+      ),
+    );
+    const run: Runner = (cmd, args) => {
+      if (cmd === "podman") throw new Error("不该调 podman");
+      return runner({ image: true })(cmd, args);
+    };
+    const checks = await diagnose({ cwd: root, env: {}, run, forge: fakeGh(allLabels, []) });
+    expect(check(checks, "沙箱镜像")).toMatchObject({ level: "ok", detail: expect.stringContaining("自定义") });
+  });
+
+  it("只缺 flaky / main-broken（用到时自动建）：通过；gh 没登录：平台不通过、不再查标签", async () => {
+    const root = readyRepo();
+    const labels = allLabels.filter((l) => l !== DEFAULT_LABELS.flaky && l !== DEFAULT_LABELS.mainBroken);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(labels, []) });
+    expect(check(checks, "标签")).toMatchObject({ level: "ok", detail: expect.stringContaining("用到时自动建") });
+
+    const loggedOut = githubForge(() => {
+      throw new Error("not logged in");
+    });
+    const out = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: loggedOut });
+    expect(check(out, "平台（github）")?.level).toBe("fail");
+    expect(check(out, "标签")).toBeUndefined();
   });
 });
