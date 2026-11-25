@@ -168,7 +168,8 @@ const GATE_SCRIPT = project.gate.script({ baseRef: BASE_REF });
 // 门槛独占时可以给更多资源（项目配置 gate.env，比如更多 worker）。
 let gateQueue: Promise<unknown> = Promise.resolve();
 type ExecResult = { stdout: string; exitCode: number };
-const minutes = (ms: number) => (ms / 60_000).toFixed(1);
+// 不到一分钟显示秒：小项目的门槛只跑几秒，显示「0.0 分钟」看不出用时。
+const duration = (ms: number) => (ms < 60_000 ? `${Math.round(ms / 1000)} 秒` : `${(ms / 60_000).toFixed(1)} 分钟`);
 
 /** 跑一次门槛：所有门槛排同一个队；用时（和排队时间）打进日志，并追加在输出末尾一行 GATE_TIME（进 PR 的 Gate 一节）。 */
 async function runGate<R extends ExecResult>(
@@ -179,10 +180,10 @@ async function runGate<R extends ExecResult>(
   const queued = Date.now();
   const go = async () => {
     const waited = Date.now() - queued;
-    if (waited > 5_000) console.log(`  ⏳ #${issueId} 排队 ${minutes(waited)} 分钟后开始跑门槛`);
+    if (waited > 5_000) console.log(`  ⏳ #${issueId} 排队 ${duration(waited)}后开始跑门槛`);
     const started = Date.now();
     const r = await exec(`${envPrefix({ ...env, ...project.gate.env })} sh -c ${shellQuote(GATE_SCRIPT)}`);
-    const took = `${gateTierName(gateTier(r.stdout))}门槛用时 ${minutes(Date.now() - started)} 分钟${waited > 5_000 ? `（之前排队 ${minutes(waited)} 分钟）` : ""}`;
+    const took = `${gateTierName(gateTier(r.stdout))}门槛用时 ${duration(Date.now() - started)}${waited > 5_000 ? `（之前排队 ${duration(waited)}）` : ""}`;
     console.log(`  ⏱ #${issueId} ${took}，${r.exitCode === 0 ? "通过" : "失败"}`);
     return { ...r, stdout: `${r.stdout}\nGATE_TIME: ${took}` };
   };
@@ -400,7 +401,7 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
       const why = awaitingReview.has(owner)
         ? `等人审的 #${owner}（PR 合入或关闭后再做）`
         : running.has(String(owner)) ? `正在做的 #${owner}` : `#${owner}`;
-      log(`  跳过 #${issue.number}：和${why}都改 ${clash}`);
+      log(`  跳过 #${issue.number}：和${why} 都改 ${clash}`);
       continue;
     }
     if (picked.length >= slots) break;

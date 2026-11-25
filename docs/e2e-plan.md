@@ -47,15 +47,15 @@
 
 ## F. 自动合并与并行（`autoMerge: true`、`maxParallel: 2`）
 
-- [ ] F1 两张互不相关的票（改不同的文件）并行做完，都自动合并，issue 都关闭
-- [ ] F2 两张改同一个文件的票：plan 时排开不并行，或者后合并的那张走 rebase 路径，最后都能合进去
-- [ ] F3 显式依赖：B 票写 `## Blocked by #A`，A 关掉之前 B 不开工
-- [ ] F4 E3 拆出来的子票按依赖顺序做完
+- [x] F1 ✓ #6/#9 同时开工，PR #13/#14；#10/#12 也并行。两张互不相关的票（改不同的文件）并行做完，都自动合并，issue 都关闭
+- [x] F2 ✓ #10/#11 都改 money.py，plan 时排开，#11 等 #10 合并后开工（没走到 rebase）。两张改同一个文件的票：plan 时排开不并行，或者后合并的那张走 rebase 路径，最后都能合进去
+- [x] F3 ✓ #12 Blocked by #9，#9 合并后才开工。显式依赖：B 票写 `## Blocked by #A`，A 关掉之前 B 不开工
+- [x] F4 ✓ #5→#6→#7 依次合并（PR #18），子票全关后自动关闭父票 #3。E3 拆出来的子票按依赖顺序做完
 
 ## G. 收尾检查
 
-- [ ] G1 `.sandcastle/logs/` 没有异常；`podman ps -a` 没有残留的沙箱；`git worktree list` 干净
-- [ ] G2 用量统计是否合理（每张票的 token）
+- [x] G1 ✓ 日志无报错，e2e 没有残留容器（在跑的两个属于 duckdb_crm），worktree 和 sandcastle 分支都已清理。`.sandcastle/logs/` 没有异常；`podman ps -a` 没有残留的沙箱；`git worktree list` 干净
+- [x] G2 ✓ 每个会话上下文峰值约 34–39k，实现一张小票缓存读约 36 万 token。用量统计是否合理（每张票的 token）
 
 ## H. 升级
 
