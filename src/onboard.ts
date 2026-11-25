@@ -661,7 +661,7 @@ function reportOpenQuestions(root: string): number {
   }
 }
 
-const fillDocsHint = (remaining: number) =>
+export const fillDocsHint = (remaining: number) =>
   t(`在 Claude Code 里运行 /fill-project-docs，补完缺口清单（还剩 ${remaining} 条）`, `Run /fill-project-docs in Claude Code to work through the open questions (${remaining} left)`);
 
 export function onboard(argv: string[], root = process.cwd()) {

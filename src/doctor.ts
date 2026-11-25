@@ -1,9 +1,9 @@
 // doctor：跑流水线之前把能在宿主机上查的都查一遍，每项给出结论和修法。
-// 查：仓库根目录、配置能加载、PROJECT.md 与提示词能渲染、models.json、.env 的 token、平台登录与权限、
+// 查：仓库根目录、配置能加载、PROJECT.md 与提示词能渲染、项目知识（缺口清单）、models.json、.env 的 token、平台登录与权限、
 // 标签（--fix 时补建）、远端基础分支、沙箱镜像、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
 // 有一项 ✗ 退出码就是 1。
 // doctor: before running the pipeline, check everything that can be checked on the host, giving a verdict and a fix for each.
-// Checks: repository root, config loads, PROJECT.md and prompts render, models.json, .env tokens, forge login and permissions,
+// Checks: repository root, config loads, PROJECT.md and prompts render, project knowledge (open questions list), models.json, .env tokens, forge login and permissions,
 // labels (created with --fix), remote base branch, sandbox image, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
 // Exit code 1 if any check is ✗.
 
@@ -14,7 +14,8 @@ import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import type { Forge } from "./forge.ts";
 import { inspectModels } from "./models.ts";
 import { setTermLanguage, t } from "./term.ts";
-import { CLAUDE_FILES, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
+import { CLAUDE_FILES, fillDocsHint, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
+import { OPEN_QUESTIONS, readOpenQuestions } from "./open-questions.ts";
 import { configDir, loadProject, type Labels, type Project } from "./profile.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { trySh, type TryResult } from "./shell.ts";
@@ -132,6 +133,27 @@ export async function diagnose(opts: {
     else add("PROJECT.md", "ok", t(`能渲染进提示词；${browser}`, `renders into the prompts; ${browser}`));
   } catch (e) {
     add("PROJECT.md", "fail", errText(e));
+  }
+
+  // ---- 项目知识 ---- / Project knowledge
+  // 没有 PROJECT.md 时不查：上面已经提示先跑 onboard，这里再提示 --questions-only 会误导；清单路径相对仓库根，所以读 cwd 不读 dir。
+  // Skipped without PROJECT.md: the checks above already say to run onboard, and suggesting --questions-only here would mislead; the list's path is relative to the repo root, so read cwd, not dir.
+  if (existsSync(join(dir, "PROJECT.md"))) {
+    const name = t("项目知识", "Project knowledge");
+    try {
+      const questions = readOpenQuestions(cwd);
+      if (questions === null)
+        add(
+          name,
+          "warn",
+          t(`没有缺口清单 ${OPEN_QUESTIONS}`, `No open questions list ${OPEN_QUESTIONS}`),
+          t("运行 sandpipe onboard --questions-only 生成", "Run sandpipe onboard --questions-only to generate it"),
+        );
+      else if (questions.length) add(name, "warn", fillDocsHint(questions.length));
+      else add(name, "ok", t("缺口清单已经补完", "Open questions list is cleared"));
+    } catch (e) {
+      add(name, "warn", errText(e), t(`改好 ${OPEN_QUESTIONS} 里报错的那一行`, `Fix the reported line in ${OPEN_QUESTIONS}`));
+    }
   }
 
   // ---- models.json ----

@@ -6,6 +6,7 @@
 - onboard 的 agent 可写的文件从只有 PROJECT.md 改成一个列表（PROJECT.md 和缺口清单）。
 - 探测文档时认 `GLOSSARY.md`。
 - `sandpipe onboard --questions-only`：给早于缺口清单接入的项目补一份 `.sandcastle/OPEN-QUESTIONS.md`。agent 读现有 PROJECT.md 和代码找缺口，只许写这份清单，不生成、不改动其他文件；清单已存在时提示删掉后重跑。
+- `sandpipe doctor` 新增「项目知识」检查，读缺口清单：还有 N 条时警告，提示在 Claude Code 里运行 `/fill-project-docs`；清单不存在时警告，提示运行 `sandpipe onboard --questions-only`；清单为空时通过；格式错时警告并指出行号。这项检查不会不通过；没有 PROJECT.md 时不做。
 
 ## 0.1.4
 

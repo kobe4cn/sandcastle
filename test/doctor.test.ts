@@ -1,5 +1,5 @@
 // doctor：在 onboard 刚生成的项目上跑，逐项给出结论；--fix 补建缺的标签。
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -60,6 +60,7 @@ describe("diagnose", () => {
       配置: "ok",
       宿主机依赖: "ok",
       "PROJECT.md": "warn",
+      项目知识: "warn",
       "models.json": "ok",
       ".env": "fail",
       "平台（github）": "ok",
@@ -115,10 +116,47 @@ function readyRepo() {
   writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=y\n");
   const doc = join(root, ".sandcastle/PROJECT.md");
   writeFileSync(doc, readFileSync(doc, "utf8").replace(/<!--[\s\S]*?-->/g, ""));
+  writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "");
   return root;
 }
 const check = (checks: Check[], name: string) => checks.find((c) => c.name === name);
 const allLabels = Object.values(DEFAULT_LABELS);
+
+describe("diagnose：项目知识", () => {
+  const knowledge = async (content: string | null) => {
+    const root = readyRepo();
+    const file = join(root, ".sandcastle/OPEN-QUESTIONS.md");
+    if (content === null) rmSync(file);
+    else writeFileSync(file, content);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+    return check(checks, "项目知识");
+  };
+
+  it("清单还有 2 条：警告，提示 /fill-project-docs", async () => {
+    const c = await knowledge("# 缺口清单\n\n- [规范] 错误怎么处理 → PROJECT.md\n- [意图] 为什么不用 ORM → docs/adr/\n");
+    expect(c).toMatchObject({ level: "warn", detail: expect.stringContaining("2") });
+    expect(c?.detail).toContain("/fill-project-docs");
+  });
+
+  it("清单只有标题：通过", async () => {
+    expect((await knowledge("# 缺口清单\n"))?.level).toBe("ok");
+  });
+
+  it("清单不存在：警告，提示 onboard --questions-only", async () => {
+    expect(await knowledge(null)).toMatchObject({ level: "warn", fix: expect.stringContaining("sandpipe onboard --questions-only") });
+  });
+
+  it("清单格式错：警告（不是不通过），指出行号", async () => {
+    expect(await knowledge("# 缺口清单\n随手写的一行\n")).toMatchObject({ level: "warn", detail: expect.stringContaining("第 2 行") });
+  });
+
+  it("没有 PROJECT.md：不做这项检查", async () => {
+    const root = readyRepo();
+    rmSync(join(root, ".sandcastle/PROJECT.md"));
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+    expect(check(checks, "项目知识")).toBeUndefined();
+  });
+});
 
 describe("diagnose 的出错分支", () => {
   it("准备好的项目全部通过", async () => {

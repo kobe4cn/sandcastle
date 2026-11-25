@@ -1,7 +1,7 @@
 // 缺口清单 `.sandcastle/OPEN-QUESTIONS.md`：onboard 时拿不准、需要人补的规范类和意图类问题，提交进仓库。
-// 每条一行「- [类别] 问题 → 写到哪」，不编号、不加 ID；答案写进目标文档后删掉这一条。onboard 写完后用这里的解析校验，以后 doctor 的计数也用它。
+// 每条一行「- [类别] 问题 → 写到哪」，不编号、不加 ID；答案写进目标文档后删掉这一条。onboard 写完后用这里的解析校验，doctor 的计数也用它。
 // The open questions list `.sandcastle/OPEN-QUESTIONS.md`: convention and intent questions onboard couldn't settle and a human must answer, committed to the repo.
-// One line per item, "- [category] question → where to write it", no numbers or IDs; an item is deleted once its answer is in the target doc. onboard validates with this parser after writing, and doctor's count will use it later.
+// One line per item, "- [category] question → where to write it", no numbers or IDs; an item is deleted once its answer is in the target doc. onboard validates with this parser after writing, and doctor's count uses it too.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
