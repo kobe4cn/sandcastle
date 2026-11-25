@@ -26,6 +26,8 @@
 1. 把 `templates/.sandcastle/` 拷进项目，填 `PROJECT.md`（项目知识，给 agent 看）和 `sandcastle.config.ts`（怎么跑，给脚本用）。
 2. 在项目根目录：`npx tsx <本仓库>/src/main.ts`（`SANDCASTLE_ONLY=12,13` 只做这几张票）。
 
+不想往项目里放 `PROJECT.md` / `sandcastle.config.ts`（试用、配置放别处）时，设 `SANDCASTLE_PROJECT_DIR=<配置目录>`，例如 `SANDCASTLE_PROJECT_DIR=<本仓库>/examples/duckdb_crm`。`models.json`、`.env`、`logs/` 仍在项目的 `.sandcastle/` 里。
+
 ## 提示词怎么拼出来
 
 `prompts/*.md` 是通用模板，不写任何项目的路径或命令。启动时：

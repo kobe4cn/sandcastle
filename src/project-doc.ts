@@ -10,8 +10,9 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { configDir } from "./profile.ts";
 
-export const PROJECT_DOC = ".sandcastle/PROJECT.md";
+export const PROJECT_DOC = "PROJECT.md";
 
 /** PROJECT.md 的固定章节：键 → `## 标题`。标题就是契约，改名要同步模板和 examples。 */
 export const SECTIONS = {
@@ -89,9 +90,10 @@ export function parseProjectDoc(md: string, file = PROJECT_DOC): ProjectDoc {
   return doc;
 }
 
-export function loadProjectDoc(cwd = process.cwd()): ProjectDoc {
-  const file = join(cwd, PROJECT_DOC);
-  if (!existsSync(file)) throw new Error(`找不到 ${PROJECT_DOC}：先按 templates/.sandcastle/PROJECT.md 写一份`);
+/** 读配置目录（见 configDir）里的 PROJECT.md。 */
+export function loadProjectDoc(dir = configDir()): ProjectDoc {
+  const file = join(dir, PROJECT_DOC);
+  if (!existsSync(file)) throw new Error(`找不到 ${file}：先按 templates/.sandcastle/PROJECT.md 写一份`);
   return parseProjectDoc(readFileSync(file, "utf8"), file);
 }
 
@@ -102,9 +104,9 @@ export type PromptName = (typeof PROMPT_NAMES)[number];
 
 const PACKAGE_PROMPTS = fileURLToPath(new URL("../prompts/", import.meta.url));
 
-/** 项目可以在 `.sandcastle/prompts/<name>.md` 放自己的版本整份替换；共享片段（decisions、coding-standards…）同理。 */
-export function readPromptSource(name: string, cwd = process.cwd()): string {
-  const own = join(cwd, ".sandcastle", "prompts", `${name}.md`);
+/** 项目可以在配置目录的 `prompts/<name>.md` 放自己的版本整份替换；共享片段（decisions、coding-standards…）同理。 */
+export function readPromptSource(name: string, dir = configDir()): string {
+  const own = join(dir, "prompts", `${name}.md`);
   return readFileSync(existsSync(own) ? own : join(PACKAGE_PROMPTS, `${name}.md`), "utf8");
 }
 
@@ -140,11 +142,12 @@ export function renderPrompts(args: {
   doc: ProjectDoc;
   forgeGuide: string;
   labels: Record<string, string>;
-  cwd?: string;
+  /** 配置目录，默认 configDir() */
+  dir?: string;
 }): Record<PromptName, string> {
-  const { doc, forgeGuide, labels, cwd = process.cwd() } = args;
+  const { doc, forgeGuide, labels, dir: confDir = configDir() } = args;
   const base: StaticVars = { ...sectionVars(doc), ...labelVars(labels), FORGE: forgeGuide };
-  const shared = (name: string) => renderTemplate(readPromptSource(name, cwd), base, { browser: doc.hasBrowser });
+  const shared = (name: string) => renderTemplate(readPromptSource(name, confDir), base, { browser: doc.hasBrowser });
   const vars: StaticVars = {
     ...base,
     DOC_DECISIONS: shared("decisions"),
@@ -155,7 +158,7 @@ export function renderPrompts(args: {
   const out = {} as Record<PromptName, string>;
   for (const name of PROMPT_NAMES) {
     const file = join(dir, `${name}.md`);
-    writeFileSync(file, renderTemplate(readPromptSource(name, cwd), vars, { browser: doc.hasBrowser }));
+    writeFileSync(file, renderTemplate(readPromptSource(name, confDir), vars, { browser: doc.hasBrowser }));
     out[name] = file;
   }
   return out;

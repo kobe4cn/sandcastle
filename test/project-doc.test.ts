@@ -19,7 +19,7 @@ const render = (md: string) => {
     doc: parseProjectDoc(md),
     forgeGuide: githubForge(() => "").agentGuide(),
     labels: DEFAULT_LABELS,
-    cwd: emptyCwd,
+    dir: emptyCwd,
   });
   return Object.fromEntries(PROMPT_NAMES.map((n) => [n, readFileSync(files[n], "utf8")])) as Record<(typeof PROMPT_NAMES)[number], string>;
 };

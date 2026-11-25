@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { DEFAULT_LABELS, loadProject, resolveProject, type ProjectProfile } from "../src/profile.ts";
+import { configDir, DEFAULT_LABELS, loadProject, resolveProject, type ProjectProfile } from "../src/profile.ts";
 
 const minimal: ProjectProfile = {
   install: { onSandboxReady: "npm ci" },
@@ -40,10 +40,16 @@ describe("loadProject", () => {
 export default defineProject({ maxParallel: 5, install: { onSandboxReady: "x" }, isolation: { env: () => ({}) },
   gate: { script: () => "true", testFile: /t/, typecheck: "true" } });`,
     );
-    expect((await loadProject(dir)).maxParallel).toBe(5);
+    expect((await loadProject(join(dir, ".sandcastle"))).maxParallel).toBe(5);
+  });
+
+  it("配置目录默认是 <cwd>/.sandcastle，SANDCASTLE_PROJECT_DIR 可以改到别处（相对路径按 cwd 解析）", () => {
+    expect(configDir("/repo", {})).toBe("/repo/.sandcastle");
+    expect(configDir("/repo", { SANDCASTLE_PROJECT_DIR: "/x/conf" })).toBe("/x/conf");
+    expect(configDir("/repo", { SANDCASTLE_PROJECT_DIR: "../conf" })).toBe("/conf");
   });
 
   it("没有配置文件时报错说明去哪写", async () => {
-    await expect(loadProject(mkdtempSync(join(tmpdir(), "sc-empty-")))).rejects.toThrow(".sandcastle/sandcastle.config.ts");
+    await expect(loadProject(mkdtempSync(join(tmpdir(), "sc-empty-")))).rejects.toThrow(/sandcastle\.config\.ts.*SANDCASTLE_PROJECT_DIR/);
   });
 });

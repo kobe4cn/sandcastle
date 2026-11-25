@@ -1,19 +1,28 @@
 // ProjectProfile：编排脚本里随项目变的部分——托管平台、沙箱里怎么装依赖、每张票的测试环境怎么隔离、
 // 合并门槛跑什么、合并前还要查什么、自动开的票怎么写。
 //
-// 项目在 `.sandcastle/sandcastle.config.ts` 里 `export default defineProject({...})`，main.ts 启动时加载
+// 项目在配置目录（默认 `.sandcastle/`，见 configDir）的 `sandcastle.config.ts` 里 `export default defineProject({...})`，main.ts 启动时加载
 // （loadProject）。必填的只有 install / isolation / gate 三项，其余有默认值。
 // 门槛脚本与 main.ts 之间的输出约定见 GateConfig。
 
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { SandboxProvider } from "@ai-hero/sandcastle";
 import { podman } from "@ai-hero/sandcastle/sandboxes/podman";
 import type { Forge, MergeMethod } from "./forge.ts";
 import { githubForge } from "./forges/github.ts";
 
-export const CONFIG_FILE = ".sandcastle/sandcastle.config.ts";
+export const CONFIG_FILE = "sandcastle.config.ts";
+
+/**
+ * 项目配置目录：sandcastle.config.ts、PROJECT.md、可选的 prompts/ 放在这里。默认是目标项目的 `.sandcastle/`；
+ * 设了 SANDCASTLE_PROJECT_DIR 就用它（相对路径按 cwd 解析），这样不往目标仓库里放文件也能跑（试用、外置配置）。
+ * models.json、.env、logs/ 仍在目标项目的 `.sandcastle/`，不随它走。
+ */
+export function configDir(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.env): string {
+  return env.SANDCASTLE_PROJECT_DIR ? resolve(cwd, env.SANDCASTLE_PROJECT_DIR) : join(cwd, ".sandcastle");
+}
 
 /**
  * 合并门槛。script 在沙箱的 worktree 里用 `sh -c` 跑，退出码 0 算通过。输出约定（main.ts 解析）：
@@ -201,12 +210,13 @@ export function resolveProject(p: ProjectProfile): Project {
   };
 }
 
-/** 读当前目录（目标项目根）的 `.sandcastle/sandcastle.config.ts`。 */
-export async function loadProject(cwd = process.cwd()): Promise<Project> {
-  const file = resolve(cwd, CONFIG_FILE);
-  if (!existsSync(file)) throw new Error(`找不到 ${CONFIG_FILE}：在项目根目录运行，或先写好项目配置（见 templates/.sandcastle/sandcastle.config.ts）。`);
+/** 读配置目录（见 configDir）里的 sandcastle.config.ts。 */
+export async function loadProject(dir = configDir()): Promise<Project> {
+  const file = join(dir, CONFIG_FILE);
+  if (!existsSync(file))
+    throw new Error(`找不到 ${file}：在项目根目录运行、用 SANDCASTLE_PROJECT_DIR 指定配置目录，或先写好项目配置（见 templates/.sandcastle/sandcastle.config.ts）。`);
   const mod = (await import(pathToFileURL(file).href)) as { default?: ProjectProfile };
-  if (!mod.default) throw new Error(`${CONFIG_FILE} 没有 default export（应为 export default defineProject({...})）。`);
+  if (!mod.default) throw new Error(`${file} 没有 default export（应为 export default defineProject({...})）。`);
   return resolveProject(mod.default);
 }
 
