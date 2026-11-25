@@ -59,9 +59,9 @@
 
 ## H. 升级
 
-- [ ] H1 修完问题后发 v0.1.1；装着 0.1.0 时 doctor 提示有新版本
-- [ ] H2 `sandpipe upgrade` 升到 0.1.1
-- [ ] H3 `sandpipe update` 刷新 `.claude/` 下的文件
+- [x] H1 ✓ 发 v0.1.2（Actions + Trusted Publishing，没用 npm token）；装着 0.1.1 时 doctor 提示有新版本
+- [x] H2 ✓ `sandpipe upgrade` 升到 0.1.2
+- [x] H3 ✓ `sandpipe update` 补上 `.sandcastle/.gitignore` 和 tsconfig.json，doctor 全绿；不装任何依赖时 `tsc -p .sandcastle` 通过
 
 ## 不在本次范围
 
