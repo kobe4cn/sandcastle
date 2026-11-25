@@ -7,6 +7,7 @@
 
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { registerHooks } from "node:module";
 import { pathToFileURL } from "node:url";
 import type { SandboxProvider } from "@ai-hero/sandcastle";
 import { podman } from "@ai-hero/sandcastle/sandboxes/podman";
@@ -219,8 +220,26 @@ export function resolveProject(p: ProjectProfile): Project {
   };
 }
 
+/** 本工具的公开接口（index）所在：开发时是 src/index.ts，打包后是 dist/index.js（和本模块同目录）。 */
+const INDEX_URL = new URL(import.meta.url.endsWith(".ts") ? "./index.ts" : "./index.js", import.meta.url).href;
+let resolverRegistered = false;
+
+/**
+ * 配置里 `import … from "sandcastle-pipeline"` 一律指向正在运行的这份工具：
+ * 全局安装时项目目录下解析不到这个包，也不该让 Python、Go 项目为它装 node_modules。
+ */
+function registerSelfResolver() {
+  if (resolverRegistered) return;
+  resolverRegistered = true;
+  registerHooks({
+    resolve: (specifier, context, next) =>
+      specifier === "sandcastle-pipeline" ? { url: INDEX_URL, shortCircuit: true } : next(specifier, context),
+  });
+}
+
 /** 读配置目录（见 configDir）里的 sandcastle.config.ts。 */
 export async function loadProject(dir = configDir()): Promise<Project> {
+  registerSelfResolver();
   const file = join(dir, CONFIG_FILE);
   if (!existsSync(file))
     throw new Error(`找不到 ${file}：在项目根目录运行、用 SANDCASTLE_PROJECT_DIR 指定配置目录，或先写好项目配置（见 templates/.sandcastle/sandcastle.config.ts）。`);

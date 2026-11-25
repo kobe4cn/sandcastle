@@ -6,14 +6,14 @@ argument-hint: "[issue number; omit to pick the next ready ticket]"
 
 # Prep a ticket for /implement
 
-The rules (size limit, vertical slices, guide template) are in `docs/agents/ticket-sizing.md`. Read it first. Write ticket bodies in Chinese, like the existing issues.
+The rules (size limit, vertical slices, guide template) are in `ticket-sizing.md` next to this file. Read it first. Project facts (commands, test layout, docs, red lines) are in `.sandcastle/PROJECT.md`; read its 测试 and 领域与文档 sections. Write ticket bodies in the language of the existing issues.
 
 Keep this session light: never read source files in full here. All exploration goes through the Explore subagent.
 
 ## 1. Pick the ticket
 
 - With an argument, use that issue: `gh issue view <n> --json number,title,body,labels,comments`.
-- Without an argument, list open `ready-for-agent` issues. Take the lowest-numbered one whose `## Blocked by` issues are all closed, skipping the spec issue (#1).
+- Without an argument, list open `ready-for-agent` issues. Take the lowest-numbered one whose `## Blocked by` issues are all closed, skipping spec / tracking issues that have `## Split into`.
 - If a blocker is still open, check with `git log --oneline --grep "#<blocker>"` whether it was already implemented. If it was, tell the user it can be closed. Don't close it yourself.
 
 ## 2. Decide whether it needs work
@@ -39,8 +39,8 @@ Launch an `Explore` subagent with breadth "medium". Wait for its report, and don
 - 可复用的已有接口：一行函数签名；表结构 / 类型的字段名
 - 数据现在从哪来、存在哪（表、JSON 字段、类型定义）
 - 相关的校验、权限、路由入口（loader / action 的位置）
-- 相关 ADR 编号（查 docs/adr/README.md）
-- 测试放哪个文件、可复用的 helper（查 test/README.md）、可照着写的一个已有用例（grep test/CATALOG.md，给出文件 + it 名）
+- 相关的架构决定 / 设计文档（按 .sandcastle/PROJECT.md 的「领域与文档」去查）
+- 测试放哪个文件、可复用的 helper、可照着写的一个已有用例（按 .sandcastle/PROJECT.md 的「测试」去查，给出文件 + 用例名）
 - 种子数据或测试数据里会影响验收的事实
 - 非显而易见的坑（会被校验拦下、缺失的属性、隐私或权限约束）
 - 各块之间的依赖，每块要改几个已有文件，以及每块预计新增行数（含测试）
@@ -56,7 +56,7 @@ From the report, split the ticket into vertical slices. Each slice has ≤3 acce
 
 ## 5. Write each guide
 
-Use the template in `docs/agents/ticket-sizing.md`. Before publishing, `grep -n` two or three of the references to confirm the line numbers. Don't leave decisions to the implementer: settle each one now, write the outcome into the guide (or an ADR), and if it needs a human, ask the user before publishing.
+Use the template in `ticket-sizing.md` next to this file. Before publishing, `grep -n` two or three of the references to confirm the line numbers. Don't leave decisions to the implementer: settle each one now, write the outcome into the guide (or an ADR), and if it needs a human, ask the user before publishing.
 
 ## 6. Publish
 

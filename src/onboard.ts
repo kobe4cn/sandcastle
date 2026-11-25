@@ -5,7 +5,7 @@
 //      .sandcastle/sandcastle.config.ts  怎么跑（安装、隔离、门槛），按探测结果填好
 //      .sandcastle/PROJECT.md            项目知识草稿（探测到的事实 + 待补的章节）
 //      .sandcastle/models.json、.env.example、.gitignore、Containerfile
-//      .claude/hooks/sandcastle-context.mjs、.claude/agents/screenshot-checker.md，并在 .claude/settings.json 里登记 hook
+//      .claude/ 下的上下文预算 hook、screenshot-checker 子代理、prep-ticket skill（CLAUDE_FILES），并在 .claude/settings.json 里登记 hook
 // 3. 补全 PROJECT.md（默认开，--no-agent 跳过）：宿主机上跑一次 claude -p，读代码把草稿写成完整的 PROJECT.md，
 //    只许改这一个文件；写完按 parseProjectDoc 校验。需要人确认的点打印出来并存进 .sandcastle/logs/onboard.md。
 
@@ -15,9 +15,10 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { detectProject, type ProjectFacts } from "./detect.ts";
+import { DEFAULT_LABELS } from "./profile.ts";
 import { parseProjectDoc } from "./project-doc.ts";
 
-const TOOL_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+export const TOOL_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const HOOK_FILE = "sandcastle-context.mjs";
 
 // ---------------------------------------------------------------------------
@@ -25,11 +26,6 @@ export const HOOK_FILE = "sandcastle-context.mjs";
 // ---------------------------------------------------------------------------
 
 const q = (s: string) => JSON.stringify(s);
-
-/** 生成的配置 import 什么：项目装了这个包就用包名，否则用本仓库的绝对路径。 */
-export function importSpecifier(root: string): string {
-  return existsSync(join(root, "node_modules", "sandcastle-pipeline")) ? "sandcastle-pipeline" : join(TOOL_ROOT, "src", "index.ts");
-}
 
 export function configSource(f: ProjectFacts, importFrom: string): string {
   const gateSteps = [f.commands.typecheck, f.commands.lint, f.commands.test].filter(Boolean) as string[];
@@ -49,7 +45,7 @@ export function configSource(f: ProjectFacts, importFrom: string): string {
     : ["    // 测试依赖外部服务（数据库、缓存、对象存储）时，在这里给每张票独立的库名 / 前缀（加 runId）。"];
   return [
     "// Sandcastle 项目配置：编排脚本里随项目变的部分（由 sandcastle-pipeline onboard 生成，按需修改）。",
-    "// 字段说明见 sandcastle-pipeline 的 src/profile.ts；完整例子见它的 examples/duckdb_crm/sandcastle.config.ts。",
+    "// 字段说明见 sandcastle-pipeline 的 docs/config.md。",
     `import { defineProject } from ${q(importFrom)};`,
     "",
     "export default defineProject({",
@@ -85,7 +81,7 @@ export function configSource(f: ProjectFacts, importFrom: string): string {
     ...(f.migrations
       ? [
           `  // 迁移（${f.migrations.tool}，${f.migrations.dir}/）：两张票各加一个迁移时 rebase 没有文本冲突也可能分叉，`,
-          "  // 可以配 integrity 在合并前检查，见 examples/duckdb_crm 的「迁移链」。",
+          "  // 可以配 integrity 在合并前检查（比如迁移链是否接在 main 最新的迁移之后），见 docs/config.md。",
           "",
         ]
       : []),
@@ -216,18 +212,47 @@ function writeIfMissing(root: string, file: string, content: string | (() => str
   return { file, status: "写入" };
 }
 
-const tool = (p: string) => readFileSync(join(TOOL_ROOT, p), "utf8");
+/** 工具里的文件；标签名占位符按默认标签填上（给人和交互式 claude 看的副本）。 */
+export const toolFile = (p: string) =>
+  readFileSync(join(TOOL_ROOT, p), "utf8").replace(/\{\{L_([A-Z_]+)\}\}/g, (m, key: string) => {
+    const name = key.toLowerCase().replace(/_([a-z])/g, (_, c: string) => c.toUpperCase()) as keyof typeof DEFAULT_LABELS;
+    return DEFAULT_LABELS[name] ?? m;
+  });
+const tool = toolFile;
+
+/** 本工具拥有的 .claude/ 文件（项目里的路径 → 工具里的路径）：onboard 缺了才装，update 直接覆盖成当前版本。 */
+export const CLAUDE_FILES: Record<string, string> = {
+  [`.claude/hooks/${HOOK_FILE}`]: `claude/hooks/${HOOK_FILE}`,
+  ".claude/agents/screenshot-checker.md": "claude/agents/screenshot-checker.md",
+  ".claude/skills/prep-ticket/SKILL.md": "claude/skills/prep-ticket/SKILL.md",
+  ".claude/skills/prep-ticket/ticket-sizing.md": "prompts/ticket-sizing.md",
+};
+
+/** 把 CLAUDE_FILES 覆盖成当前版本，返回内容有变化的文件。升级工具后跑（sandcastle-pipeline update）。 */
+export function updateClaudeFiles(root: string): string[] {
+  const changed: string[] = [];
+  for (const [file, src] of Object.entries(CLAUDE_FILES)) {
+    const path = join(root, file);
+    const next = tool(src);
+    if (existsSync(path) && readFileSync(path, "utf8") === next) continue;
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, next);
+    changed.push(file);
+  }
+  return changed;
+}
 
 export function installFiles(root: string, f: ProjectFacts): Outcome[] {
   const out: Outcome[] = [
-    writeIfMissing(root, ".sandcastle/sandcastle.config.ts", () => configSource(f, importSpecifier(root))),
+    writeIfMissing(root, ".sandcastle/sandcastle.config.ts", () => configSource(f, "sandcastle-pipeline")),
     writeIfMissing(root, ".sandcastle/PROJECT.md", () => projectDocDraft(f)),
+    // 让 Node 把 .sandcastle/ 下的 .ts 当 ESM 加载（项目可能没有 package.json，或者是 CommonJS）
+    writeIfMissing(root, ".sandcastle/package.json", '{ "type": "module" }\n'),
     writeIfMissing(root, ".sandcastle/models.json", () => tool("templates/.sandcastle/models.json")),
     writeIfMissing(root, ".sandcastle/.env.example", () => tool("templates/.sandcastle/.env.example")),
-    writeIfMissing(root, ".sandcastle/.gitignore", () => tool("templates/.sandcastle/.gitignore")),
+    writeIfMissing(root, ".sandcastle/.gitignore", () => tool("templates/.sandcastle/gitignore") /* npm 打包会丢掉 .gitignore，模板里不带点 */),
     writeIfMissing(root, ".sandcastle/Containerfile", () => containerfileSource(tool("templates/.sandcastle/Containerfile"), f)),
-    writeIfMissing(root, `.claude/hooks/${HOOK_FILE}`, () => tool(`claude/hooks/${HOOK_FILE}`)),
-    writeIfMissing(root, ".claude/agents/screenshot-checker.md", () => tool("claude/agents/screenshot-checker.md")),
+    ...Object.entries(CLAUDE_FILES).map(([file, src]) => writeIfMissing(root, file, () => tool(src))),
   ];
   const settingsPath = join(root, ".claude/settings.json");
   const existing = existsSync(settingsPath) ? (JSON.parse(readFileSync(settingsPath, "utf8")) as Settings) : {};
@@ -254,7 +279,7 @@ export function onboardPrompt(f: ProjectFacts): string {
   return tool("prompts/onboard.md")
     .replace("{{FACTS}}", () => facts)
     .replace("{{TEMPLATE}}", () => tool("templates/.sandcastle/PROJECT.md"))
-    .replace("{{EXAMPLE}}", () => tool("examples/duckdb_crm/PROJECT.md"));
+    .replace("{{EXAMPLE}}", () => tool("templates/example-PROJECT.md"));
 }
 
 function runAgent(root: string, f: ProjectFacts, model: string): string {
@@ -343,8 +368,7 @@ export function onboard(argv: string[], root = process.cwd()) {
       "  2. cp .sandcastle/.env.example .sandcastle/.env，填 token",
       `  3. 建镜像：podman build -t ${defaultImageName(root)} -f .sandcastle/Containerfile .sandcastle`,
       "  4. sandcastle-pipeline doctor --fix 检查一遍（顺带建好标签）",
-      "  5. 之后按 docs/onboarding-checklist.md：baseline 跑一次完整门槛 → 金丝雀票 → 真实小票 → 打开自动合并",
-      `  （生成的配置 import 自 ${importSpecifier(root)}）`,
+      `  5. 之后按 ${join(TOOL_ROOT, "docs/onboarding-checklist.md")}：baseline 跑一次完整门槛 → 金丝雀票 → 真实小票 → 打开自动合并`,
     ].join("\n"),
   );
 }

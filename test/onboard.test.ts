@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { containerfileSource, installFiles, mergeGitignore, mergeSettings, onboardPrompt } from "../src/onboard.ts";
+import { containerfileSource, installFiles, mergeGitignore, mergeSettings, onboardPrompt, updateClaudeFiles } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { parseProjectDoc } from "../src/project-doc.ts";
 import { nodeRepo } from "./fixtures.ts";
@@ -60,6 +60,8 @@ describe("installFiles", () => {
     // 新项目试跑期：只开 PR 不合并、一次一张（docs/onboarding-checklist.md）
     expect(project).toMatchObject({ autoMerge: false, maxParallel: 1 });
 
+    expect(JSON.parse(readFileSync(join(root, ".sandcastle/package.json"), "utf8"))).toEqual({ type: "module" });
+
     const doc = parseProjectDoc(readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8"));
     expect(doc.commands).toContain("`pnpm typecheck`");
     expect(doc.conflicts).toContain("drizzle-kit");
@@ -68,6 +70,26 @@ describe("installFiles", () => {
     writeFileSync(join(root, ".sandcastle/PROJECT.md"), "人改过");
     const second = installFiles(root, f);
     expect(second.filter((o) => o.status === "写入")).toEqual([]);
+    expect(readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8")).toBe("人改过");
+  });
+});
+
+describe("updateClaudeFiles", () => {
+  it("onboard 装上 prep-ticket skill；update 只覆盖改过的，再跑没有改动；不碰 .sandcastle/", () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    const skill = join(root, ".claude/skills/prep-ticket/SKILL.md");
+    const original = readFileSync(skill, "utf8");
+    expect(original).toContain("prep-ticket");
+    // 拆票规则跟着装上，标签名已填好
+    const sizing = readFileSync(join(root, ".claude/skills/prep-ticket/ticket-sizing.md"), "utf8");
+    expect(sizing).toContain("ready-for-agent");
+    expect(sizing).not.toMatch(/\{\{/);
+    writeFileSync(skill, "旧版");
+    writeFileSync(join(root, ".sandcastle/PROJECT.md"), "人改过");
+    expect(updateClaudeFiles(root)).toEqual([".claude/skills/prep-ticket/SKILL.md"]);
+    expect(readFileSync(skill, "utf8")).toBe(original);
+    expect(updateClaudeFiles(root)).toEqual([]);
     expect(readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8")).toBe("人改过");
   });
 });
@@ -106,10 +128,15 @@ describe("containerfileSource", () => {
 });
 
 describe("onboardPrompt", () => {
+  it("给 agent 的示例 PROJECT.md 能通过校验", () => {
+    const example = readFileSync(new URL("../templates/example-PROJECT.md", import.meta.url), "utf8");
+    expect(parseProjectDoc(example).hasBrowser).toBe(true);
+  });
+
   it("事实、模板、示例都填进去，没有残留占位符", () => {
     const p = onboardPrompt(detectProject(nodeRepo()));
     expect(p).not.toMatch(/\{\{[A-Z_]+\}\}/);
     expect(p).toContain('"packageManager": "pnpm"');
-    expect(p).toContain("$type<…>()");
+    expect(p).toContain("shop-admin");
   });
 });

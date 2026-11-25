@@ -1,0 +1,37 @@
+# 推 v* 标签时：类型检查、测试、打包，把 sandcastle-pipeline.tgz 发到公开的 releases 仓库（package.json 的 sandcastle.releases）。
+# 需要仓库 secret RELEASES_TOKEN：对 releases 仓库有 Contents 读写权限的 fine-grained token。
+name: release
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: 标签和 package.json 的版本一致
+        run: test "v$(node -p 'require("./package.json").version')" = "$GITHUB_REF_NAME"
+      - run: npm run typecheck
+      - run: npm test
+      - name: 打包
+        run: |
+          npm pack
+          mv sandcastle-pipeline-*.tgz sandcastle-pipeline.tgz
+      - name: 发布说明取 CHANGELOG.md 里这个版本的一节
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '$0 ~ "^## "v"( |$)" {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
+          test -s notes.md || { echo "CHANGELOG.md 里没有 ## $v"; exit 1; }
+      - name: 发到 releases 仓库
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_TOKEN }}
+        run: |
+          repo=$(node -p 'require("./package.json").sandcastle.releases')
+          gh release create "$GITHUB_REF_NAME" sandcastle-pipeline.tgz \
+            --repo "$repo" --title "$GITHUB_REF_NAME" --notes-file notes.md

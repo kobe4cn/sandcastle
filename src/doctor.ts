@@ -1,6 +1,6 @@
 // doctor：跑流水线之前把能在宿主机上查的都查一遍，每项给出结论和修法。
 // 查：仓库根目录、配置能加载、PROJECT.md 与提示词能渲染、models.json、.env 的 token、平台登录与权限、
-// 标签（--fix 时补建）、远端基础分支、沙箱镜像、上下文预算 hook、.gitignore 里的工作目录。
+// 标签（--fix 时补建）、远端基础分支、沙箱镜像、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
 // 有一项 ✗ 退出码就是 1。
 
 import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -9,10 +9,11 @@ import { parseEnv } from "node:util";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import type { Forge } from "./forge.ts";
 import { inspectModels } from "./models.ts";
-import { HOOK_FILE, mergeGitignore } from "./onboard.ts";
+import { CLAUDE_FILES, HOOK_FILE, mergeGitignore, toolFile } from "./onboard.ts";
 import { configDir, loadProject, type Labels, type Project } from "./profile.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { trySh, type TryResult } from "./shell.ts";
+import { latestVersion, newer, VERSION } from "./version.ts";
 
 export type Level = "ok" | "warn" | "fail";
 export type Check = { name: string; level: Level; detail: string; fix?: string };
@@ -48,6 +49,8 @@ export async function diagnose(opts: {
   forge?: Forge;
   /** 缺的标签直接建上 */
   fix?: boolean;
+  /** 查最新发布的版本；不给就不查（测试里不连网） */
+  latest?: () => Promise<string | undefined>;
 }): Promise<Check[]> {
   const cwd = opts.cwd ?? process.cwd();
   const env = opts.env ?? process.env;
@@ -200,6 +203,24 @@ export async function diagnose(opts: {
     add(".gitignore", "ok", "流水线的工作目录都已忽略");
   else add(".gitignore", "warn", "缺 .browser-check/ 等工作目录：implementer 的 git add -A 会把截图和验收说明提交进去", "跑 onboard 补上");
 
+  // ---- .claude/ 里本工具的文件是否是当前版本 ----
+  const stale = Object.entries(CLAUDE_FILES)
+    .filter(([file, src]) => {
+      const path = join(cwd, file);
+      return !existsSync(path) || readFileSync(path, "utf8") !== toolFile(src);
+    })
+    .map(([file]) => file);
+  if (!stale.length) add("Claude 文件", "ok", "hook、子代理、skill 都是当前版本");
+  else add("Claude 文件", "warn", `和当前版本不一致或缺失：${stale.join("、")}`, "sandcastle-pipeline update");
+
+  // ---- 版本 ----
+  if (opts.latest) {
+    const latest = await opts.latest();
+    if (!latest) add("版本", "warn", `${VERSION}；查不到最新版本（网络或还没发版）`);
+    else if (newer(latest, VERSION)) add("版本", "warn", `${VERSION}，最新是 ${latest}`, `sandcastle-pipeline upgrade，然后 sandcastle-pipeline update`);
+    else add("版本", "ok", `${VERSION} 是最新`);
+  }
+
   return checks;
 }
 
@@ -224,7 +245,7 @@ export function formatChecks(checks: Check[]): string {
 }
 
 export async function doctor(argv: string[]) {
-  const checks = await diagnose({ fix: argv.includes("--fix") });
+  const checks = await diagnose({ fix: argv.includes("--fix"), latest: () => latestVersion() });
   console.log(formatChecks(checks));
   const failed = checks.filter((c) => c.level === "fail").length;
   const warned = checks.filter((c) => c.level === "warn").length;

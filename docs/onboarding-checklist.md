@@ -31,7 +31,7 @@
 - [ ] 开一张几乎不会失败的小票，比如改一处文案或补一条注释，打上 `Sandcastle` 标签
 - [ ] `SANDCASTLE_ONLY=<票号> sandcastle-pipeline`
 - [ ] 核对：
-  - prep 写了 `## Implementation guide`，标签按状态机走（见 docs/sandcastle.md）
+  - prep 写了 `## Implementation guide`，标签按状态机走（见 docs/config.md 的「标签」）
   - PR 正文有 Review、Gate、用量；改了页面时有验收说明
   - 因为 `autoMerge: false`，PR 留着等人合并，评论写明原因
   - `.sandcastle/logs/` 里没有异常；沙箱、worktree 和测试库都清干净了

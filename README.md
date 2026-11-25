@@ -1,68 +1,71 @@
 # sandcastle-pipeline
 
-在 [`@ai-hero/sandcastle`](https://github.com/mattpocock/sandcastle)（沙箱、跑 agent、worktree）之上的 issue → PR → 合并流水线，
-从 duckdb_crm 的 `.sandcastle/` 抽出来：prep 拆票写指引、确定性排期（blocker、同文件冲突）、implement + review（revise 打回）、
-测试门槛（选测、偶发失败重跑与开票）、自动合并与 rebase 补救、PR 打回、接手外部 PR、按阶段配模型、上下文预算 hook。
+把 GitHub issue 无人值守地做成 PR、过测试后合并的流水线，基于 [`@ai-hero/sandcastle`](https://github.com/mattpocock/sandcastle)。
 
-## 结构
+流水线按顺序做这些事：
 
-| 路径 | 内容 |
-|---|---|
-| `src/cli.ts` | 命令行入口：`run`（默认）、`onboard`、`doctor`、`baseline` |
-| `src/doctor.ts` | 跑之前的检查：配置、PROJECT.md、models.json、.env、平台登录与权限、标签、远端分支、镜像、hook、.gitignore |
-| `src/main.ts` | 编排（调度、build、land）。不含项目细节，不直接调 gh |
-| `src/detect.ts` `src/onboard.ts` `prompts/onboard.md` | 接入新项目：探测、生成配置、agent 补全 PROJECT.md |
-| `src/forge.ts` | **Forge** 接口：托管平台上的 issue / 标签 / PR / 合并 |
-| `src/forges/github.ts` | GitHub 实现（gh CLI） |
-| `src/profile.ts` | **ProjectProfile**：项目配置（测试隔离、门槛、安装、一致性检查、文案）与默认值 |
-| `src/project-doc.ts` | 解析 `.sandcastle/PROJECT.md`、渲染提示词 |
-| `prompts/` | 通用提示词模板（implement / review / prep / rebase）与共享片段（设计决定、编码规范、票的大小） |
-| `src/shell.ts` | 宿主机命令（超时、远端重试） |
-| `src/guide.ts` `src/pr-body.ts` `src/models.ts` | 票正文解析、PR 正文、模型档案 |
-| `templates/.sandcastle/` | 装到新项目的 PROJECT.md 模板、配置模板、Containerfile、models.json |
-| `claude/` | 上下文预算 hook、screenshot-checker 子代理、prep-ticket skill |
-| `examples/duckdb_crm/` | 第一个接入方的完整配置 |
-| `docs/` | 状态机、票的大小规则等（从 duckdb_crm 复制，尚未通用化） |
+1. 拆票，写实现指引；
+2. 按依赖和改动的文件排期；
+3. 在 podman 沙箱里让 Claude Code 实现，由另一个会话审查，必要时打回重改；
+4. 跑你定义的测试门槛；
+5. 全部通过就合并，否则留 PR 给人看。
 
-## 在项目里用
+## 需要
 
-1. 在项目根目录 `npx tsx <本仓库>/src/cli.ts onboard`：
-   - 探测语言、包管理、命令、托管平台、文档、测试、迁移、compose 里的服务（`src/detect.ts`，只读文件和 git）；
-   - 生成 `.sandcastle/` 下的 `sandcastle.config.ts`、`PROJECT.md` 草稿、`models.json`、`.env.example`、`.gitignore`、`Containerfile`，
-     装 `.claude/hooks/sandcastle-context.mjs`（上下文预算）与 `screenshot-checker` 子代理，并在 `.claude/settings.json` 里登记 hook；已存在的文件一律跳过；
-   - 让宿主机的 claude（默认 opus，`--model` 换，`--no-agent` 跳过）读代码把 `PROJECT.md` 写完整，只许改这一个文件；
-     拿不准的点和 `sandcastle.config.ts` 的建议打印出来，并存进 `.sandcastle/logs/onboard.md`。
-2. 看一遍 `PROJECT.md`（项目知识，给 agent 看）与 `sandcastle.config.ts`（怎么跑：测试隔离、门槛），填 `.sandcastle/.env`，建镜像。
-3. `npx tsx <本仓库>/src/cli.ts doctor`：逐项给出 ✓ / ⚠ / ✗ 和修法，有 ✗ 退出码为 1；`--fix` 把缺的标签建上（只有这一项会写东西）。
-4. `npx tsx <本仓库>/src/cli.ts baseline`：在沙箱里对 `origin/main` 跑一次完整门槛，只报告、不开票。
-5. 跑：`npx tsx <本仓库>/src/cli.ts`（`SANDCASTLE_ONLY=12,13` 只做这几张票）。onboard 生成的配置是 `autoMerge: false`、`maxParallel: 1`：
-   全部通过的票也只留 PR。金丝雀票、真实小票都没问题后再放开，完整步骤见 [docs/onboarding-checklist.md](docs/onboarding-checklist.md)。
+- Node ≥ 22.18
+- 已登录的 `gh`（`gh auth login`）
+- podman（macOS 上还要 `podman machine start`）
+- Claude Code 的凭据：订阅用户可用 `claude setup-token` 生成
 
-不想往项目里放 `PROJECT.md` / `sandcastle.config.ts`（试用、配置放别处）时，设 `SANDCASTLE_PROJECT_DIR=<配置目录>`，例如 `SANDCASTLE_PROJECT_DIR=<本仓库>/examples/duckdb_crm`。`models.json`、`.env`、`logs/` 仍在项目的 `.sandcastle/` 里。
-
-## 提示词怎么拼出来
-
-`prompts/*.md` 是通用模板，不写任何项目的路径或命令。启动时：
-
-- `{{P_…}}` 换成 `.sandcastle/PROJECT.md` 对应章节（章节表见 `src/project-doc.ts` 的 `SECTIONS`，各节进哪个阶段见 PROJECT.md 模板的注释）；
-- `{{DOC_…}}` 换成共享片段（`decisions`、`coding-standards`、`ticket-sizing`），`{{L_…}}` 换成标签名，`{{FORGE}}` 换成平台的命令清单（`Forge.agentGuide()`）；
-- `{{IF_BROWSER}}…{{ELSE_BROWSER}}…{{END_BROWSER}}` 按 PROJECT.md 有没有「浏览器验收」取一边；
-- 其余 `{{TASK_ID}}`、`{{BRANCH}}` 等留给 sandcastle 在每次运行时替换。
-
-项目要整份换掉某个模板时，放一份 `.sandcastle/prompts/<name>.md`。
-
-## 开发
+## 安装
 
 ```bash
-npm install
-npm run typecheck
-npm test
+npm i -g https://github.com/kobe4cn/sandcastle-releases/releases/latest/download/sandcastle-pipeline.tgz
 ```
 
-## 现状
+以后升级：`sandcastle-pipeline upgrade`，然后在各项目里跑 `sandcastle-pipeline update`。
 
-- 第 1、2 步已完成：抽出 Forge 与 ProjectProfile，duckdb_crm 的项目差异全在 `examples/duckdb_crm/sandcastle.config.ts`。
-- 第 4 步已完成：提示词通用化，项目知识收进 `PROJECT.md`（duckdb_crm 的见 `examples/duckdb_crm/PROJECT.md`）。
-- `docs/` 与 `claude/skills/prep-ticket` 仍是 duckdb_crm 的写法，打包成插件时再改。
-- 第 6、7、8 步已完成：`onboard`、`doctor`、接入检查清单（`baseline` 命令与 `autoMerge` 开关）。
-- 还没有 GitLab Forge。
+## 接入一个项目
+
+在项目根目录：
+
+```bash
+sandcastle-pipeline onboard          # 探测项目，生成 .sandcastle/，让 claude 读代码写好 PROJECT.md
+cp .sandcastle/.env.example .sandcastle/.env    # 填 token
+podman build -t sandcastle:<项目名> -f .sandcastle/Containerfile .sandcastle   # onboard 最后会打印准确的命令
+sandcastle-pipeline doctor --fix     # 逐项检查，顺带建好标签
+sandcastle-pipeline baseline         # 在沙箱里对 main 跑一次完整门槛
+```
+
+然后给 issue 打上 `Sandcastle` 标签，运行：
+
+```bash
+SANDCASTLE_ONLY=12 sandcastle-pipeline    # 只做 #12；不设就处理全部带标签的票
+```
+
+新项目默认只开 PR、不自动合并（`autoMerge: false`），一次只做一张票。按 [docs/onboarding-checklist.md](docs/onboarding-checklist.md) 走完金丝雀票、真实小票，确认没问题后再放开。
+
+## 生成的文件
+
+| 文件 | 作用 |
+|---|---|
+| `.sandcastle/PROJECT.md` | 给 agent 看的项目知识：概况、命令、测试、规范、红线、冲突处理、提交约定 |
+| `.sandcastle/sandcastle.config.ts` | 怎么跑：装依赖、测试隔离、合并门槛。字段说明见 [docs/config.md](docs/config.md) |
+| `.sandcastle/models.json` | 各阶段（prep / implement / review …）用哪个模型 |
+| `.sandcastle/.env` | token，不提交 |
+| `.sandcastle/Containerfile` | 沙箱镜像 |
+| `.claude/` | 上下文预算 hook、截图查看子代理、`/prep-ticket` skill |
+
+## 命令
+
+| 命令 | 作用 |
+|---|---|
+| `sandcastle-pipeline [run]` | 跑流水线 |
+| `sandcastle-pipeline onboard [--no-agent] [--model <名>]` | 接入新项目，已有的文件不覆盖 |
+| `sandcastle-pipeline doctor [--fix]` | 跑之前的检查；有 ✗ 时退出码为 1 |
+| `sandcastle-pipeline baseline` | 对 `origin/main` 跑一次完整门槛，只报告 |
+| `sandcastle-pipeline update` | 把 `.claude/` 下本工具的文件刷成当前版本 |
+| `sandcastle-pipeline upgrade` | 安装最新版本 |
+| `sandcastle-pipeline --version` | |
+
+现在只支持 GitHub，GitLab 还没做。

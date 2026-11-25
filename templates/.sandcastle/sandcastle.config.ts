@@ -1,5 +1,4 @@
-// Sandcastle 项目配置：编排脚本里随项目变的部分。字段说明见 sandcastle-pipeline 的 src/profile.ts，
-// 完整例子见 examples/duckdb_crm/sandcastle.config.ts。
+// Sandcastle 项目配置：编排脚本里随项目变的部分。字段说明见 sandcastle-pipeline 的 docs/config.md。
 import { defineProject } from "sandcastle-pipeline";
 
 export default defineProject({

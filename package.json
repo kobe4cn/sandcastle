@@ -4,15 +4,33 @@
   "private": true,
   "description": "在 @ai-hero/sandcastle 之上的 issue → PR → 合并流水线：prep 拆票、确定性排期、implement + review、测试门槛、自动合并。项目差异在目标项目的 .sandcastle/sandcastle.config.ts。",
   "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./dist/index.js"
   },
   "bin": {
-    "sandcastle-pipeline": "./src/cli.ts"
+    "sandcastle-pipeline": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "prompts",
+    "templates",
+    "claude",
+    "docs/onboarding-checklist.md",
+    "docs/config.md",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "sandcastle": {
+    "releases": "kobe4cn/sandcastle-releases"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "build": "node scripts/build.mjs",
+    "prepack": "npm run build"
   },
   "dependencies": {
     "@ai-hero/sandcastle": "^0.12.0"
@@ -21,6 +39,7 @@
     "@types/node": "^22",
     "tsx": "^4.23.15",
     "typescript": "^5.9.0",
-    "vitest": "^3.2.0"
+    "vitest": "^3.2.0",
+    "esbuild": "^0.28.2"
   }
 }

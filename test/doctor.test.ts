@@ -6,6 +6,7 @@ import { detectProject } from "../src/detect.ts";
 import { type Check, diagnose, formatChecks, type Runner } from "../src/doctor.ts";
 import { githubForge } from "../src/forges/github.ts";
 import { installFiles } from "../src/onboard.ts";
+import { VERSION } from "../src/version.ts";
 import { DEFAULT_LABELS } from "../src/profile.ts";
 import { trySh } from "../src/shell.ts";
 import { nodeRepo } from "./fixtures.ts";
@@ -54,6 +55,7 @@ describe("diagnose", () => {
       沙箱镜像: "fail",
       "上下文 hook": "ok",
       ".gitignore": "ok",
+      "Claude 文件": "ok",
     });
     const text = formatChecks(first);
     expect(text).toContain("cp .sandcastle/.env.example .sandcastle/.env");
@@ -179,5 +181,20 @@ describe("diagnose 的出错分支", () => {
     const out = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: loggedOut });
     expect(check(out, "平台（github）")?.level).toBe("fail");
     expect(check(out, "标签")).toBeUndefined();
+  });
+});
+
+describe("diagnose：.claude/ 文件与版本", () => {
+  it("skill 被改过：警告并提示 update；有新版本：警告并提示 upgrade；已是最新：通过", async () => {
+    const root = readyRepo();
+    writeFileSync(join(root, ".claude/skills/prep-ticket/SKILL.md"), "旧版");
+    const base = { cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) };
+    const checks = await diagnose({ ...base, latest: async () => "99.0.0" });
+    expect(check(checks, "Claude 文件")).toMatchObject({ level: "warn", fix: "sandcastle-pipeline update" });
+    expect(check(checks, "版本")).toMatchObject({ level: "warn", fix: expect.stringContaining("upgrade") });
+
+    const ok = await diagnose({ ...base, latest: async () => VERSION });
+    expect(check(ok, "版本")?.level).toBe("ok");
+    expect(check(await diagnose(base), "版本")).toBeUndefined();
   });
 });
