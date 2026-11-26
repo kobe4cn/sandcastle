@@ -203,6 +203,14 @@ export interface ProjectProfile {
   acceptancePrep?(branch: string): string;
 
   /**
+   * 浏览器验收。pagePaths：页面文件路径（相对仓库根）的正则，票改到匹配的文件就算「改了页面」；不写时为空，即不按路径判断。
+   * 项目从纯后端加了前端时补上（见 docs/config.zh-CN.md「浏览器验收」）。
+   * Browser checks. pagePaths: regexes for page file paths (relative to the repo root); a ticket touching a matching file counts as "changing pages". Empty when absent, i.e. no path-based judgement.
+   * Add it when a backend-only project gains a frontend (see docs/config.md, "Browser check").
+   */
+  browser?: { pagePaths?: RegExp[] };
+
+  /**
    * 自动开的票（偶发失败、main 坏了）与内联提示词的正文。不给时用通用版。
    * Bodies of auto-opened tickets (flaky, main broken) and inline prompts. Generic versions when not given.
    */
@@ -268,6 +276,7 @@ export type Project = Required<
   customSandbox: boolean;
   beforeSchedule(): void;
   acceptancePrep?(branch: string): string;
+  browser: { pagePaths: RegExp[] };
   texts: Required<NonNullable<ProjectProfile["texts"]>>;
 };
 
@@ -299,6 +308,7 @@ export function resolveProject(p: ProjectProfile): Project {
     beforeSchedule: p.beforeSchedule ?? (() => {}),
     appendOnlyFiles: p.appendOnlyFiles ?? [],
     acceptancePrep: p.acceptancePrep,
+    browser: { pagePaths: p.browser?.pagePaths ?? [] },
     texts: { ...defaultTexts(p.language), ...p.texts },
   };
 }

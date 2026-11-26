@@ -83,6 +83,25 @@ describe("detectProject", () => {
     expect(detectProject(nodeRepo())).toMatchObject({ serviceEnv: [], serviceEnvFrom: [] });
   });
 
+  it("pagePaths 按前端框架给默认值；没有网页界面的项目为空", () => {
+    const withDeps = (deps: Record<string, string>) => {
+      const root = nodeRepo();
+      writeFileSync(join(root, "package.json"), JSON.stringify({ name: "shop", dependencies: deps }));
+      return detectProject(root).pagePaths;
+    };
+    expect(withDeps({ react: "19", next: "15" })).toEqual(["^(app|pages|components|src/(app|pages|components))/"]);
+    expect(withDeps({ react: "19", "@remix-run/node": "2" })).toEqual(["^app/(routes|components)/"]);
+    expect(withDeps({ react: "19", "react-router": "7" })).toEqual(["^app/(routes|components)/"]);
+    expect(withDeps({ vue: "3", nuxt: "3" })).toEqual(["^(pages|components|layouts)/|^src/(pages|components|views)/"]);
+    expect(withDeps({ vue: "3" })).toEqual(["^(pages|components|layouts)/|^src/(pages|components|views)/"]);
+    expect(withDeps({ svelte: "5", "@sveltejs/kit": "2" })).toEqual(["^src/(routes|lib)/"]);
+    expect(withDeps({ svelte: "5" })).toEqual(["^src/(routes|lib)/"]);
+    expect(withDeps({ astro: "5" })).toEqual(["^src/(pages|components|layouts)/"]);
+    expect(withDeps({ react: "19" })).toEqual(["^src/.*\\.(tsx|jsx|vue|svelte|css)$"]);
+    expect(withDeps({ express: "5" })).toEqual([]);
+    expect(detectProject(pythonRepo()).pagePaths).toEqual([]);
+  });
+
   it("有 GLOSSARY.md 的仓库，文档列表里有它", () => {
     const root = nodeRepo();
     writeFileSync(join(root, "GLOSSARY.md"), "# 术语表\n");
@@ -225,6 +244,24 @@ describe("configSource", () => {
     expect(src).toContain("if (host.MYSQL_URL) env.MYSQL_URL = withDbSuffix(toContainerHost(host.MYSQL_URL), suffix);");
     expect(src).toContain("if (host.REDIS_URL) env.REDIS_URL = toContainerHost(host.REDIS_URL);");
     expect(src).toContain("runHostScript");
+  });
+
+  it("有网页界面：写 browser.pagePaths，加载后是能匹配页面文件的正则；没有网页界面不写", async () => {
+    const root = nodeRepo(); // 依赖有 react、没有更具体的框架：走 src/ 下 tsx 等的兜底
+    const f = detectProject(root);
+    const src = configSource(f, "sandpipe");
+    expect(src).toContain("  browser: { pagePaths: [/^src\\/.*\\.(tsx|jsx|vue|svelte|css)$/] },");
+    expect(src).toContain("// Page file paths");
+    expect(src).toContain("// 页面文件的路径");
+    installFiles(root, f);
+    const project = await loadProject(join(root, ".sandcastle"));
+    expect(project.browser.pagePaths).toHaveLength(1);
+    expect(project.browser.pagePaths[0]).toBeInstanceOf(RegExp);
+    expect(project.browser.pagePaths[0].test("src/ui/Cart.tsx")).toBe(true);
+    expect(project.browser.pagePaths[0].test("src/db/cart.ts")).toBe(false);
+    const nextSrc = configSource({ ...f, pagePaths: ["^(app|pages|components|src/(app|pages|components))/"] }, "sandpipe");
+    expect(nextSrc).toContain("pagePaths: [/^(app|pages|components|src\\/(app|pages|components))\\//]");
+    expect(configSource(detectProject(pythonRepo()), "sandpipe")).not.toContain("pagePaths");
   });
 
   it("env 文件里有多个库和中间件：生成的配置逐个换主机，数据库各自加 _i<runId>", async () => {

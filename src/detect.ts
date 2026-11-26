@@ -48,6 +48,8 @@ export interface ProjectFacts {
   serviceEnvFrom: string[];
   /** 有网页界面（按依赖判断），可能需要浏览器验收 / Has a web UI (judged by dependencies), may need a browser check */
   webUi: boolean;
+  /** 页面文件路径的正则源码（按前端框架给的默认值），没有网页界面时为空 / Regex sources for page file paths (defaults by frontend framework); empty without a web UI */
+  pagePaths: string[];
   /**
    * 提到浏览器验收的现成资料（文档、旧的 .sandcastle 提示词、test/e2e 说明、scripts/ 里建种子或验收数据的脚本），给 onboard 的 agent 先读
    * Existing material that mentions browser checks (docs, old .sandcastle prompts, test/e2e notes, seed or acceptance-data scripts under scripts/), for onboard's agent to read first
@@ -93,6 +95,19 @@ const WEB_DEPS = [
   "react-router",
   "astro",
 ];
+/**
+ * 前端框架 → 页面文件路径的正则源码，按顺序取第一个匹配的（next 先于 react，nuxt 先于 vue）；都不匹配但有网页界面时用 PAGE_PATHS_FALLBACK。
+ * Frontend framework → regex source for page file paths; the first match wins (next before react, nuxt before vue). With a web UI but no match, PAGE_PATHS_FALLBACK.
+ */
+const PAGE_PATHS: [(deps: Record<string, string>) => boolean, string][] = [
+  [(d) => "next" in d, "^(app|pages|components|src/(app|pages|components))/"],
+  [(d) => Object.keys(d).some((k) => k.startsWith("@remix-run/")) || "react-router" in d, "^app/(routes|components)/"],
+  [(d) => "nuxt" in d || "vue" in d, "^(pages|components|layouts)/|^src/(pages|components|views)/"],
+  [(d) => "@sveltejs/kit" in d || "svelte" in d, "^src/(routes|lib)/"],
+  [(d) => "astro" in d, "^src/(pages|components|layouts)/"],
+];
+const PAGE_PATHS_FALLBACK = String.raw`^src/.*\.(tsx|jsx|vue|svelte|css)$`;
+
 /** 镜像名里的关键字 → 服务名（pgvector 也是 PostgreSQL）；服务名用英文，会写进 PROJECT.md 草稿和配置注释。 / Image-name keyword → service name (pgvector is PostgreSQL too); names are English since they go into the PROJECT.md draft and config comments. */
 const SERVICE_IMAGES: [RegExp, string][] = [
   [/postgres|pgvector|postgis|timescale/, "postgres"],
@@ -191,6 +206,7 @@ function nodeFacts(root: string, pkg: Record<string, any>) {
   const lint = pick("lint");
   const test = pick("test", "test:unit");
   const fmt = pick("format", "fmt");
+  const webUi = WEB_DEPS.some((d) => d in deps);
   const runner = deps.vitest ? "vitest" : deps.jest ? "jest" : deps.mocha ? "mocha" : undefined;
   // 宿主机（macOS）的 node_modules 缺 linux 原生包，沙箱里按锁文件重装。pnpm 由镜像全局装好 package.json 里的版本，yarn 是 node 镜像自带的，
   // 门槛和 agent 也直接用 pnpm / yarn 命令。
@@ -225,7 +241,8 @@ function nodeFacts(root: string, pkg: Record<string, any>) {
       format: fmt ? run(fmt) : undefined,
     },
     testFilePattern: String.raw`\S+\.(test|spec)\.[cm]?[jt]sx?`,
-    webUi: WEB_DEPS.some((d) => d in deps),
+    webUi,
+    pagePaths: webUi ? [PAGE_PATHS.find(([has]) => has(deps))?.[1] ?? PAGE_PATHS_FALLBACK] : [],
     migrations: deps["drizzle-kit"]
       ? { tool: "drizzle-kit", dir: "drizzle" }
       : deps.prisma
@@ -371,7 +388,7 @@ export function detectProject(root = process.cwd()): ProjectFacts {
           : "other";
   const pkg = pkgText ? JSON.parse(pkgText) : {};
   const lang =
-    language === "node" ? nodeFacts(root, pkg) : { ...otherLanguageFacts(root, language), webUi: false, packageManager: undefined, packageManagerSpec: undefined };
+    language === "node" ? nodeFacts(root, pkg) : { ...otherLanguageFacts(root, language), webUi: false, pagePaths: [], packageManager: undefined, packageManagerSpec: undefined };
 
   const git = (args: string[]) => trySh("git", ["-C", root, ...args]);
   const remote = git(["remote"]).out.split("\n").includes("origin") ? "origin" : git(["remote"]).out.split("\n")[0] || "origin";
@@ -419,6 +436,7 @@ export function detectProject(root = process.cwd()): ProjectFacts {
     services: composeServices(root),
     ...scanServiceEnv(root),
     webUi: lang.webUi,
+    pagePaths: lang.pagePaths,
     browserHints: browserHints(root),
     recentCommits,
     commitLanguage: fromDocs ?? fromCommits,

@@ -188,6 +188,17 @@ export function configSource(f: ProjectFacts, importFrom: string, lang: Language
           "",
         ]
       : []),
+    ...(f.pagePaths.length
+      ? [
+          ...note(
+            "  ",
+            "页面文件的路径（按探测到的前端框架给的默认值，按项目实际目录改）：票改到这些文件就算「改了页面」，要做浏览器验收。",
+            "Page file paths (defaults for the detected frontend framework; adjust to the project's real layout): a ticket touching these counts as \"changing pages\" and needs a browser check.",
+          ),
+          `  browser: { pagePaths: [${f.pagePaths.map((p) => String(new RegExp(p))).join(", ")}] },`,
+          "",
+        ]
+      : []),
     ...note(
       "  ",
       "几张票会同时往末尾追加的索引文件（CHANGELOG、测试目录……），列在这里的不算「改同一个文件」，可以并行。",

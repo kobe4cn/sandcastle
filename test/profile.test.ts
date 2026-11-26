@@ -20,7 +20,13 @@ describe("resolveProject", () => {
     expect(p.install.copyToWorktree).toEqual([]);
     expect(p.integrity).toBeUndefined();
     expect(p.mergeRequires).toEqual({ checks: "all", timeoutMinutes: 30 });
+    expect(p.browser).toEqual({ pagePaths: [] });
     expect(p.texts.revisePrompt({ issueId: "1", branch: "b", title: "t", viewIssue: "gh issue view 1", items: "- x" })).toContain("gh issue view 1");
+  });
+
+  it("browser.pagePaths 原样保留", () => {
+    expect(resolveProject({ ...minimal, browser: { pagePaths: [/^app\/routes\//] } }).browser.pagePaths).toEqual([/^app\/routes\//]);
+    expect(resolveProject({ ...minimal, browser: {} }).browser.pagePaths).toEqual([]);
   });
 
   it("mergeRequires 只给一个字段时另一个取默认值", () => {
