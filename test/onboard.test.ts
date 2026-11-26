@@ -1,10 +1,11 @@
 // onboard：探测项目事实、生成配置与 PROJECT.md 草稿、登记 hook。生成的文件要能被流水线直接加载。
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { agentWritable, configSource, containerfileSource, hasGlobalSkill, installFiles, installGlobalSkill, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
+import { agentWritable, applyLangArg, configSource, containerfileSource, hasGlobalSkill, installFiles, installGlobalSkill, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { parseProjectDoc, SECTIONS, SECTIONS_EN } from "../src/project-doc.ts";
 import { nodeRepo, pythonRepo } from "./fixtures.ts";
@@ -99,6 +100,60 @@ describe("detectProject", () => {
       commitLanguage: "en",
     });
     expect(detectProject(pythonRepo('[project]\nname = "x"\n[tool.ruff]\n[dependency-groups]\ndev = ["mypy"]\n')).commands.typecheck).toBe("uv run mypy .");
+  });
+});
+
+describe("提交语言：提交太少时的推断", () => {
+  const zhReadme = `# 账本\n\n${"这是一个记账工具，给小团队记录日常开支并按月出报表。".repeat(10)}\n`;
+  const commitMany = (root: string, n: number) => {
+    for (let i = 0; i < n; i++)
+      execFileSync("git", ["-C", root, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "--allow-empty", "-m", `Add feature ${i}`], { stdio: "ignore" });
+  };
+
+  it("提交少于 5 条、文档是中文：按文档定为中文，草稿注明是推断的", () => {
+    const root = pythonRepo();
+    writeFileSync(join(root, "README.md"), zhReadme);
+    const f = detectProject(root);
+    expect(f).toMatchObject({ commitLanguage: "zh", commitLanguageBasis: "docs" });
+    const commit = parseProjectDoc(projectDocDraft(f, "zh")).commit;
+    expect(commit).toContain("中文");
+    expect(commit).toContain("只有 1 条");
+    expect(commit).toContain("项目文档");
+    const en = projectDocDraft(f, "en");
+    expect(en).not.toMatch(/[一-鿿]/);
+    expect(parseProjectDoc(en).commit).toContain("only 1 commit; the commit language was inferred from the project docs");
+  });
+
+  it("提交少于 5 条、文档文字不够：仍按那几条提交，标为 few-commits", () => {
+    const f = detectProject(nodeRepo());
+    expect(f).toMatchObject({ commitLanguage: "zh", commitLanguageBasis: "few-commits" });
+    expect(parseProjectDoc(projectDocDraft(f, "zh")).commit).toContain("可能不准");
+    // 一条提交都没有：不说「按这几条推断」 / No commits at all: don't claim it was inferred from them
+    const none = { ...f, recentCommits: [], commitLanguage: "en" as const };
+    expect(parseProjectDoc(projectDocDraft(none, "zh")).commit).toContain("还没有提交，提交语言没法判断");
+    expect(parseProjectDoc(projectDocDraft(none, "en")).commit).toContain("There are no commits yet, so the commit language couldn't be judged");
+  });
+
+  it("提交 ≥5 条：照旧按提交判断，草稿里没有推断说明", () => {
+    const root = pythonRepo();
+    writeFileSync(join(root, "README.md"), zhReadme);
+    commitMany(root, 4);
+    const f = detectProject(root);
+    expect(f).toMatchObject({ commitLanguage: "en", commitLanguageBasis: "commits" });
+    expect(parseProjectDoc(projectDocDraft(f, "zh")).commit).not.toContain("推断");
+    // 提交够多时 --lang 不改提交语言 / With enough commits --lang doesn't change the commit language
+    expect(applyLangArg(f, "zh")).toMatchObject({ commitLanguage: "en", commitLanguageBasis: "commits" });
+  });
+
+  it("--lang 在提交不足时优先：basis 改成 lang，草稿跟着 --lang", () => {
+    const root = pythonRepo();
+    writeFileSync(join(root, "README.md"), zhReadme);
+    const f = applyLangArg(detectProject(root), "en");
+    expect(f).toMatchObject({ commitLanguage: "en", commitLanguageBasis: "lang" });
+    const commit = parseProjectDoc(projectDocDraft(f, "en")).commit;
+    expect(commit).toContain("English");
+    expect(commit).toContain("inferred from `--lang`");
+    expect(applyLangArg(detectProject(root), undefined)).toMatchObject({ commitLanguage: "zh", commitLanguageBasis: "docs" });
   });
 });
 

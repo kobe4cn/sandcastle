@@ -39,7 +39,7 @@
 ## 在项目里用
 
 1. 在项目根目录 `npx tsx <本仓库>/src/cli.ts onboard`：
-   - 探测语言、包管理、命令、托管平台、文档、测试、迁移、compose 里的服务、env 文件里指向本机服务的变量（`src/detect.ts`，只读文件和 git）；
+   - 探测语言、包管理、命令、托管平台、文档、测试、迁移、compose 里的服务、env 文件里指向本机服务的变量、提交信息的语言（提交少于 5 条时按文档的主要语言推断；onboard 给了 `--lang` 时它优先）（`src/detect.ts`，只读文件和 git）；
    - 生成 `.sandcastle/` 下的 `sandcastle.config.ts`（按 env 文件里指向本机的变量生成 isolation.env 初稿，没有时按 compose 服务猜）、`PROJECT.md` 草稿、`models.json`、`.env.example`、`.gitignore`、`Containerfile`，
      装 `.claude/hooks/sandcastle-context.mjs`（上下文预算）与 `screenshot-checker` 子代理，并在 `.claude/settings.json` 里登记 hook；`.sandcastle/` 下已存在的文件一律跳过，`.claude/` 下本工具的文件（`CLAUDE_FILES`）已存在且和模板不同时，显示 `git diff --no-index --stat`，问保留 / 覆盖 / 另存 `.new` / 看完整 diff，非交互时另存 `.new`（`src/claude-conflict.ts`，`sandpipe update` 同样处理）；
    - 让宿主机的 claude（默认 opus，`--model` 换，`--no-agent` 跳过）读代码把 `PROJECT.md` 写完整，只许改 PROJECT.md 和缺口清单 `.sandcastle/OPEN-QUESTIONS.md`（已存在的不动）；

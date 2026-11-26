@@ -9,7 +9,7 @@ const help = () =>
   sandpipe [run]       跑流水线；SANDCASTLE_ONLY=12,13 只做这几张票
   sandpipe onboard     接入新项目：生成 .sandcastle/ 配置与 PROJECT.md，装上下文预算 hook
                       [--no-agent] 不让 agent 补全 PROJECT.md；[--model <名>] agent 用的模型，默认 opus
-                      [--lang zh|en] PROJECT.md 草稿和 issue / PR / 终端用的语言，默认按提交信息判断
+                      [--lang zh|en] PROJECT.md 草稿和 issue / PR / 终端用的语言，默认按提交信息判断（提交少于 5 条时按项目文档）
                       [--questions-only] 只生成缺口清单 .sandcastle/OPEN-QUESTIONS.md（给早于清单接入的项目），不动其他文件
   sandpipe doctor      跑之前的检查：配置、PROJECT.md、项目知识、models.json、.env、平台登录、标签、镜像、hook
                       [--fix] 缺的标签直接建上
@@ -25,7 +25,7 @@ const help = () =>
   sandpipe [run]       run the pipeline; SANDCASTLE_ONLY=12,13 only works these tickets
   sandpipe onboard     onboard a new project: generate the .sandcastle/ config and PROJECT.md, install the context budget hook
                       [--no-agent] don't let the agent complete PROJECT.md; [--model <name>] model for the agent, default opus
-                      [--lang zh|en] language of the PROJECT.md draft and of issues / PRs / the terminal, default from the commit messages
+                      [--lang zh|en] language of the PROJECT.md draft and of issues / PRs / the terminal, default from the commit messages (from the project docs with fewer than 5 commits)
                       [--questions-only] only write the open questions list .sandcastle/OPEN-QUESTIONS.md (for projects onboarded before it existed), touching nothing else
   sandpipe doctor      pre-run checks: config, PROJECT.md, project knowledge, models.json, .env, forge login, labels, image, hook
                       [--fix] create missing labels

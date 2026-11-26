@@ -6,6 +6,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parseEnv } from "node:util";
+import type { Language as TextLanguage } from "./i18n.ts";
 import { trySh } from "./shell.ts";
 
 export type Language = "node" | "python" | "go" | "rust" | "other";
@@ -49,7 +50,12 @@ export interface ProjectFacts {
   webUi: boolean;
   /** 最近几条提交的标题，用来判断提交信息的语言与风格 / Subjects of the last few commits, used to judge commit message language and style */
   recentCommits: string[];
-  commitLanguage: "zh" | "en";
+  commitLanguage: TextLanguage;
+  /**
+   * commitLanguage 是怎么定的：commits 按足够多的提交；few-commits 提交太少、文档文字也不够，按那几条提交；docs 提交太少，按项目文档的主要语言；lang 提交太少，按 onboard 的 --lang（detect 不产出，由 onboard 的 applyLangArg 设置）
+   * How commitLanguage was decided: commits from enough commits; few-commits too few commits and too little doc text, from those few commits; docs too few commits, from the docs' main language; lang too few commits, from onboard's --lang (never produced by detect; set by onboard's applyLangArg)
+   */
+  commitLanguageBasis: "commits" | "few-commits" | "docs" | "lang";
 }
 
 const IGNORED_DIRS = new Set(["node_modules", "dist", "build", "out", "coverage", "target", "vendor", "__pycache__", "venv", ".venv"]);
@@ -95,8 +101,29 @@ const SERVICE_IMAGES: [RegExp, string][] = [
   [/clickhouse/, "clickhouse"],
 ];
 
+/** 提交少于这么多条时，提交语言改按文档推断 / Below this many commits, the commit language is inferred from the docs */
+const MIN_COMMITS = 5;
+/** 文档里中文字符加 ASCII 字母少于这么多时，文字不够判断语言 / Below this many CJK characters plus ASCII letters, the docs are too short to judge */
+const MIN_DOC_CHARS = 200;
+
 const read = (root: string, f: string) => (existsSync(join(root, f)) ? readFileSync(join(root, f), "utf8") : undefined);
 const isDir = (p: string) => existsSync(p) && statSync(p).isDirectory();
+
+/**
+ * 项目文档的主要语言：DOC_CANDIDATES 里的文件拼起来，中文字符 × 4 不少于 ASCII 字母算中文；文字不够时返回 undefined。
+ * 乘 4 是因为中文文档里也夹着大量英文（命令、路径、代码），一个汉字表达的内容约等于几个英文字母。
+ * The docs' main language: concatenate the files in DOC_CANDIDATES; CJK characters × 4 at least the ASCII letters means Chinese; undefined when there's too little text.
+ * The × 4 is because Chinese docs are full of English too (commands, paths, code), and one Han character carries about as much as several English letters.
+ */
+function docsLanguage(root: string): TextLanguage | undefined {
+  const text = DOC_CANDIDATES.filter((f) => !isDir(join(root, f)))
+    .map((f) => read(root, f) ?? "")
+    .join("\n");
+  const cjk = text.match(/[一-鿿]/g)?.length ?? 0;
+  const ascii = text.match(/[A-Za-z]/g)?.length ?? 0;
+  if (cjk + ascii < MIN_DOC_CHARS) return undefined;
+  return cjk * 4 >= ascii ? "zh" : "en";
+}
 
 export function parseRemoteUrl(url: string): ProjectFacts["forge"] {
   // git@host:group/sub/repo.git、ssh://git@host:22/group/repo.git、https://host/group/repo(.git)
@@ -316,6 +343,10 @@ export function detectProject(root = process.cwd()): ProjectFacts {
   const log = git(["log", "-n", "8", "--format=%s", baseBranch]);
   const recentCommits = log.ok ? log.out.split("\n").filter(Boolean) : [];
   const cjk = recentCommits.filter((s) => /[一-鿿]/.test(s)).length;
+  const fromCommits: TextLanguage = cjk * 2 >= recentCommits.length && cjk > 0 ? "zh" : "en";
+  const fewCommits = recentCommits.length < MIN_COMMITS;
+  const fromDocs = fewCommits ? docsLanguage(root) : undefined;
+  const commitLanguageBasis: ProjectFacts["commitLanguageBasis"] = !fewCommits ? "commits" : fromDocs ? "docs" : "few-commits";
 
   const topDirs = readdirSync(root, { withFileTypes: true })
     .filter((d) => d.isDirectory() && !d.name.startsWith(".") && !IGNORED_DIRS.has(d.name))
@@ -350,6 +381,7 @@ export function detectProject(root = process.cwd()): ProjectFacts {
     ...scanServiceEnv(root),
     webUi: lang.webUi,
     recentCommits,
-    commitLanguage: cjk * 2 >= recentCommits.length && cjk > 0 ? "zh" : "en",
+    commitLanguage: fromDocs ?? fromCommits,
+    commitLanguageBasis,
   };
 }

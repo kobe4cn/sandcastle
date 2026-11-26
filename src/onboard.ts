@@ -222,6 +222,17 @@ export function projectDocDraft(f: ProjectFacts, lang: Language = f.commitLangua
   ].filter(Boolean) as string[];
   const docLines = f.docs.filter((d) => !/^README\.md$/.test(d)).map((d) => `\`${d}\``);
   const commitLang = f.commitLanguage === "zh" ? L("中文", "Chinese") : L("英文", "English");
+  const n = f.recentCommits.length; // 提交历史条数 / Number of commits in the history
+  const history = n === 0 ? L("还没有提交", "There are no commits yet") : L(`提交历史只有 ${n} 条`, `The history has only ${n} commit${n === 1 ? "" : "s"}`);
+  const commitBasisNote = {
+    commits: undefined,
+    docs: L(`${history}，提交语言按项目文档的主要语言推断。`, `${history}; the commit language was inferred from the project docs.`),
+    lang: L(`${history}，提交语言按 \`--lang\` 推断。`, `${history}; the commit language was inferred from \`--lang\`.`),
+    "few-commits":
+      n === 0
+        ? L(`${history}，提交语言没法判断，先按英文写。`, `${history}, so the commit language couldn't be judged; English for now.`)
+        : L(`${history}，提交语言按这几条推断，可能不准。`, `${history}; the commit language was inferred from these few commits and may be wrong.`),
+  }[f.commitLanguageBasis];
   const sections = [
     L(`# PROJECT.md（${f.name}）`, `# PROJECT.md (${f.name})`),
     "",
@@ -277,7 +288,7 @@ export function projectDocDraft(f: ProjectFacts, lang: Language = f.commitLangua
       L(
         `按仓库现有风格写${commitLang}提交信息（看 \`git log -n 3 --format=%B ${f.remote}/${f.baseBranch}\`）。`,
         `Write commit messages in ${commitLang}, following the repo's existing style (see \`git log -n 3 --format=%B ${f.remote}/${f.baseBranch}\`).`,
-      ),
+      ) + (commitBasisNote ? L("", " ") + commitBasisNote : ""),
     ]),
     "",
   ];
@@ -610,14 +621,14 @@ const QUESTIONS_EXAMPLE = [
   "# 缺口清单",
   "",
   `- [意图] 哪些操作必须交给人（红线）？ → PROJECT.md「${SECTIONS.redLines}」`,
-  `- [规范] 提交信息用中文还是英文？ → PROJECT.md「${SECTIONS.commit}」`,
+  `- [规范] 分支命名有没有约定？ → PROJECT.md「${SECTIONS.commit}」`,
   "- [意图] 项目还没有术语表 → GLOSSARY.md",
 ];
 const QUESTIONS_EXAMPLE_EN = [
   "# Open questions",
   "",
   `- [intent] Which operations must be left to a human (red lines)? → PROJECT.md「${SECTIONS_EN.redLines}」`,
-  `- [convention] Are commit messages in Chinese or English? → PROJECT.md「${SECTIONS_EN.commit}」`,
+  `- [convention] Is there a branch naming convention? → PROJECT.md「${SECTIONS_EN.commit}」`,
   "- [intent] The project has no glossary yet → GLOSSARY.md",
 ];
 
@@ -763,6 +774,14 @@ function reportOpenQuestions(root: string): number {
 export const fillDocsHint = (remaining: number) =>
   t(`在 Claude Code 里运行 /fill-project-docs，补完缺口清单（还剩 ${remaining} 条）`, `Run /fill-project-docs in Claude Code to work through the open questions (${remaining} left)`);
 
+/**
+ * 提交历史不够判断时，显式给的 --lang 决定提交语言；提交够多时不动（界面语言和提交语言可以不同）。
+ * When the history is too short to judge, an explicit --lang decides the commit language; with enough commits it's left alone (UI and commit language may differ).
+ */
+export function applyLangArg(f: ProjectFacts, langArg: Language | undefined): ProjectFacts {
+  return langArg && f.commitLanguageBasis !== "commits" ? { ...f, commitLanguage: langArg, commitLanguageBasis: "lang" } : f;
+}
+
 export async function onboard(argv: string[], root = process.cwd(), decide: Decide = askChoice) {
   const noAgent = argv.includes("--no-agent");
   const questionsOnly = argv.includes("--questions-only");
@@ -773,7 +792,7 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
   const langArg = argv.includes("--lang") ? argv[argv.indexOf("--lang") + 1] : undefined;
   if (langArg !== undefined && langArg !== "zh" && langArg !== "en") throw new Error(t(`--lang 只能是 zh 或 en，收到「${langArg}」`, `--lang must be zh or en, got "${langArg}"`));
 
-  const f = detectProject(root);
+  const f = applyLangArg(detectProject(root), langArg);
   // 生成的文件和之后的终端输出用同一种语言：--lang，没给时按提交信息。
   // Generated files and the terminal output from here on use one language: --lang, else the commit messages'.
   const lang: Language = langArg ?? f.commitLanguage;

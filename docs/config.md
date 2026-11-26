@@ -65,7 +65,7 @@ Exported from `sandpipe` for `isolation.env` / `cleanup`. The config is imported
 | Field | Default | Description |
 |---|---|---|
 | `autoMerge` | `true` | When `false`, even tickets that pass everything are left as PRs for a human to merge (onboard generates `false`, see onboarding-checklist.md) |
-| `language` | `"zh"` | Language for issues, PRs and comments, `"zh"` or `"en"`: the script's fixed texts (PR bodies, comments, auto-opened tickets) and what the agent writes follow it, and the three acceptance-notes headings are checked in that language. The terminal output follows it too (set `SANDPIPE_LANG=zh\|en` to override; without a project config it follows `LANG`). Commit message language comes from the Commits section of PROJECT.md. onboard picks it from `--lang`, or else from the recent commit messages |
+| `language` | `"zh"` | Language for issues, PRs and comments, `"zh"` or `"en"`: the script's fixed texts (PR bodies, comments, auto-opened tickets) and what the agent writes follow it, and the three acceptance-notes headings are checked in that language. The terminal output follows it too (set `SANDPIPE_LANG=zh\|en` to override; without a project config it follows `LANG`). Commit message language comes from the Commits section of PROJECT.md. onboard picks it from `--lang`, or else from the recent commit messages; with fewer than 5 commits, from the main language of the project docs (the PROJECT.md draft notes that it was inferred) |
 | `maxParallel` | 2 | How many tickets are implemented at once; the limit depends on the services the tests use and the machine load |
 | `remote` / `baseBranch` | `origin` / `main` | |
 | `mergeMethod` | `rebase` | |
