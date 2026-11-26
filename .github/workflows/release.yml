@@ -69,4 +69,6 @@ jobs:
           v="${GITHUB_REF_NAME#v}"
           if [ "$(npm view "$name@$v" version 2>/dev/null)" = "$v" ]; then echo "已发过"; exit 0; fi
           npm install -g npm@latest
-          npm publish "$name.tgz" --access public
+          # 源码仓库公开时 npm 会自动生成 provenance，并要求 repository.url 指向源码仓库；
+          # repository 有意指向 releases 仓库（源码仓库可能改回私有），所以关掉 provenance
+          npm publish "$name.tgz" --access public --provenance=false
