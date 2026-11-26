@@ -80,3 +80,14 @@ export async function waitForChecks(
     await sleep(pollMs);
   }
 }
+
+/** gh 合并时被分支保护挡住的报错特征（不区分大小写）。 / Signatures of gh merge errors caused by branch protection (case-insensitive). */
+const BRANCH_PROTECTION_RE = /base branch policy prohibits the merge|required status check|review is required|approving review|protected branch/i;
+
+/**
+ * 合并失败的输出是不是分支保护挡住的（要求审批、必需检查、合并队列等）；只看报错文本，不查保护规则（那要 admin 权限）。
+ * Whether a failed merge's output means branch protection blocked it (required reviews, required checks, merge queue, ...); judged from the error text only, without reading the rules (that needs admin rights).
+ */
+export function isBranchProtectionError(out: string): boolean {
+  return BRANCH_PROTECTION_RE.test(out);
+}

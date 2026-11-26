@@ -74,6 +74,8 @@ const zh = {
   reasonGate: "typecheck 或完整测试没通过（见 PR 正文的 Gate）。",
   reasonAutoMergeOff: "项目配置 autoMerge: false（试跑期），reviewer 和门槛都通过，等人合并。",
   reasonMergeFailed: (out: string, retry: string) => `合并失败：${out}\n\nrebase 后重试也没成：${retry}`,
+  reasonBranchProtection: (out: string) =>
+    `门槛已通过，但仓库的分支保护不让 Sandcastle 合并（要求审批、必需检查或合并队列等）。请人合并，或调整分支保护 / 配置里的 \`mergeRequires\`。gh 的报错：${out}`,
   reasonChecksFailed: (list: string) =>
     `门槛已通过，但 PR 上的检查没通过，没有合并。合并条件是门槛加 forge 检查都通过；CI 本身不可靠时，可以在配置里设 \`mergeRequires: { checks: "none" }\` 只看门槛。没通过的检查：\n\n${list}`,
   reasonChecksTimeout: (list: string, minutes: number) =>
@@ -223,6 +225,8 @@ const en: Messages = {
   reasonGate: "Typecheck or the full test run failed (see the Gate section of the PR description).",
   reasonAutoMergeOff: "The project config has autoMerge: false (trial period). Reviewer and gate both passed; waiting for a human to merge.",
   reasonMergeFailed: (out, retry) => `Merge failed: ${out}\n\nRetrying after a rebase also failed: ${retry}`,
+  reasonBranchProtection: (out) =>
+    `The gate passed, but the repository's branch protection won't let Sandcastle merge (required reviews, required checks, merge queue, etc.). Please merge it yourself, or adjust the branch protection / \`mergeRequires\` in the config. gh's error: ${out}`,
   reasonChecksFailed: (list) =>
     `The gate passed, but checks on the PR failed, so it was not merged. Merging requires both the gate and the forge checks to pass; if the CI itself is unreliable, set \`mergeRequires: { checks: "none" }\` in the config to rely on the gate alone. Failed checks:\n\n${list}`,
   reasonChecksTimeout: (list, minutes) =>

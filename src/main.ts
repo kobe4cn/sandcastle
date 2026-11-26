@@ -87,7 +87,7 @@ import {
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
 import { acceptanceSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from "./pr-body.ts";
 import type { ForgeIssue, ForgePr, IssueState, PrCheck } from "./forge.ts";
-import { type ChecksWait, waitForChecks } from "./merge-checks.ts";
+import { type ChecksWait, isBranchProtectionError, waitForChecks } from "./merge-checks.ts";
 import { loadProject } from "./profile.ts";
 import { messages } from "./i18n.ts";
 import { duration, startGateProgress } from "./gate-progress.ts";
@@ -1057,6 +1057,8 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
         forge.commentPr(pr, M.rebasedMerged(BASE_REF));
         return { ok: true };
       }
+      // 分支保护挡住的再重试也没用，直接交给人。 / Retrying won't get past branch protection; hand it to a human.
+      if (isBranchProtectionError(merged.out)) return { ok: false, reason: M.reasonBranchProtection(merged.out.slice(0, 300)) };
       last = merged.out;
     }
     return { ok: false, reason: M.rebaseMergeFailed(last.slice(0, 300)) };
@@ -1378,6 +1380,13 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     ? attempt(() => forge.mergePr(pr, project.mergeMethod))
     : { ok: false as const, out: `${integrityBroken()}。` };
   if (!merged.ok) {
+    // 分支保护（审批、必需检查、合并队列）挡住时 rebase 也解决不了，直接留 PR。
+    // When branch protection (reviews, required checks, merge queue) blocks the merge a rebase won't help; leave the PR open.
+    if (isBranchProtectionError(merged.out)) {
+      leaveForHuman(issue, pr, M.reasonBranchProtection(merged.out.slice(0, 300)));
+      console.log(t(`  ◐ #${issue.id} 被分支保护挡住，留 PR #${pr}`, `  ◐ #${issue.id} blocked by branch protection; PR #${pr} left open`));
+      return;
+    }
     console.log(t(`  ↻ #${issue.id} 没能直接合并，rebase 到最新的 ${BASE_REF} 后重试`, `  ↻ #${issue.id} couldn't merge directly; rebasing onto the latest ${BASE_REF} and retrying`));
     const retry = await untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host));
     if (!retry.ok) {

@@ -1,7 +1,7 @@
 // merge-checks：检查结果的归类与 waitForChecks 的轮询（假时钟，不真等）。
 import { describe, expect, it } from "vitest";
 import type { PrCheck } from "../src/forge.ts";
-import { checksVerdict, waitForChecks } from "../src/merge-checks.ts";
+import { checksVerdict, isBranchProtectionError, waitForChecks } from "../src/merge-checks.ts";
 
 const pass = (name: string): PrCheck => ({ name, state: "pass" });
 const fail = (name: string): PrCheck => ({ name, state: "fail" });
@@ -101,5 +101,21 @@ describe("waitForChecks", () => {
     expect(await waitForChecks(forge, "13", { checks: "none", timeoutMinutes: 30 }, clock())).toEqual({ ok: true });
     expect(forge.calls).toEqual([]);
     expect(await waitForChecks({}, "13", all, clock())).toEqual({ ok: true });
+  });
+});
+
+describe("isBranchProtectionError", () => {
+  it.each([
+    ["X Pull request #12 is not mergeable: the base branch policy prohibits the merge.", true],
+    ["GraphQL: Required status check \"ci\" is expected. (mergePullRequest)", true],
+    ["At least 1 approving review is required by reviewers with write access.", true],
+    ["Review is required before merging", true],
+    ["remote: error: GH006: Protected branch update failed for refs/heads/main.", true],
+    ["BASE BRANCH POLICY PROHIBITS THE MERGE", true],
+    ["Pull request is not mergeable: the merge commit cannot be cleanly created", false],
+    ["Could not resolve host: github.com", false],
+    ["", false],
+  ])("%j → %s", (out, expected) => {
+    expect(isBranchProtectionError(out)).toBe(expected);
   });
 });
