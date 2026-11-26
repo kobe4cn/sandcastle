@@ -1,5 +1,5 @@
 // doctor：在 onboard 刚生成的项目上跑，逐项给出结论；--fix 补建缺的标签。
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -85,6 +85,8 @@ describe("diagnose", () => {
       "PROJECT.md": "warn",
       // nodeRepo 有 react，草稿不生成浏览器验收
       浏览器验收: "warn",
+      // onboard 生成的配置 autoMerge: false
+      合并条件: "ok",
       项目知识: "warn",
       "models.json": "ok",
       ".env": "fail",
@@ -215,6 +217,53 @@ describe("diagnose：浏览器验收", () => {
     const root = pythonRepo();
     installFiles(root, detectProject(root));
     expect(check(await run(root), "浏览器验收")).toBeUndefined();
+  });
+});
+
+describe("diagnose：合并条件", () => {
+  const run = (opts: { merge: string; workflow?: string }) => {
+    const root = readyRepo();
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(config, readFileSync(config, "utf8").replace("  autoMerge: false,", opts.merge));
+    if (opts.workflow) {
+      mkdirSync(join(root, ".github/workflows"), { recursive: true });
+      writeFileSync(join(root, ".github/workflows", opts.workflow), "on: push\n");
+    }
+    return diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) }).then((c) => check(c, "合并条件"));
+  };
+  const none = '  autoMerge: true,\n  mergeRequires: { checks: "none" },';
+
+  it("自动合并、checks 为 none、有 workflow：警告，提示 gate.script 或改回 all / required", async () => {
+    expect(await run({ merge: none, workflow: "ci.yml" })).toMatchObject({
+      level: "warn",
+      detail: expect.stringContaining("不等 CI"),
+      fix: expect.stringMatching(/gate\.script[\s\S]*"all" \/ "required"[\s\S]*docs\/config\.zh-CN\.md/),
+    });
+  });
+
+  it("有 workflow 但 checks 为 all（默认）：通过，写明门槛 + 所有检查", async () => {
+    expect(await run({ merge: "  autoMerge: true,", workflow: "ci.yaml" })).toMatchObject({ level: "ok", detail: "门槛 + PR 上所有检查" });
+  });
+
+  it("checks 为 none 但没有 workflow：通过", async () => {
+    expect(await run({ merge: none })).toMatchObject({ level: "ok", detail: expect.stringContaining("只看门槛") });
+  });
+
+  it("workflows 目录里没有 yml：通过", async () => {
+    expect((await run({ merge: none, workflow: "README.md" }))?.level).toBe("ok");
+  });
+
+  it("配置加载失败：没有这一项", async () => {
+    const root = readyRepo();
+    writeFileSync(join(root, ".sandcastle/sandcastle.config.ts"), "export default {;\n");
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+    expect(check(checks, "配置")?.level).toBe("fail");
+    expect(check(checks, "合并条件")).toBeUndefined();
+  });
+
+  it("autoMerge 为 false：通过，即使 checks 为 none 且有 workflow", async () => {
+    const c = await run({ merge: '  autoMerge: false,\n  mergeRequires: { checks: "none" },', workflow: "ci.yml" });
+    expect(c).toMatchObject({ level: "ok", detail: expect.stringContaining("autoMerge: false") });
   });
 });
 

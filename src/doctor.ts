@@ -1,13 +1,13 @@
 // doctor：跑流水线之前把能在宿主机上查的都查一遍，每项给出结论和修法。
-// 查：仓库根目录、配置能加载、宿主机依赖与 env 文件、PROJECT.md 与提示词能渲染、项目知识（缺口清单）、models.json、.env 的 token、平台登录与权限、
+// 查：仓库根目录、配置能加载、宿主机依赖与 env 文件、PROJECT.md 与提示词能渲染、浏览器验收、合并条件（有 CI workflow 却不等检查时警告）、项目知识（缺口清单）、models.json、.env 的 token、平台登录与权限、
 // 标签（--fix 时补建）、Sandcastle 票的 Blocked by 引用、远端基础分支、沙箱镜像、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
 // 有一项 ✗ 退出码就是 1。
 // doctor: before running the pipeline, check everything that can be checked on the host, giving a verdict and a fix for each.
-// Checks: repository root, config loads, host dependencies and env files, PROJECT.md and prompts render, project knowledge (open questions list), models.json, .env tokens, forge login and permissions,
+// Checks: repository root, config loads, host dependencies and env files, PROJECT.md and prompts render, browser check, merge requirements (warns when there are CI workflows but checks aren't awaited), project knowledge (open questions list), models.json, .env tokens, forge login and permissions,
 // labels (created with --fix), Blocked by references in Sandcastle tickets, remote base branch, sandbox image, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
 // Exit code 1 if any check is ✗.
 
-import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { parseEnv } from "node:util";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
@@ -183,6 +183,40 @@ export async function diagnose(opts: {
         "warn",
         t("探测到网页界面，但 PROJECT.md 没有「浏览器验收」：改页面的票会留给人看", "A web UI was detected but PROJECT.md has no Browser check section: tickets that change pages are left for a human"),
         t(`照 ${manual("config", "zh")} 的「浏览器验收」一节补上`, `Add it following the Browser check section of ${manual("config", "en")}`),
+      );
+  }
+
+  // ---- 合并条件 ---- / Merge requirements
+  // 只看本地 .github/workflows，不查分支保护（读规则要 admin 权限）；只警告，--fix 不处理。配置加载失败时没有这一项。
+  // Only looks at the local .github/workflows, not branch protection (reading the rules needs admin); only warns, --fix leaves it alone. Absent when the config fails to load.
+  if (project) {
+    const name = t("合并条件", "Merge requirements");
+    const mode = project.mergeRequires.checks;
+    const workflows = join(cwd, ".github/workflows");
+    const hasWorkflow = existsSync(workflows) && readdirSync(workflows).some((f) => /\.ya?ml$/.test(f));
+    if (!project.autoMerge) add(name, "ok", t("不自动合并（autoMerge: false），PR 留给人合并", "No auto-merge (autoMerge: false): PRs are left for a human to merge"));
+    else if (mode === "none" && hasWorkflow)
+      add(
+        name,
+        "warn",
+        t(
+          "仓库有 CI workflow，但 mergeRequires.checks 是 none：合并只看门槛、不等 CI",
+          "The repository has CI workflows but mergeRequires.checks is none: merging only looks at the gate and doesn't wait for CI",
+        ),
+        t(
+          `CI 覆盖了门槛没覆盖的东西时，要么加进 gate.script，要么把 checks 改回 "all" / "required"（见 ${manual("config", "zh")}）`,
+          `If CI covers things the gate doesn't, either add them to gate.script or set checks back to "all" / "required" (see ${manual("config", "en")})`,
+        ),
+      );
+    else
+      add(
+        name,
+        "ok",
+        mode === "all"
+          ? t("门槛 + PR 上所有检查", "Gate + all checks on the PR")
+          : mode === "required"
+            ? t("门槛 + PR 上的必需检查", "Gate + required checks on the PR")
+            : t("只看门槛（没有 CI workflow）", "Gate only (no CI workflows)"),
       );
   }
 
