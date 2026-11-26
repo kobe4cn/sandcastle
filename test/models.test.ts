@@ -369,6 +369,76 @@ describe("N1e 热重载 reloadModels", () => {
     expect((await m.runWithProfile("implement", "#1", async () => done())).profile).toMatchObject({ name: "sonnet", model: "claude-sonnet-4-5" });
   });
 
+  it("同一份配置 reload 两次：Models 行只打一次", () => {
+    project({ profiles: { opus: claude() }, phases: phasesAll(["opus"]) });
+    m.reloadModels();
+    m.reloadModels();
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(String(log.mock.calls[0]![0])).toMatch(/^模型：prep=opus/);
+  });
+
+  it("只是格式变了（空白不同）：不算变化", () => {
+    const models = { profiles: { opus: claude() }, phases: phasesAll(["opus"]) };
+    project(models);
+    m.reloadModels();
+    writeModels(JSON.stringify(models, null, 2));
+    m.reloadModels();
+    expect(log).toHaveBeenCalledTimes(1);
+  });
+
+  it("改了 phases 再 reload：多打一行「模型配置已更新」", () => {
+    project({ profiles: { opus: claude(), sonnet: claude("claude-sonnet-4-5") }, phases: phasesAll(["opus"]) });
+    m.reloadModels();
+    writeModels({ profiles: { opus: claude(), sonnet: claude("claude-sonnet-4-5") }, phases: phasesAll(["opus"], { implement: ["sonnet"] }) });
+    m.reloadModels();
+    m.reloadModels();
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(String(log.mock.calls[1]![0])).toContain("模型配置已更新");
+    expect(String(log.mock.calls[1]![0])).toContain("implement=sonnet");
+  });
+
+  it("只改档案的 model：也打「模型配置已更新」", () => {
+    project({ profiles: { opus: claude() }, phases: phasesAll(["opus"]) });
+    m.reloadModels();
+    writeModels({ profiles: { opus: claude("claude-opus-4-6") }, phases: phasesAll(["opus"]) });
+    m.reloadModels();
+    expect(log).toHaveBeenCalledTimes(2);
+    expect(String(log.mock.calls[1]![0])).toContain("模型配置已更新");
+  });
+
+  it("带警告的配置 reload 两次：警告只打一次", () => {
+    project({ profiles: { other: { model: "x", env: { ANTHROPIC_BASE_URL: "https://example.com" } } }, phases: phasesAll(["other"]) });
+    m.reloadModels();
+    const once = warn.mock.calls.length;
+    expect(once).toBeGreaterThan(0);
+    m.reloadModels();
+    expect(warn).toHaveBeenCalledTimes(once);
+  });
+
+  it("配置变了但警告文本没变：只打「已更新」，警告不重打", () => {
+    const other = (model: string) => ({ profiles: { other: { model, env: { ANTHROPIC_BASE_URL: "https://example.com" } } }, phases: phasesAll(["other"]) });
+    project(other("x"));
+    m.reloadModels();
+    const once = warn.mock.calls.length;
+    writeModels(other("y"));
+    m.reloadModels();
+    expect(warn).toHaveBeenCalledTimes(once);
+    expect(String(log.mock.calls[1]![0])).toContain("模型配置已更新");
+  });
+
+  it("改坏后又改回原样：每轮提示沿用，改回后不打「已更新」", () => {
+    const models = { profiles: { sonnet: claude("claude-sonnet-4-5") }, phases: phasesAll(["sonnet"]) };
+    project(models);
+    m.reloadModels();
+    writeModels("{ not json");
+    m.reloadModels();
+    m.reloadModels();
+    expect(warn.mock.calls.flat().filter((s) => String(s).includes("沿用上一次读到的配置"))).toHaveLength(2);
+    writeModels(models);
+    m.reloadModels();
+    expect(log).toHaveBeenCalledTimes(1);
+  });
+
   it("第一次就读不成：直接抛", () => {
     project("{ not json");
     expect(() => m.reloadModels()).toThrow("不是合法的 JSON");

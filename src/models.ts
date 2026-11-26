@@ -197,6 +197,12 @@ function parseConfig(text: string, envKeys: Set<string>, warn: (m: string) => vo
 }
 
 let config: ModelsConfig | undefined;
+/**
+ * 上次读成功的 models.json 内容（去掉格式差异）和警告：没变就不重复打印。
+ * Content of the last successfully read models.json (formatting stripped) and its warning text (joined by newlines): unchanged means not printed again.
+ */
+let lastConfigJson: string | undefined;
+let lastWarningText: string | undefined;
 
 /**
  * doctor 用：读一遍 models.json，返回各阶段用到的档案和警告；读不成直接抛。
@@ -210,16 +216,27 @@ export function inspectModels(): { phases: Record<Phase, readonly string[]>; use
 }
 
 /**
- * 每轮开头调用。第一次读不成直接抛（运行起不来）；之后读不成就警告并沿用上一份，不打断正在跑的运行。
- * Called at the start of each pass. The first failed read throws (the run can't start); later failures warn and keep the previous config without interrupting the run.
+ * 每轮开头调用。第一次读不成直接抛（运行起不来）；之后读不成就警告并沿用上一份，不打断正在跑的运行（这个提示每轮都打，要人去修）。
+ * 模型行启动时打印一次，之后只在 models.json 内容变化时打「模型配置已更新」；警告只在警告文本变化时重打。
+ * 内容按 JSON 解析后再序列化来比：空白和缩进不算变化，键的顺序变了算；改坏后又改回原样不算变化。
+ * Called at the start of each pass. The first failed read throws (the run can't start); later failures warn and keep the previous config without interrupting the run (that warning repeats every pass, since someone needs to fix it).
+ * The models line is printed once at startup, then only as "Models updated" when models.json's content changes; warnings are reprinted only when their text changes.
+ * Content is compared after parsing and re-serializing the JSON: whitespace and indentation don't count, key order does; breaking the file and then restoring it doesn't count.
  */
 export function reloadModels() {
   const warnings: string[] = [];
   try {
-    const next = parseConfig(readFileSync(CONFIG_PATH, "utf8"), sandcastleEnvKeys(), (m) => warnings.push(m));
-    for (const w of warnings) console.warn(`  ⚠ ${CONFIG_PATH}：${w}`);
+    const text = readFileSync(CONFIG_PATH, "utf8");
+    const next = parseConfig(text, sandcastleEnvKeys(), (m) => warnings.push(m));
+    const key = JSON.stringify(JSON.parse(text));
+    const warningKey = warnings.join("\n");
+    if (warningKey !== lastWarningText) for (const w of warnings) console.warn(`  ⚠ ${CONFIG_PATH}：${w}`);
     config = next;
-    console.log(`${t("模型：", "Models: ")}${PHASES.map((p) => `${p}=${next.phases[p].join("→")}`).join("  ")}`);
+    const list = PHASES.map((p) => `${p}=${next.phases[p].join("→")}`).join("  ");
+    if (lastConfigJson === undefined) console.log(`${t("模型：", "Models: ")}${list}`);
+    else if (key !== lastConfigJson) console.log(`${t("模型配置已更新：", "Models updated: ")}${list}`);
+    lastConfigJson = key;
+    lastWarningText = warningKey;
   } catch (e) {
     if (!config) throw e;
     console.warn(`  ⚠ ${String(e)}${t("；沿用上一次读到的配置", "; keeping the previously loaded config")}`);
