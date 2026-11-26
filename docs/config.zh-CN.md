@@ -63,7 +63,7 @@ export default defineProject({
 
 ## 浏览器验收
 
-有网页界面的项目，PROJECT.md 写了「浏览器验收」一节，agent 才会在沙箱里起 dev server、用浏览器点一遍改过的页面；没有这一节（只有 HTML 注释也算没有），改页面的票只能留 PR 给人看，`sandpipe doctor` 会警告。
+有网页界面的项目，PROJECT.md 写了「浏览器验收」一节，agent 才会在沙箱里起 dev server、用浏览器点一遍改过的页面；没有这一节（只有 HTML 注释也算没有），改页面的票只能留 PR 给人看，`sandpipe doctor` 会警告。配了这一节，改了页面的票（diff 命中 `browser.pagePaths`、有 `.browser-check/`、或 reviewer 的 `browser-check` 是 `done` / `missing`）要自动合并还得满足：至少一张截图；`RESULT.md` 存在、列表 / 表格行里没有 ❌ / ⚠、引用的截图文件都在；reviewer 的 `browser-check` 是 `done`。缺哪条就留 PR，终端和 PR 评论逐条写出来。
 
 onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-cli 和 Chromium。onboard 会先读项目已有的验收资料（README、测试说明、旧的 `.sandcastle` 提示词、`scripts/` 里建验收数据的脚本），能拼出下面四步就写这一节，拼不全就把缺的信息（dev server 启动命令与端口、验收数据怎么建、登录方式与账号、dev server 要的变量）列进缺口清单。后端项目加了前端：在 PROJECT.md 加浏览器验收一节（照下面的示例），并配 `browser.pagePaths`（见「可选」），沙箱已经装好浏览器。
 

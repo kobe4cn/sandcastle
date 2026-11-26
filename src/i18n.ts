@@ -75,6 +75,17 @@ const zh = {
   reasonReviewerPr: "reviewer 认为需要人审（见 PR 正文的 Review）。",
   reasonGate: "typecheck 或完整测试没通过（见 PR 正文的 Gate）。",
   reasonAutoMergeOff: "项目配置 autoMerge: false（试跑期），reviewer 和门槛都通过，等人合并。",
+  reasonBrowser: (problems: string) => `改了页面，浏览器验收不满足自动合并的条件：${problems}（见 PR 正文的 Browser check 一节）。`,
+  reasonNoBrowserConfig:
+    "改了页面、本项目没配浏览器验收，不能自动合并。补法：重跑 onboard 让它写「浏览器验收」一节，或者在 `.sandcastle/PROJECT.md` 里手动加 `## 浏览器验收`（怎么准备数据、在后台起 dev server、登录、查日志），再按需配 `browser.pagePaths`；改完重启 Sandcastle。",
+  // —— 浏览器验收缺什么（browser-gate.ts，接在 reasonBrowser 里） —— / What the browser check is missing (browser-gate.ts, inside reasonBrowser)
+  browserNotDone: "改了页面但没做浏览器验收（worktree 里没有 `.browser-check/`）",
+  browserNoShots: "没有截图",
+  browserNoResultFile: "没有 RESULT.md",
+  browserFailedItems: (lines: string[]) => `RESULT.md 有没通过的项（❌ / ⚠）：${lines.map((l) => `「${l}」`).join("、")}`,
+  browserMissingShots: (names: string) => `RESULT.md 引用的截图不存在：${names}`,
+  browserTagNotDone: (tag: string) => `review 的 browser-check 是 \`${tag}\`，不是 done`,
+  browserNoTag: "review 没有给出 browser-check（要求是 done）",
   reasonMergeFailed: (out: string, retry: string) => `合并失败：${out}\n\nrebase 后重试也没成：${retry}`,
   reasonBranchProtection: (out: string) =>
     `门槛已通过，但仓库的分支保护不让 Sandcastle 合并（要求审批、必需检查或合并队列等）。请人合并，或调整分支保护 / 配置里的 \`mergeRequires\`。gh 的报错：${out}`,
@@ -231,6 +242,16 @@ const en: Messages = {
   reasonReviewerPr: "The reviewer thinks a human should review this (see the Review section of the PR description).",
   reasonGate: "Typecheck or the full test run failed (see the Gate section of the PR description).",
   reasonAutoMergeOff: "The project config has autoMerge: false (trial period). Reviewer and gate both passed; waiting for a human to merge.",
+  reasonBrowser: (problems) => `Pages changed and the browser check doesn't meet the auto-merge conditions: ${problems} (see the Browser check section of the PR description).`,
+  reasonNoBrowserConfig:
+    "Pages changed but this project has no browser check configured, so it can't auto-merge. To fix: rerun onboard so it writes the “Browser check” section, or add `## Browser check` to `.sandcastle/PROJECT.md` yourself (how to prepare data, start the dev server in the background, log in, check the logs), and set `browser.pagePaths` if needed; restart Sandcastle afterwards.",
+  browserNotDone: "pages changed but no browser check was done (no `.browser-check/` in the worktree)",
+  browserNoShots: "no screenshots",
+  browserNoResultFile: "no RESULT.md",
+  browserFailedItems: (lines) => `RESULT.md has failing items (❌ / ⚠): ${lines.map((l) => `“${l}”`).join(", ")}`,
+  browserMissingShots: (names) => `screenshots referenced in RESULT.md don't exist: ${names}`,
+  browserTagNotDone: (tag) => `the review's browser-check is \`${tag}\`, not done`,
+  browserNoTag: "the review gave no browser-check (done is required)",
   reasonMergeFailed: (out, retry) => `Merge failed: ${out}\n\nRetrying after a rebase also failed: ${retry}`,
   reasonBranchProtection: (out) =>
     `The gate passed, but the repository's branch protection won't let Sandcastle merge (required reviews, required checks, merge queue, etc.). Please merge it yourself, or adjust the branch protection / \`mergeRequires\` in the config. gh's error: ${out}`,

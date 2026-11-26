@@ -99,6 +99,7 @@ import { duration, flakyTicketsLine, gateDoneLine, gateEnv, gateInfraLine, start
 import { createGateQueue, type GatePriority } from "./gate-queue.ts";
 import { setTermLanguage, t } from "./term.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
+import { type BrowserCheck, browserVerdict, pageFiles } from "./browser-gate.ts";
 import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
 
 // ---------------------------------------------------------------------------
@@ -150,7 +151,8 @@ const allowed = (id: string | number) => ONLY.size === 0 || ONLY.has(String(id).
 const LABEL = project.labels;
 // 提示词：通用模板 + .sandcastle/PROJECT.md 的章节 + 平台命令，启动时渲染一次（改了 PROJECT.md 要重启才生效）
 // Prompts: generic templates + .sandcastle/PROJECT.md sections + forge commands, rendered once at startup (restart after changing PROJECT.md)
-const PROMPTS = renderPrompts({ doc: loadProjectDoc(), forgeGuide: forge.agentGuide(), labels: LABEL, language: project.language });
+const DOC = loadProjectDoc();
+const PROMPTS = renderPrompts({ doc: DOC, forgeGuide: forge.agentGuide(), labels: LABEL, language: project.language });
 const APPEND_ONLY: ReadonlySet<string> = new Set(project.appendOnlyFiles);
 
 /**
@@ -206,7 +208,7 @@ async function dropTestResources(runId: string) {
 const BROWSER_DIR = ".browser-check";
 const SHOTS_ROOT = join(tmpdir(), "sandcastle-browser-check");
 
-function collectBrowserCheck(worktreePath: string, issueId: string) {
+function collectBrowserCheck(worktreePath: string, issueId: string): BrowserCheck | undefined {
   const from = join(worktreePath, BROWSER_DIR);
   if (!existsSync(from)) return undefined;
   const to = join(SHOTS_ROOT, `issue-${issueId}`);
@@ -961,6 +963,10 @@ async function build(issue: Issue) {
       }));
       gateResult = await gate();
     }
+    // 改了哪些文件（判断改没改页面用）：在 review / 修改 / 修门槛之后取，算上所有提交。取不到就当空的，退回原有判断，不挡合并。
+    // Which files changed (to judge page changes): taken after review / revisions / gate fixes so every commit counts. If it fails, treat it as empty and fall back to the existing judgement without blocking the merge.
+    const diff = await sandbox.exec(`git diff --name-only ${BASE_REF}...HEAD`).catch(() => undefined);
+    const changed = diff?.exitCode === 0 ? diff.stdout.split("\n").map((l) => l.trim()).filter(Boolean) : [];
 
     return {
       done: true as const,
@@ -973,6 +979,7 @@ async function build(issue: Issue) {
       browser: collectBrowserCheck(sandbox.worktreePath, issue.id),
       browserTag: tagged(review.stdout, "browser-check"),
       notes: readAcceptanceNotes(sandbox.worktreePath),
+      changed,
       usage,
     };
   } finally {
@@ -1320,10 +1327,13 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
         .join("\n\n")}`
     : "";
   const notesProblems = checkAcceptanceNotes(result.notes, M);
+  // 改了页面：diff 命中 browser.pagePaths，或有 .browser-check/，或 review 说改了。 / Pages changed: the diff hits browser.pagePaths, or there's a .browser-check/, or the review says so.
+  const pageChanged =
+    pageFiles(result.changed, project.browser.pagePaths).length > 0 || result.browser !== undefined || pageChangedByReview(result.browserTag);
   const pr = await pushAndOpenPr(
     issue,
     {
-      acceptance: acceptanceSection(issue.branch, result.notes, { pageChanged: result.browser !== undefined || pageChangedByReview(result.browserTag), pagePrep: project.acceptancePrep, m: M }),
+      acceptance: acceptanceSection(issue.branch, result.notes, { pageChanged, pagePrep: project.acceptancePrep, m: M }),
       rest: restSections({
         review: `${result.summary}${revisionNote}`,
         browser: browserSection,
@@ -1372,6 +1382,15 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   const notesNote = notesProblems.length
     ? M.reasonNotes(notesProblems.join(M.sep))
     : "";
+  // 改了页面的票，浏览器验收是自动合并的硬条件（src/browser-gate.ts）；不满足时同样附进每条留给人的原因。
+  // For tickets that change pages, the browser check is a hard condition for auto-merge (src/browser-gate.ts); when unmet it's likewise added to every leave-for-human reason.
+  const { block: browserBlock } = browserVerdict(
+    { pages: pageChanged, hasBrowser: DOC.hasBrowser, browser: result.browser, tag: result.browserTag },
+    M,
+  );
+  const browserNote = browserBlock ? `\n\n${browserBlock}` : "";
+  // 终端也逐条写缺什么（和 PR 评论同一段原因）。 / The terminal also lists what's missing (the same reason as the PR comment).
+  const logBrowserBlock = () => browserBlock && console.log(`    ${browserBlock}`);
   if (result.verdict !== "merge") {
     // 开工后 main 上合进了改同一处的票：先 rebase 好再交给人，免得人审的是一个合不进去的 PR。
     // A ticket changing the same spot merged into main after this one started: rebase first, so the human doesn't review a PR that can't merge.
@@ -1383,25 +1402,41 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
         ? M.reasonReviseMax(REVISE_MAX)
         : M.reasonReviewerPr) +
         rebaseNote +
-        notesNote,
+        notesNote +
+        browserNote,
     );
     console.log(t(`  ◐ #${issue.id} 留 PR #${pr} 等人审`, `  ◐ #${issue.id} PR #${pr} left for review`));
+    logBrowserBlock();
     return;
   }
   if (!result.gate.ok) {
-    leaveForHuman(issue, pr, `${M.reasonGate}${notesNote}`);
+    leaveForHuman(issue, pr, `${M.reasonGate}${notesNote}${browserNote}`);
     console.log(t(`  ◐ #${issue.id} 门槛失败，留 PR #${pr}`, `  ◐ #${issue.id} gate failed; PR #${pr} left open`));
+    logBrowserBlock();
     return;
   }
   // reviewer 给了 merge、门槛也过了，但验收说明不合格：照样不自动合并。
   // The reviewer said merge and the gate passed, but the acceptance notes are invalid: still no auto-merge.
   if (notesProblems.length > 0) {
-    leaveForHuman(issue, pr, notesNote.trimStart());
+    leaveForHuman(issue, pr, `${notesNote}${browserNote}`.trimStart());
     console.log(
       result.notes === undefined
         ? t(`  ◐ #${issue.id} 验收说明缺失，留 PR #${pr}`, `  ◐ #${issue.id} acceptance notes missing; PR #${pr} left open`)
         : t(`  ◐ #${issue.id} 验收说明格式不对，留 PR #${pr}`, `  ◐ #${issue.id} acceptance notes badly formatted; PR #${pr} left open`),
     );
+    logBrowserBlock();
+    return;
+  }
+  // reviewer 给了 merge、门槛和验收说明都过了，但改了页面而浏览器验收不满足：不自动合并。
+  // The reviewer said merge and the gate and acceptance notes passed, but pages changed and the browser check falls short: no auto-merge.
+  if (browserBlock) {
+    leaveForHuman(issue, pr, browserBlock);
+    console.log(
+      DOC.hasBrowser
+        ? t(`  ◐ #${issue.id} 改了页面，浏览器验收不满足，留 PR #${pr}`, `  ◐ #${issue.id} changed pages and the browser check falls short; PR #${pr} left open`)
+        : t(`  ◐ #${issue.id} 改了页面、本项目没配浏览器验收，留 PR #${pr}`, `  ◐ #${issue.id} changed pages but this project has no browser check configured; PR #${pr} left open`),
+    );
+    logBrowserBlock();
     return;
   }
   // 试跑期（autoMerge: false）：全程都过了也只留 PR，人看过再合并。
