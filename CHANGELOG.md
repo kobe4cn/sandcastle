@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 没配浏览器验收的项目，改了页面的 PR 不再在「准备」段写「本票没改页面，不用起 dev server」：review 提示词要求 reviewer 在摘要后单独输出机器可读的 `<browser-check>` 标签（`none` / `done` / `missing` 三选一）（配不配浏览器验收都输出，和摘要里「浏览器验收」那一行对应）；没有 `.browser-check/` 但标签是 `done` 或 `missing` 的票也算改了页面（新增 `pageChangedByReview`，`src/pr-body.ts`）。改了页面但项目没配 `acceptancePrep` 时，准备段写「本票改了页面，需要起 dev server（项目没配准备步骤）」（英文同步）。有 `.browser-check/` 或配了 `acceptancePrep` 的票行为不变（closes #17）。
 - 一张票都没开工就空转到上限退出时，不再打印「全部完成」，改为说明原因：列出最后一次调度里被 blocker 挡住的票（`#n 等 #m、#k`）；没有被挡的票时说明没有可开工的票（没有带 `Sandcastle` 标签、还没开工的票，或者都在等人审 PR / 带 `sandcastle:stuck`）。开工过票时照旧打印「全部完成」。原因文案由新增的 `idleSummary`（`src/guide.ts`）生成（closes #26）。
 - `sandpipe doctor` 新增「Blocked by」检查：列出带 `Sandcastle` 标签的 open 票，逐个确认 `## Blocked by` 里引用的票在本仓库是否存在；有不存在的引用时警告并列出 `#n → #m`，提示改正 Blocked by，接入时就能发现，不用等调度打 stuck。引用都存在或没有这类票时通过；列票失败时整项警告，单个 blocker 查询出错（不是不存在）时跳过它。不会不通过，`--fix` 不处理（closes #25）。
 - 调度区分「blocker 不存在」和「还开着」：`## Blocked by` 里的票号在本仓库查不到时，prep 和 plan 打印「跳过 #n：blocker #m 不存在或无权访问」，给票打 `sandcastle:stuck` 并留言说明（票号写错或从别的仓库复制来的，改正后去掉标签即可），不再当成 open 一直跳过；网络、权限等其他查询错误仍按 open 处理，不打 stuck。`Forge.issueState` 的返回类型加宽为 `"open" | "closed" | "missing"`（`missing` = 平台确认编号不存在），自定义 forge 不用改照样能编译；GitHub 实现在 gh 报 `Could not resolve to an issue or pull request` 时返回 `missing`（closes #24）。

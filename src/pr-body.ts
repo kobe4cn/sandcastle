@@ -60,10 +60,12 @@ const demoteHeadings = (md: string): string =>
 /**
  * PR 正文 `## 验收说明` 一节的内容（标题由 main.ts 的 pushAndOpenPr 加）：固定准备段落 + 文件内容，
  * 让验收的人能在宿主机上照做。不合格时给警告（文件不存在）或「格式不对」+ 问题列表 + 原文（二级标题降成 `###`），照样进正文让人看见。
- * pageChanged：有 `.browser-check/`（改了页面）的票给项目配置的准备步骤（acceptancePrep）；其余只要 checkout，不用起 dev server。
+ * pageChanged：有 `.browser-check/`，或 review 标了 `<browser-check>` 为 done / missing（改了页面）的票给项目配置的准备步骤（acceptancePrep），
+ * 项目没配时写明要起 dev server；其余只要 checkout，不用起 dev server。
  * Content of the PR body's `## 验收说明` section (the heading is added by pushAndOpenPr in main.ts): fixed setup steps + the file's content,
  * so the verifier can follow along on the host. When invalid: a warning (file missing) or "bad format" + problem list + the original (level-2 headings demoted to `###`), still in the body for people to see.
- * pageChanged: tickets with `.browser-check/` (page changes) get the project's setup steps (acceptancePrep); the rest only need a checkout, no dev server.
+ * pageChanged: tickets with `.browser-check/`, or whose review tagged `<browser-check>` as done / missing (page changes), get the project's setup steps (acceptancePrep),
+ * or a note to start the dev server when the project has none; the rest only need a checkout, no dev server.
  */
 export const acceptanceSection = (branch: string, md: string | undefined, opts: { pageChanged: boolean; pagePrep?: (branch: string) => string; m?: Messages }): string => {
   const m = opts.m ?? messages();
@@ -73,6 +75,15 @@ export const acceptanceSection = (branch: string, md: string | undefined, opts: 
   }
   const prep = opts.pageChanged && opts.pagePrep ? opts.pagePrep(branch) : opts.pageChanged ? m.prepPage(branch) : m.prepNoPage(branch);
   return `${prep}\n\n${md}`;
+};
+
+/**
+ * review 的 `<browser-check>` 标签是否说明改了页面：done（已做）或 missing（需要但没做）算，none、缺标签或其他值都不算。
+ * Whether the review's `<browser-check>` tag says pages changed: done or missing count; none, a missing tag or any other value do not.
+ */
+export const pageChangedByReview = (tag: string | undefined): boolean => {
+  const value = tag?.trim();
+  return value === "done" || value === "missing";
 };
 
 /**

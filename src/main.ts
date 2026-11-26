@@ -85,7 +85,7 @@ import {
   type AgentRun, type Phase, type UsageRecord,
 } from "./models.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
-import { acceptanceSection, checkAcceptanceNotes, replaceSection, restSections } from "./pr-body.ts";
+import { acceptanceSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from "./pr-body.ts";
 import type { ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { loadProject } from "./profile.ts";
 import { messages } from "./i18n.ts";
@@ -916,6 +916,7 @@ async function build(issue: Issue) {
       summary: tagged(review.stdout, "review-summary") ?? M.noReviewSummary,
       gate: { ok: gateResult.exitCode === 0, output: gateResult.stdout.slice(-3000), tier: gateTier(gateResult.stdout) },
       browser: collectBrowserCheck(sandbox.worktreePath, issue.id),
+      browserTag: tagged(review.stdout, "browser-check"),
       notes: readAcceptanceNotes(sandbox.worktreePath),
       usage,
     };
@@ -1221,7 +1222,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   const pr = await pushAndOpenPr(
     issue,
     {
-      acceptance: acceptanceSection(issue.branch, result.notes, { pageChanged: result.browser !== undefined, pagePrep: project.acceptancePrep, m: M }),
+      acceptance: acceptanceSection(issue.branch, result.notes, { pageChanged: result.browser !== undefined || pageChangedByReview(result.browserTag), pagePrep: project.acceptancePrep, m: M }),
       rest: restSections({
         review: `${result.summary}${revisionNote}`,
         browser: browserSection,

@@ -101,4 +101,10 @@
 **验收说明**：合格 / 问题（缺失、步骤对不上代码、「做了什么」和 diff 对不上、漏验收标准、无用户可见变化没写明，写出来）
 </review-summary>
 
+然后单独一行输出机器可读的浏览器验收结论，和摘要里「浏览器验收」那一行对应，三选一、只写一个值：
+
+- 不需要：<browser-check>none</browser-check>
+- 已做：<browser-check>done</browser-check>
+- 需要但没做：<browser-check>missing</browser-check>
+
 然后输出 <promise>COMPLETE</promise>。

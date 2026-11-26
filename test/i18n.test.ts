@@ -37,6 +37,7 @@ describe("language", () => {
     expect(checkAcceptanceNotes(enNotes, en)).toEqual([]);
     expect(checkAcceptanceNotes("### 做了什么\n### 怎么验证\n1. x\n### 最终效果", en)).toHaveLength(3);
     expect(acceptanceSection("b", enNotes, { pageChanged: false, m: en })).toMatch(/^### Setup\n\n`git checkout b` \(no page changes/);
+    expect(acceptanceSection("b", enNotes, { pageChanged: true, m: en })).toContain("the project has no setup steps configured");
   });
 
   it("英文：用量表、偶发失败票标题、默认开票正文", () => {

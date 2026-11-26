@@ -24,7 +24,7 @@ const zh = {
   notesHasH2: "文件里出现了 `## ` 二级标题（只能写 `###` 小标题，二级标题会让替换这一节时切错）",
   notesNotWritten: "⚠️ implementer 没有写验收说明",
   notesBadFormat: (problems: string) => `⚠️ 验收说明格式不对：${problems}`,
-  prepPage: (branch: string) => `### 准备\n\n\`git checkout ${branch}\`，按项目说明起 dev server`,
+  prepPage: (branch: string) => `### 准备\n\n\`git checkout ${branch}\`。本票改了页面，需要起 dev server（项目没配准备步骤）`,
   prepNoPage: (branch: string) => `### 准备\n\n\`git checkout ${branch}\`（本票没改页面，不用起 dev server）`,
 
   // —— PR 正文：其余各节 —— / PR body: other sections
@@ -173,7 +173,7 @@ const en: Messages = {
   notesHasH2: "the file contains a `## ` heading (use `###` only; a `## ` heading breaks replacing this section)",
   notesNotWritten: "⚠️ The implementer did not write acceptance notes",
   notesBadFormat: (problems) => `⚠️ Acceptance notes are malformed: ${problems}`,
-  prepPage: (branch) => `### Setup\n\n\`git checkout ${branch}\`, then start the dev server as the project docs describe`,
+  prepPage: (branch) => `### Setup\n\n\`git checkout ${branch}\`. This ticket changes pages, so start the dev server (the project has no setup steps configured)`,
   prepNoPage: (branch) => `### Setup\n\n\`git checkout ${branch}\` (no page changes, no dev server needed)`,
 
   usageNone: "(no usage recorded)",

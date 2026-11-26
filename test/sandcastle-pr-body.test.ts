@@ -1,7 +1,7 @@
 // test/sandcastle-pr-body.test.ts —— Sandcastle PR 正文的验收说明（`.sandcastle/pr-body.ts`，纯函数、不连库）：
-// 格式检查（三个小标题、编号步骤、不出现二级标题）、准备段落的两种形态、正文各节顺序与折叠、只替换一节。
+// 格式检查（三个小标题、编号步骤、不出现二级标题）、准备段落的三种形态（配了准备步骤、改了页面但没配、没改页面）、正文各节顺序与折叠、只替换一节。
 import { describe, expect, it } from 'vitest';
-import { acceptanceSection, checkAcceptanceNotes, replaceSection, restSections } from '../src/pr-body.ts';
+import { acceptanceSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from '../src/pr-body.ts';
 import crm from '../examples/duckdb_crm/sandcastle.config.ts';
 
 const notes = [
@@ -50,6 +50,22 @@ describe('Sandcastle 验收说明一节 acceptanceSection', () => {
     ]) expect(section).toContain(part);
     expect(section.endsWith(notes)).toBe(true);
     expect(section.indexOf('### 准备')).toBeLessThan(section.indexOf('### 做了什么'));
+  });
+
+  it('改了页面但项目没配准备步骤：写明要起 dev server，不写「本票没改页面」', () => {
+    const section = acceptanceSection('sandcastle/issue-3', notes, { pageChanged: true });
+    expect(section.startsWith('### 准备')).toBe(true);
+    expect(section).toContain('git checkout sandcastle/issue-3');
+    expect(section).toContain('本票改了页面，需要起 dev server（项目没配准备步骤）');
+    expect(section).not.toContain('本票没改页面');
+    expect(section.endsWith(notes)).toBe(true);
+  });
+
+  it.each([
+    ['done', true], ['missing', true], [' done\n', true],
+    ['none', false], [undefined, false], ['需要', false],
+  ] as const)('pageChangedByReview(%j) = %s', (tag, expected) => {
+    expect(pageChangedByReview(tag)).toBe(expected);
   });
 
   it('没改页面的票：准备只有 checkout，不用起 dev server', () => {
