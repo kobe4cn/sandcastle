@@ -122,8 +122,8 @@ e2e 实跑（sandcastle-e2e）：
 - [x] L6 （⚠ 超时后打 stuck 留言、无残留容器；但留言建议 --idle-timeout（应为 agentIdleTimeoutS）且带堆栈；超时后进程「All done」却不退出（B2））agentIdleTimeoutS 调小：agent 卡住被判超时后的处理（重试 / 留给人），票的状态正确
 - [x] L7 （✓ #60 会话用完后 reprep 再做完；#63 reprep 后仍不完打 stuck 并建议拆票；#54 打回 1 次仍不过，PR #62 留给人）implementMaxSessions 用完、reviseMax 用完：票交给人，标签和评论说明原因
 - [x] L1–L7 回归（abe93f1 + 后续修复）：R1 kill -9 后重启 🧹 清掉孤儿容器、第二个实例一行报错退出码 1；R2 超时后约 5 秒自己退出，评论一行、建议 agentIdleTimeoutS；R3 等 CI 中断后「↻ … resuming that without reimplementing」，无 implement/review/门槛会话，合并后去掉 merging（英文 merging 标签描述超 100 字符建不起来，已缩短并加测试）；R4 podman 不可用一行报错退出码 1；R5 英文项目进度评论首行 Model profile。未解决：源码 npx tsx 跑时终端 Ctrl-C 同时打到 tsx 父进程，中断提示可能不打、锁残留（下次启动会接管）
-- [ ] L8 连续运行：一次排 10 张以上互相独立 / 有依赖的小票，autoMerge、maxParallel 2，不人工干预跑完；统计成功率、每张耗时、失败 / stuck 原因、上下文峰值
-- [ ] L9 跑完后环境干净：无容器、无多余 worktree、远端只剩 main、标签都对
+- [x] L8 （✓ 12 张票 #69–#80，maxParallel 2、autoMerge，全程无人工：11 张合并（PR #81–#91），19:55 启动、20:34 最后一张合并，PR 开到合并 41 秒–9 分钟；每张只用 1 次 implement + 1 次 review，无打回、无门槛失败；改同一文件的票自动错开不并行；故意写含糊的 #80 在 prep 阶段打 stuck，评论说明缺什么、给出三个具体方向；上下文峰值 36K（#78 implement）；之后空闲 12 轮自己退出、退出码 0）连续运行：一次排 10 张以上互相独立 / 有依赖的小票，autoMerge、maxParallel 2，不人工干预跑完；统计成功率、每张耗时、失败 / stuck 原因、上下文峰值
+- [x] L9 （✓ 本项目无容器（剩下 3 个属于 duckdb_crm-trial）、只剩主 worktree、远端只剩 main、关掉的票只有 Sandcastle/decided 标签，#80 跑完时是 stuck + ready-for-human；检查后 #69–#80 标签已清、#80 以 not planned 关闭、配置已恢复）跑完后环境干净：无容器、无多余 worktree、远端只剩 main、标签都对
 
 ## M. 复杂票、代码准确性与上下文
 
