@@ -275,7 +275,7 @@ const en: Messages = {
     `Sandcastle stopped: landing (push / open PR / merge) failed; the local branch \`${branch}\` is kept.\n\n\`\`\`\n${reason}\n\`\`\`\n\nFix it, then remove ${stuckLabel} and run again.`,
 
   flakyLabelDesc: "Flaky tests (opened automatically by the Sandcastle gate)",
-  mergingLabelDesc: "Sandcastle opened the PR and the gate passed; waiting for checks / merging (resumed after a restart, not reimplemented)",
+  mergingLabelDesc: "Gate passed, PR open; Sandcastle is waiting for checks / merging (resumes after a restart)",
   flakySeen: (issueId, pr) => `the gate of #${issueId} (PR #${pr})`,
   flakyEnv: (others, load, cores) =>
     `When opened: tickets in progress ${others.length ? others.join(", ") : "none"}; host load (1 / 5 / 15 min) ${load} (${cores} cores).`,

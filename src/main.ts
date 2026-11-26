@@ -1206,7 +1206,10 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     // 终端和评论只要一行，堆栈写进本地日志（评论里的 node_modules 堆栈对人没用）。
     // One line for the terminal and the comment; the stack goes to a local log (a node_modules stack in a comment helps nobody).
     logErrorDetail(ERROR_LOG, `#${issue.id}`, outcome.reason, appendFileSync);
-    console.error(`  ✗ #${issue.id} ${t("失败：", "failed: ")}${errorLine(outcome.reason)}${t(`（详情见 ${ERROR_LOG}）`, ` (details in ${ERROR_LOG})`)}`);
+    const why = isAgentIdleTimeout(outcome.reason)
+      ? t(`agent ${AGENT_IDLE_TIMEOUT_S} 秒没有输出（空闲超时；测试或构建确实要这么久就调大 agentIdleTimeoutS）`, `agent produced no output for ${AGENT_IDLE_TIMEOUT_S}s (idle timeout; raise agentIdleTimeoutS if tests or builds really take this long)`)
+      : errorLine(outcome.reason);
+    console.error(`  ✗ #${issue.id} ${t("失败：", "failed: ")}${why}${t(`（详情见 ${ERROR_LOG}）`, ` (details in ${ERROR_LOG})`)}`);
     markStuck(
       issue.id,
       isAgentIdleTimeout(outcome.reason) ? M.agentIdleTimeout(AGENT_IDLE_TIMEOUT_S, LABEL.stuck) : M.sandboxError(errorLine(outcome.reason)),

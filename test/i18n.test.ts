@@ -105,3 +105,14 @@ describe("英文分钟数单复数 / minute pluralization", () => {
     expect(en.reasonChecksTimeout("- x", 2)).toContain("after 2 minutes,");
   });
 });
+
+describe("标签描述长度", () => {
+  // GitHub 标签描述最多 100 个字符，超了 gh label create 报 422、标签建不起来（e2e R3：英文 merging 标签）。
+  // GitHub label descriptions are capped at 100 characters; longer ones make gh label create fail with 422 (e2e R3: the English merging label).
+  it.each(["zh", "en"] as const)("%s 的所有 *LabelDesc 不超过 100 个字符", (lang) => {
+    const m = messages(lang) as unknown as Record<string, unknown>;
+    const descs = Object.entries(m).filter(([k, v]) => k.endsWith("LabelDesc") && typeof v === "string");
+    expect(descs.length).toBeGreaterThan(0);
+    for (const [k, v] of descs) expect([...(v as string)].length, k).toBeLessThanOrEqual(100);
+  });
+});
