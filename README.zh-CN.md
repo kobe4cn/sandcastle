@@ -65,6 +65,8 @@ SANDCASTLE_ONLY=12 sandpipe    # 只做 #12；不设就处理全部带标签的�
 
 新项目默认只开 PR、不自动合并（`autoMerge: false`），一次只做一张票。按 [docs/onboarding-checklist.zh-CN.md](docs/onboarding-checklist.zh-CN.md) 走完金丝雀票、真实小票，确认没问题后再放开。
 
+自动合并要门槛和 PR 上的检查都通过。CI 覆盖了门槛没覆盖的东西时，可以考虑把它们加进 `gate.script`；CI 不可靠时设 `mergeRequires: { checks: "none" }`（见 [docs/config.zh-CN.md](docs/config.zh-CN.md)）。
+
 ## 生成的文件
 
 | 文件 | 作用 |

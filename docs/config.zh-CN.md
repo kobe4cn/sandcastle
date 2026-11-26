@@ -85,6 +85,7 @@ export default defineProject({
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `autoMerge` | `true` | `false` 时全部通过的票也只留 PR 等人合并（onboard 生成 `false`，见 onboarding-checklist.zh-CN.md） |
+| `mergeRequires` | `{ checks: "all", timeoutMinutes: 30 }` | 自动合并除了门槛还要等什么：`checks` 取 `"all"`（PR 上的检查全部通过）、`"required"`（只看必需检查）或 `"none"`（只看门槛，给 CI 不可靠的项目用）。PR 上没有检查时不阻塞合并。有检查失败、或等了 `timeoutMinutes` 分钟还没跑完时留 PR（`sandcastle:pr-open`），评论列出是哪些检查。等的时候这张票不占实现的空位 |
 | `language` | `"zh"` | issue、PR、评论用的语言，`"zh"` 或 `"en"`：脚本写的固定文字（PR 正文、评论、自动开的票）和 agent 写的内容都跟着变，验收说明的三个小标题也按语言检查。终端输出也跟着变（设 `SANDPIPE_LANG=zh\|en` 可以单独指定；没有项目配置时看 `LANG`）。提交信息的语言看 PROJECT.md「提交」一节。onboard 取 `--lang`，没给时按最近的提交信息判断，提交少于 5 条时按项目文档的主要语言（PROJECT.md 草稿会注明是推断的） |
 | `maxParallel` | 2 | 同时实现的票数，上限看测试依赖的服务和机器负载 |
 | `remote` / `baseBranch` | `origin` / `main` | |

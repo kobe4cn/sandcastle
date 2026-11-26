@@ -2,7 +2,7 @@
 
 `npm run run:sandcastle` 跑 `.sandcastle/main.ts`：每张票 prep → plan → implement + review → 门槛 → 合并。能合并的直接 rebase 合并进 `main`；不能合并的留 PR 给人审。
 
-脚本不分轮，按空位调度：最多 `MAX_PARALLEL`（2）张票同时在做，一张票从开工到落地完一直占着一个空位。有空位时做一次调度（整理 → prep → plan），把空位补满；每张票独立跑完 build 和落地，做完马上让出空位，再调度一次，不等同批的另一张。有空位但开不了工时，每 `POLL_INTERVAL_MS`（10 分钟）重新调度一次，所以人合并了 PR、blocker 关了、去掉了 stuck，最晚 10 分钟后就能开工，不用等正在做的票做完。没有票在做、也开不出新票算一次空转，连续 `MAX_ITERATIONS`（12）次空转（约 2 小时）就结束运行。结束时如果这次运行一张票都没开工，不打印「全部完成」，改为打印空转原因：列出最后一次调度里被 blocker 挡住的票（`#n 等 #m、#k`），没有被挡的票时说明没有可开工的票（没有带 `Sandcastle` 标签、还没开工的票，或者都在等人审 PR / 带 `sandcastle:stuck`）。调度和落地都在宿主机上动 git 与标签，两者串行（`withHost`）；build 在沙箱里并行。落地里的 rebase 补救（开沙箱、rebase、重跑门槛）会先放开宿主机锁，push 与合并前再拿回，跑门槛的半小时里调度照常给另一个空位开新票（2026-11-24）。
+脚本不分轮，按空位调度：最多 `MAX_PARALLEL`（2）张票同时在做，一张票从开工到落地完一直占着一个空位。有空位时做一次调度（整理 → prep → plan），把空位补满；每张票独立跑完 build 和落地，做完马上让出空位，再调度一次，不等同批的另一张。有空位但开不了工时，每 `POLL_INTERVAL_MS`（10 分钟）重新调度一次，所以人合并了 PR、blocker 关了、去掉了 stuck，最晚 10 分钟后就能开工，不用等正在做的票做完。没有票在做、也开不出新票算一次空转，连续 `MAX_ITERATIONS`（12）次空转（约 2 小时）就结束运行。结束时如果这次运行一张票都没开工，不打印「全部完成」，改为打印空转原因：列出最后一次调度里被 blocker 挡住的票（`#n 等 #m、#k`），没有被挡的票时说明没有可开工的票（没有带 `Sandcastle` 标签、还没开工的票，或者都在等人审 PR / 带 `sandcastle:stuck`）。调度和落地都在宿主机上动 git 与标签，两者串行（`withHost`）；build 在沙箱里并行。落地里的 rebase 补救（开沙箱、rebase、重跑门槛）会先放开宿主机锁，push 与合并前再拿回，跑门槛的半小时里调度照常给另一个空位开新票（2026-11-24）。自动合并前等 PR 上的 forge 检查时也放开宿主机锁，而且这张票不算空位：它仍在 `running` 里（不会被重新开工，改的文件照样占着），调度可以趁这时开新票（#28）。
 
 ## 标签状态机
 
@@ -14,7 +14,7 @@
 | 已准备 | + `sandcastle:prepped` | prep agent（指引新鲜、≤3 条验收标准、blocker 都已关闭） | plan 选中后实现 |
 | 已拆分 | 父票去掉 `Sandcastle`；子票带 `Sandcastle` + `ready-for-agent` | prep agent | 子票马上各自 prep；子票全关后，脚本在下次调度开头勾上 `## Split into` 清单并关掉父票（子票只认列表项开头的票号） |
 | 已合并 | issue 关闭（PR 正文 `Closes #n`） | 脚本 | 依赖它的票下次调度开工 |
-| 等人审 | + `sandcastle:pr-open` | 脚本（没能自动合并时） | 人审 PR：没问题就合并（issue 自动关闭）；要改就在 PR 上发 `/sandcastle` 开头的评论或 review |
+| 等人审 | + `sandcastle:pr-open` | 脚本（没能自动合并时，含 forge 检查失败或超时） | 人审 PR：没问题就合并（issue 自动关闭）；要改就在 PR 上发 `/sandcastle` 开头的评论或 review |
 | 打回 | 去掉 `sandcastle:pr-open` | 脚本（每次调度开头看到打回信号时） | 这次调度重新 plan，implementer 在原分支上先处理 PR 意见 |
 | 退回重新准备 | 去掉 `sandcastle:prepped`，issue 上留 `<!-- sandcastle:reprep -->` 评论 | 脚本（implementer 第一次用完会话没做完时） | 下次调度 prep 按进度：指引不对就重写；票太大就把没完成的验收标准拆成子票（被本票 block），本票只留已完成的部分，在原分支上收尾合并 |
 | 需要人 | + `sandcastle:stuck`（评论里写原因） | 脚本（重新准备后仍没做完、沙箱出错、implementer 输出 `NEEDS_DECISION`、Blocked by 引用的票不存在）或 agent（含 prep 缺意图信息：评论写明缺什么、写进哪份文档，提示 `/fill-project-docs`） | 人处理后去掉 `sandcastle:stuck`；带 `ready-for-human` 的（prep 打的、implementer 输出 `NEEDS_DECISION` 的）一并去掉 |
@@ -58,7 +58,7 @@ reviewer 的结论有三种：`merge`、`revise`、`pr`（规则在 `.sandcastle
 
 4. 验收说明齐全：implementer 写了 `.pr-notes/验收说明.md` 且格式对（三个小标题、「怎么验证」有编号步骤，检查在 `.sandcastle/pr-body.ts` 的 `checkAcceptanceNotes`）。缺失或格式不对时正文写警告、留 PR（见「验收说明」）。
 
-GitHub CI 不作为门槛。
+5. PR 上的 forge 检查（CI）通过（[ADR 0002](../adr/0002-merge-requires-forge-checks.md)）：以上都满足、`autoMerge: true` 时，合并前按 `mergeRequires` 等检查（默认 `checks: "all"`、最多 30 分钟，`"required"` 只看必需检查）。有失败或超时留 PR（`sandcastle:pr-open`），评论列出检查名和链接；PR 上没有检查不阻塞（空列表宽限 60 秒后当作没有 CI）。rebase 补救 force-push 后要重新等检查再合。`checks: "none"` 时只看门槛，给 CI 不可靠的项目用。forge 没实现 `prChecks` 时每次运行在终端警告一次、按没有检查合并。
 
 ### 合并门槛怎么选测试（2026-11-24）
 

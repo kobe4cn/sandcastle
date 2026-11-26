@@ -86,7 +86,8 @@ import {
 } from "./models.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
 import { acceptanceSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from "./pr-body.ts";
-import type { ForgeIssue, ForgePr, IssueState } from "./forge.ts";
+import type { ForgeIssue, ForgePr, IssueState, PrCheck } from "./forge.ts";
+import { type ChecksWait, waitForChecks } from "./merge-checks.ts";
 import { loadProject } from "./profile.ts";
 import { messages } from "./i18n.ts";
 import { duration, startGateProgress } from "./gate-progress.ts";
@@ -1036,6 +1037,17 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
 
     await host.reacquire();
     await gitRemoteOrThrow(["push", "--force-with-lease", REMOTE, issue.branch]);
+    // 等检查前先关沙箱、清测试库：等的时候空位已让出，新开的票不该和这张票的资源同时占着。
+    // Close the sandbox and drop test resources before waiting for checks: the slot is freed meanwhile, so a newly started ticket shouldn't overlap this ticket's resources.
+    if (opened) {
+      await opened.close();
+      await dropTestResources(issue.id);
+      opened = undefined;
+    }
+    // force-push 后 PR 上的检查重新跑：等它们通过再合并（等的时候放开宿主机锁、不占空位）。
+    // After the force-push the PR's checks rerun: wait for them to pass before merging (releasing the host lock and the slot meanwhile).
+    const checks = await waitChecksOffSlot(issue, pr, host);
+    if (!checks.ok) return { ok: false, reason: checksReason(checks) };
     // 平台重新计算可合并状态要一点时间。 / The forge needs a moment to recompute mergeability.
     let last = "";
     for (let tries = 0; tries < 3; tries++) {
@@ -1143,6 +1155,43 @@ async function rebaseIfConflicting(issue: Issue, pr: string, host: HostGap): Pro
     ? M.rebasedForHuman(BASE_REF)
     : M.rebaseForHumanFailed(BASE_REF, r.reason);
 }
+
+/**
+ * 把检查列成 `- 名字（链接）` 多行，给 PR 评论用。
+ * List checks as `- name (link)` lines for a PR comment.
+ */
+function checksList(checks: PrCheck[]): string {
+  return checks.map((c) => (c.link ? t(`- ${c.name}（${c.link}）`, `- ${c.name} (${c.link})`) : `- ${c.name}`)).join("\n");
+}
+
+/**
+ * 检查没通过或超时时留给人的原因。
+ * The reason left for a human when checks failed or timed out.
+ */
+function checksReason(r: Extract<ChecksWait, { ok: false }>): string {
+  const list = checksList(r.checks);
+  return r.why === "fail" ? M.reasonChecksFailed(list) : M.reasonChecksTimeout(list, project.mergeRequires.timeoutMinutes);
+}
+
+/**
+ * 等 PR 上的 forge 检查：等的时候票留在 running 里但不算空位，并放开宿主机锁；等完先移出 ciWaiting 再重新拿锁。
+ * Wait for the forge checks on a PR: meanwhile the ticket stays in running but doesn't count as a slot, and the host lock is released; afterwards leave ciWaiting first, then take the lock again.
+ */
+async function waitChecksOffSlot(issue: Issue, pr: string, host: HostGap): Promise<ChecksWait> {
+  if (project.mergeRequires.checks === "none" || !forge.prChecks) return { ok: true };
+  ciWaiting.add(issue.id);
+  signalSlotFreed();
+  host.release();
+  console.log(t(`  ⧗ #${issue.id} 等 PR #${pr} 上的检查（最多 ${project.mergeRequires.timeoutMinutes} 分钟，不占空位）`, `  ⧗ #${issue.id} waiting for checks on PR #${pr} (up to ${project.mergeRequires.timeoutMinutes} minutes, not holding a slot)`));
+  try {
+    return await waitForChecks(forge, pr, project.mergeRequires);
+  } finally {
+    ciWaiting.delete(issue.id);
+    await host.reacquire();
+  }
+}
+
+let warnedNoChecks = false; // forge 不支持查检查的警告只打一次 / warn only once that the forge can't list checks
 
 async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnType<typeof build>>>, host: HostGap) {
   // 运行期间人已经合并了这张票的 PR 或关了票：不再 push、开 PR、打标签，本地分支留着备查。
@@ -1307,6 +1356,24 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   // The integrity check must run on the host first: without a text conflict the forge would merge anyway, putting the broken state into main.
   await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
   const chainOk = trySh("sh", ["-c", integrityOk(issue.branch)]).ok;
+  // 合并条件是门槛加 forge 检查：一致性检查过了才等检查，没过的走下面的 rebase 补救（里面会重新等）。
+  // Merging requires the gate plus forge checks: only wait for checks when the integrity check passed; otherwise rebase recovery below waits again.
+  if (chainOk) {
+    if (project.mergeRequires.checks !== "none" && !forge.prChecks && !warnedNoChecks) {
+      warnedNoChecks = true;
+      console.warn(t(`  ⚠ forge 不支持查 PR 上的检查，按没有检查合并（mergeRequires.checks: "${project.mergeRequires.checks}"）`, `  ⚠ The forge can't list PR checks; merging as if there were none (mergeRequires.checks: "${project.mergeRequires.checks}")`));
+    }
+    const checks = await waitChecksOffSlot(issue, pr, host);
+    if (!checks.ok) {
+      leaveForHuman(issue, pr, checksReason(checks));
+      console.log(
+        checks.why === "fail"
+          ? t(`  ◐ #${issue.id} PR 上的检查没通过，留 PR #${pr}`, `  ◐ #${issue.id} checks on the PR failed; PR #${pr} left open`)
+          : t(`  ◐ #${issue.id} PR 上的检查超时没跑完，留 PR #${pr}`, `  ◐ #${issue.id} checks on the PR still running at the deadline; PR #${pr} left open`),
+      );
+      return;
+    }
+  }
   const merged = chainOk
     ? attempt(() => forge.mergePr(pr, project.mergeMethod))
     : { ok: false as const, out: `${integrityBroken()}。` };
@@ -1548,6 +1615,14 @@ async function waitForSlotOrPoll(ms: number) {
 const running = new Map<string, Issue>();
 
 /**
+ * 在等 forge 检查的票：仍在 running 里（不被重新开工、文件照样占着），但不算空位。
+ * Tickets waiting for forge checks: still in running (not started again, their files still claimed), but not counted as slots.
+ */
+const ciWaiting = new Set<string>();
+/** 占着空位的票数。 / Number of tickets holding a slot. */
+const busy = () => running.size - ciWaiting.size;
+
+/**
  * 一张票独立跑完 build → 落地，做完就让出空位，不等同批的其他票。
  * One ticket runs build → land on its own and frees its slot when done, without waiting for others in the same batch.
  */
@@ -1624,7 +1699,7 @@ async function schedule(): Promise<ScheduleResult> {
     .filter((issue) => allowed(issue.number))
     .sort(byUrgency);
   let prepLimitedUntil: number | undefined;
-  const slots = MAX_PARALLEL - running.size;
+  const slots = MAX_PARALLEL - busy();
   for (const issue of toPrep) {
     // 已有够填满空位的可开工票就先开工，剩下的票等下次调度（有票做完或轮询）再 prep。
     // 否则一下子建了二十多张票时，要把它们逐张 prep 完（每张几分钟）才开工，空位空等一两个小时（2026-11-23）。
@@ -1673,7 +1748,7 @@ async function schedule(): Promise<ScheduleResult> {
   }
 
   // Plan
-  const issues = plan(new Set(running.keys()), MAX_PARALLEL - running.size);
+  const issues = plan(new Set(running.keys()), MAX_PARALLEL - busy());
   if (issues.length === 0) {
     // 这次 prep 拆出的子票还没 prep 过（下次才看到），这时不能当作没活可做。
     // 只认这次新出现的票：留在 toPrep 里的票（如等 blocker）下次仍不会有新票。
@@ -1705,9 +1780,9 @@ if (process.env.SANDCASTLE_BASELINE === "1") {
 let idlePolls = 0;
 let everStarted = false; // 这次运行开工过票没有 / whether this run ever started a ticket
 for (let pass = 1; ; pass++) {
-  if (running.size < MAX_PARALLEL) {
+  if (busy() < MAX_PARALLEL) {
     const now = new Date().toLocaleString();
-    console.log(t(`\n=== 调度 ${pass}（${now}，${running.size}/${MAX_PARALLEL} 个空位已占）===\n`, `\n=== Pass ${pass} (${now}, ${running.size}/${MAX_PARALLEL} slots taken) ===\n`));
+    console.log(t(`\n=== 调度 ${pass}（${now}，${busy()}/${MAX_PARALLEL} 个空位已占）===\n`, `\n=== Pass ${pass} (${now}, ${busy()}/${MAX_PARALLEL} slots taken) ===\n`));
     const r = await withHost(schedule);
     if (r.split) continue;
     if (running.size > 0 || r.started > 0) {

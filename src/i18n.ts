@@ -74,6 +74,10 @@ const zh = {
   reasonGate: "typecheck 或完整测试没通过（见 PR 正文的 Gate）。",
   reasonAutoMergeOff: "项目配置 autoMerge: false（试跑期），reviewer 和门槛都通过，等人合并。",
   reasonMergeFailed: (out: string, retry: string) => `合并失败：${out}\n\nrebase 后重试也没成：${retry}`,
+  reasonChecksFailed: (list: string) =>
+    `门槛已通过，但 PR 上的检查没通过，没有合并。合并条件是门槛加 forge 检查都通过；CI 本身不可靠时，可以在配置里设 \`mergeRequires: { checks: "none" }\` 只看门槛。没通过的检查：\n\n${list}`,
+  reasonChecksTimeout: (list: string, minutes: number) =>
+    `门槛已通过，但等了 ${minutes} 分钟 PR 上的检查还没跑完，没有合并。合并条件是门槛加 forge 检查都通过；CI 本身不可靠时，可以在配置里设 \`mergeRequires: { checks: "none" }\` 只看门槛。还在跑的检查：\n\n${list}`,
   rebasedForHuman: (base: string) => `\n\n分支和最新的 ${base} 冲突，已 rebase，只重跑了 typecheck（通过），没有重跑测试。`,
   rebaseForHumanFailed: (base: string, reason: string) => `\n\n⚠️ 分支和最新的 ${base} 冲突，自动 rebase 没成：${reason}`,
 
@@ -219,6 +223,10 @@ const en: Messages = {
   reasonGate: "Typecheck or the full test run failed (see the Gate section of the PR description).",
   reasonAutoMergeOff: "The project config has autoMerge: false (trial period). Reviewer and gate both passed; waiting for a human to merge.",
   reasonMergeFailed: (out, retry) => `Merge failed: ${out}\n\nRetrying after a rebase also failed: ${retry}`,
+  reasonChecksFailed: (list) =>
+    `The gate passed, but checks on the PR failed, so it was not merged. Merging requires both the gate and the forge checks to pass; if the CI itself is unreliable, set \`mergeRequires: { checks: "none" }\` in the config to rely on the gate alone. Failed checks:\n\n${list}`,
+  reasonChecksTimeout: (list, minutes) =>
+    `The gate passed, but checks on the PR were still running after ${minutes} minutes, so it was not merged. Merging requires both the gate and the forge checks to pass; if the CI itself is unreliable, set \`mergeRequires: { checks: "none" }\` in the config to rely on the gate alone. Checks still running:\n\n${list}`,
   rebasedForHuman: (base) => `\n\nThe branch conflicted with the latest ${base} and was rebased; only typecheck was rerun (passed), tests were not.`,
   rebaseForHumanFailed: (base, reason) => `\n\n⚠️ The branch conflicts with the latest ${base} and the automatic rebase failed: ${reason}`,
 

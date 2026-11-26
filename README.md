@@ -65,6 +65,8 @@ SANDCASTLE_ONLY=12 sandpipe    # only #12; without it, all labelled tickets are 
 
 New projects only open PRs by default and don't auto-merge (`autoMerge: false`), one ticket at a time. Follow [docs/onboarding-checklist.md](docs/onboarding-checklist.md) through a canary ticket and real small tickets, and loosen the limits once you're confident.
 
+Auto-merge requires both the gate and the checks on the PR to pass. If your CI covers things the gate doesn't, consider adding them to `gate.script`; if your CI is unreliable, set `mergeRequires: { checks: "none" }` (see [docs/config.md](docs/config.md)).
+
 ## Generated files
 
 | File | Purpose |
