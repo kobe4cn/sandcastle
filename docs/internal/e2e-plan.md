@@ -7,9 +7,13 @@
 
 ## A. 安装
 
-- [ ] A1 从 Release 链接 `npm i -g` 安装，确认 `--version`
-- [ ] A2 `pnpm add -g <同一链接>` 安装
-- [ ] A3 在项目根目录以外的目录运行：给出明确提示，不崩溃
+- [x] A1 从 Release 链接 `npm i -g` 安装，确认 `--version`
+  - 证据：`npm i -g --prefix /tmp/e2e/a-npm …/releases/latest/download/sandpipe.tgz` rc=0，`sandpipe --version` → 0.2.0（v0.2.0 的 GitHub Release 包；npm 那步因 provenance 的 repository.url 校验 E422 失败，已在 release.yml 加 `--provenance=false`，随 0.2.1 发）
+- [x] A2 `pnpm add -g <同一链接>` 安装
+  - 证据：`PNPM_HOME=/tmp/e2e/a-pnpm pnpm add -g <同一链接>` rc=0，`sandpipe --version` → 0.2.0（PNPM_HOME/bin 不在 PATH 时 pnpm 自己会拒绝并提示 `pnpm setup`）
+- [x] A3 在项目根目录以外的目录运行：给出明确提示，不崩溃
+  - 0.2.0 实测发现三处并已修（随 0.2.1）：`sandpipe` / `run` / `baseline` 提示前先打出压缩源码行和堆栈，像崩溃 → 只打 `✗ 提示`，`SANDPIPE_DEBUG=1` 才打堆栈；`onboard` 在非 git 目录照样生成配置（远端成 fatal 文本、基线 master）→ 报错不写文件；`update` 在未接入目录建出 `.claude/`、`.sandcastle/` → 报错不写文件
+  - 修后证据（dist 构建）：非 git 空目录里 `run` / 无参 / `baseline` 都只有一行 `✗ 找不到 …sandcastle.config.ts…` 加 SANDPIPE_DEBUG 提示、rc=1；`doctor` 逐项列 ✗ 与处理办法；`--help`、未知命令正常；test/cli.test.ts、test/onboard.test.ts 覆盖
 
 ## B. onboard（开着 agent）
 

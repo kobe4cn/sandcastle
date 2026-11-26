@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { agentWritable, applyLangArg, configSource, containerfileSource, hasGlobalSkill, installFiles, installGlobalSkill, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
+import { agentWritable, applyLangArg, assertRepoRoot, configSource, containerfileSource, hasGlobalSkill, installFiles, installGlobalSkill, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { parseProjectDoc, SECTIONS, SECTIONS_EN } from "../src/project-doc.ts";
 import { nodeRepo, pythonRepo } from "./fixtures.ts";
@@ -594,5 +594,24 @@ describe("生成文件的语言 / language of generated files", () => {
     expect(onboardPrompt(f, "en")).toMatch(/^Output language: .*概况 → `## Overview`/);
     expect(onboardPrompt(f, "zh")).not.toMatch(/^Output language/);
     expect(parseProjectDoc(projectDocDraft(f, "zh")).overview).toBeDefined();
+  });
+});
+
+describe("在项目外运行 onboard / update", () => {
+  it("onboard 在非 git 目录或仓库子目录里报错，不写任何文件", async () => {
+    const plain = mkdtempSync(join(tmpdir(), "sandpipe-plain-"));
+    await expect(onboard(["--no-agent"], plain)).rejects.toThrow(/不是 git 仓库|isn't a git repository/);
+    expect(readdirSync(plain)).toEqual([]);
+    const root = nodeRepo();
+    const sub = join(root, "pkg");
+    mkdirSync(sub);
+    expect(() => assertRepoRoot(sub)).toThrow(/不在仓库根目录|Not in the repository root/);
+    expect(() => assertRepoRoot(root)).not.toThrow();
+  });
+
+  it("update 在没接入的目录里报错，不写任何文件", async () => {
+    const plain = mkdtempSync(join(tmpdir(), "sandpipe-plain-"));
+    await expect(updateClaudeFiles(plain, overwrite)).rejects.toThrow("sandcastle.config.ts");
+    expect(readdirSync(plain)).toEqual([]);
   });
 });

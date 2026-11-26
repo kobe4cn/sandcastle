@@ -48,31 +48,39 @@ if (rest.includes("--help") || rest.includes("-h")) {
   process.exit(0);
 }
 
-if (cmd === "run") await import("./main.ts");
-else if (cmd === "baseline") {
-  process.env.SANDCASTLE_BASELINE = "1";
-  await import("./main.ts");
-} else if (cmd === "onboard") await (await import("./onboard.ts")).onboard(rest);
-else if (cmd === "doctor") await (await import("./doctor.ts")).doctor(rest);
-else if (cmd === "update") {
-  const { updateClaudeFiles, hasGlobalSkill, installGlobalSkill } = await import("./onboard.ts");
-  // 全局 skill 盖过项目里的同名 skill，装过就一起刷新，免得项目里用到旧版
-  // The global skill shadows the project's copy, so refresh it too once installed, or projects would use an old version
-  const changed = [...(await updateClaudeFiles(process.cwd())), ...(hasGlobalSkill() ? installGlobalSkill() : [])];
-  console.log(changed.length ? changed.map((f) => `✓ ${f}`).join("\n") : t("没有文件被改动。", "No files changed."));
-} else if (cmd === "skill") {
-  const changed = (await import("./onboard.ts")).installGlobalSkill();
-  console.log(changed.length ? changed.map((f) => `✓ ${f}`).join("\n") : t("全局 skill 已是当前版本。", "The global skill is already current."));
-  console.log(t("新开一个 Claude Code 会话就能用 /prep-ticket。", "Start a new Claude Code session to use /prep-ticket."));
-} else if (cmd === "upgrade") {
-  const command = (await import("./version.ts")).upgradeCommand();
-  const { execSync } = await import("node:child_process");
-  console.log(command);
-  execSync(command, { stdio: "inherit" });
-  console.log(t("装好了。到各项目里跑 sandpipe update 刷新 .claude/ 下的文件和 .sandcastle/tsconfig.json。", "Installed. Run sandpipe update in each project to refresh the files under .claude/ and .sandcastle/tsconfig.json."));
-} else if (cmd === "--help" || cmd === "-h" || cmd === "help") console.log(help());
-else if (cmd === "--version" || cmd === "-v") console.log((await import("./version.ts")).VERSION);
-else {
-  console.error(`${t("不认识的命令：", "Unknown command: ")}${cmd}\n\n${help()}`);
+// 没接住的错误（多半是在项目外运行、配置写错）只打消息，不打压缩后的源码行和堆栈；SANDPIPE_DEBUG=1 时打完整堆栈。
+// Uncaught errors (usually running outside a project or a broken config) print only the message, not the minified source line and stack; SANDPIPE_DEBUG=1 prints the full stack.
+try {
+  if (cmd === "run") await import("./main.ts");
+  else if (cmd === "baseline") {
+    process.env.SANDCASTLE_BASELINE = "1";
+    await import("./main.ts");
+  } else if (cmd === "onboard") await (await import("./onboard.ts")).onboard(rest);
+  else if (cmd === "doctor") await (await import("./doctor.ts")).doctor(rest);
+  else if (cmd === "update") {
+    const { updateClaudeFiles, hasGlobalSkill, installGlobalSkill } = await import("./onboard.ts");
+    // 全局 skill 盖过项目里的同名 skill，装过就一起刷新，免得项目里用到旧版
+    // The global skill shadows the project's copy, so refresh it too once installed, or projects would use an old version
+    const changed = [...(await updateClaudeFiles(process.cwd())), ...(hasGlobalSkill() ? installGlobalSkill() : [])];
+    console.log(changed.length ? changed.map((f) => `✓ ${f}`).join("\n") : t("没有文件被改动。", "No files changed."));
+  } else if (cmd === "skill") {
+    const changed = (await import("./onboard.ts")).installGlobalSkill();
+    console.log(changed.length ? changed.map((f) => `✓ ${f}`).join("\n") : t("全局 skill 已是当前版本。", "The global skill is already current."));
+    console.log(t("新开一个 Claude Code 会话就能用 /prep-ticket。", "Start a new Claude Code session to use /prep-ticket."));
+  } else if (cmd === "upgrade") {
+    const command = (await import("./version.ts")).upgradeCommand();
+    const { execSync } = await import("node:child_process");
+    console.log(command);
+    execSync(command, { stdio: "inherit" });
+    console.log(t("装好了。到各项目里跑 sandpipe update 刷新 .claude/ 下的文件和 .sandcastle/tsconfig.json。", "Installed. Run sandpipe update in each project to refresh the files under .claude/ and .sandcastle/tsconfig.json."));
+  } else if (cmd === "--help" || cmd === "-h" || cmd === "help") console.log(help());
+  else if (cmd === "--version" || cmd === "-v") console.log((await import("./version.ts")).VERSION);
+  else {
+    console.error(`${t("不认识的命令：", "Unknown command: ")}${cmd}\n\n${help()}`);
+    process.exit(1);
+  }
+} catch (e) {
+  console.error(process.env.SANDPIPE_DEBUG ? e : `✗ ${e instanceof Error ? e.message : String(e)}`);
+  if (!process.env.SANDPIPE_DEBUG) console.error(t("（设 SANDPIPE_DEBUG=1 看完整堆栈）", "(set SANDPIPE_DEBUG=1 for the full stack)"));
   process.exit(1);
 }

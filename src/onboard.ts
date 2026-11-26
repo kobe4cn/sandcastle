@@ -19,7 +19,7 @@
 
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -483,6 +483,15 @@ export const CLAUDE_FILES: Record<string, string> = {
  * Files saved as .new don't count as changed and get a separate warning. Run after upgrading (sandpipe update).
  */
 export async function updateClaudeFiles(root: string, decide: Decide = askChoice): Promise<string[]> {
+  // 没接入过的目录（多半是在项目外运行）不往里写文件
+  // Don't write into a directory that was never onboarded (usually run outside a project)
+  if (!existsSync(join(root, ".sandcastle/sandcastle.config.ts")))
+    throw new Error(
+      t(
+        `${root} 下没有 .sandcastle/sandcastle.config.ts：在已接入的项目根目录运行 update；新项目先跑 sandpipe onboard`,
+        `No .sandcastle/sandcastle.config.ts under ${root}: run update in an onboarded project's root; for a new project run sandpipe onboard first`,
+      ),
+    );
   const changed: string[] = syncLocalFiles(root);
   for (const [file, src] of Object.entries(CLAUDE_FILES)) {
     const result = await resolveClaudeFile(root, file, tool(src), decide);
@@ -782,6 +791,21 @@ export function applyLangArg(f: ProjectFacts, langArg: Language | undefined): Pr
   return langArg && f.commitLanguageBasis !== "commits" ? { ...f, commitLanguage: langArg, commitLanguageBasis: "lang" } : f;
 }
 
+/**
+ * onboard 只在 git 仓库根目录运行：不是仓库时探测出的远端和基线是错的，在子目录里会把配置写到子目录。
+ * onboard only runs in a git repository's root: outside a repository the detected remote and base are wrong, and in a subdirectory the config lands there.
+ */
+export function assertRepoRoot(root: string) {
+  let top: string;
+  try {
+    top = execFileSync("git", ["-C", root, "rev-parse", "--show-toplevel"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    throw new Error(t(`${root} 不是 git 仓库：在目标项目的根目录运行`, `${root} isn't a git repository: run it in the target project's root`));
+  }
+  if (realpathSync(top) !== realpathSync(root))
+    throw new Error(t(`不在仓库根目录（根目录是 ${top}）：cd 到仓库根目录再运行`, `Not in the repository root (the root is ${top}): cd to the repository root and run again`));
+}
+
 export async function onboard(argv: string[], root = process.cwd(), decide: Decide = askChoice) {
   const noAgent = argv.includes("--no-agent");
   const questionsOnly = argv.includes("--questions-only");
@@ -792,6 +816,7 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
   const langArg = argv.includes("--lang") ? argv[argv.indexOf("--lang") + 1] : undefined;
   if (langArg !== undefined && langArg !== "zh" && langArg !== "en") throw new Error(t(`--lang 只能是 zh 或 en，收到「${langArg}」`, `--lang must be zh or en, got "${langArg}"`));
 
+  assertRepoRoot(root);
   const f = applyLangArg(detectProject(root), langArg);
   // 生成的文件和之后的终端输出用同一种语言：--lang，没给时按提交信息。
   // Generated files and the terminal output from here on use one language: --lang, else the commit messages'.
