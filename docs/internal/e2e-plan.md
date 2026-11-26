@@ -63,6 +63,19 @@
 - [x] H2 ✓ `sandpipe upgrade` 升到 0.1.2
 - [x] H3 ✓ `sandpipe update` 补上 `.sandcastle/.gitignore` 和 tsconfig.json，doctor 全绿；不装任何依赖时 `tsc -p .sandcastle` 通过
 
+## I. 合并条件与 forge 检查（#19，`autoMerge: true`）
+
+准备：给 `sandcastle-e2e` 加 `.github/workflows/ci.yml`，跑 `uv run pytest`；再加一个由仓库变量 `CI_MODE` 控制的步骤：`pass` 什么都不做，`fail` 直接 `exit 1`，`slow` 先 `sleep 300`。改 `CI_MODE` 用 `gh variable set CI_MODE --body <值>`。
+
+- [ ] I1 `CI_MODE=pass`、默认配置（不写 `mergeRequires`）：终端出现 `⧗ #n 等 PR #m 上的检查`，CI 绿了才合并，issue 关闭。doctor「合并条件」显示「门槛 + PR 上所有检查」
+- [ ] I2 `CI_MODE=fail`：不合并，打 `sandcastle:pr-open`，PR 评论列出失败的检查名和链接，并提示 `checks: "none"`
+- [ ] I3 `CI_MODE=slow`、`mergeRequires: { timeoutMinutes: 1 }`：约 1 分钟后留 PR，评论写「等了 1 分钟还没跑完」并列出还在跑的检查；没有被当成临时错误重跑整个 land
+- [ ] I4 `CI_MODE=fail`、`mergeRequires: { checks: "none" }`：不等 CI 直接合并；doctor「合并条件」给 ⚠，提示加进 gate.script 或改回 all / required
+- [ ] I5 `maxParallel: 1`、`CI_MODE=slow`（默认超时）、两张不相关的票：第一张等 CI 时终端显示空位已让出，第二张开工；等 CI 的票没有被重复开工
+- [ ] I6 两张改同一个文件、但指引的 Change 行没写到它（让 plan 不排开）的票，`CI_MODE=slow`：第二张等 CI 时第一张先合并，第二张合并失败后走 rebase、重跑门槛、force-push，沙箱随即关闭（`podman ps` 里看不到它的沙箱），重新等 CI 后合并
+- [ ] I7 在 `main` 上开分支保护，要求 1 个审批：门槛和 CI 都过后合并被挡，直接留 PR，评论写明是分支保护挡住的并附 gh 报错，没有走 rebase。测完关掉分支保护
+- [ ] I8 删掉 workflow（PR 上没有检查）：宽限约 1 分钟后按没有 CI 合并
+
 ## 不在本次范围
 
 - `GATE_TIER` / main 兜底完整测试 / `GATE_FLAKY`：门槛需要按依赖选测试，或者自己实现重跑。本项目的门槛是完整测试，用不到。留到 duckdb_crm 验收时测。
