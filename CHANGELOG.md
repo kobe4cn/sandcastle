@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 内部：合并收尾（等 PR 上的检查、合并、分支保护 / rebase 补救、留 PR，以及等检查时让出空位与宿主机锁）从 `src/main.ts` 抽到新模块 `src/merge-flow.ts`，依赖由参数注入，补单测 `test/merge-flow.test.ts`。行为、终端输出和 PR 评论不变（closes #31）。
 - `doctor` 新增「合并条件」一项：`autoMerge: true`、`mergeRequires.checks` 为 `"none"`、而仓库的 `.github/workflows` 里有 `.yml` / `.yaml` 时警告「合并只看门槛、不等 CI」，提示 CI 覆盖了门槛没覆盖的东西时加进 `gate.script` 或把 `checks` 改回 `"all"` / `"required"`；其余情况给通过并写明当前合并条件（如「门槛 + PR 上所有检查」）。只看本地 workflow 文件，不查分支保护；只警告，`--fix` 不处理（closes #30）。
 - 自动合并时 `gh pr merge` 被仓库的分支保护挡住（要求审批、必需检查、合并队列等）不再当成「没能直接合并」去 rebase 补救、白跑一遍门槛：直接留 PR（`sandcastle:pr-open`），评论写明是分支保护挡住的、附 gh 报错前 300 字，提示人去合并或调整分支保护 / `mergeRequires`（中英文案 `reasonBranchProtection`）；rebase 补救里的合并重试碰到同样的报错也不再继续重试。只按 gh 的报错文本判断（新导出 `isBranchProtectionError`，`src/merge-checks.ts`），不调 API 查保护规则（closes #29）。
 - **默认行为变了**：`autoMerge: true` 时，自动合并现在要门槛和 PR 上的 forge 检查（CI）都通过。已开 `autoMerge` 的项目升级后会按默认的 `mergeRequires: { checks: "all", timeoutMinutes: 30 }` 等 PR 上的检查再合并；想保持旧行为（只看门槛）要显式设 `mergeRequires: { checks: "none" }`。检查失败或等了 `timeoutMinutes` 分钟还没跑完时不合并，留 PR（`sandcastle:pr-open`），评论列出是哪些检查和链接（中英文案 `reasonChecksFailed` / `reasonChecksTimeout`）；PR 上没有检查不阻塞。rebase 补救 force-push 后先重新等检查再合并。等检查时放开宿主机锁，这张票不占实现的空位（调度可以开新票），但仍算在做：不会被重新开工，改的文件照样占着。forge 没实现 `prChecks` 时每次运行在终端警告一次，按没有检查合并。README（中英）、config 文档（中英）的可选字段表加 `mergeRequires`，新增 ADR 0002（closes #28）。

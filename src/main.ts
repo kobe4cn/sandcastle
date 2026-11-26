@@ -86,8 +86,8 @@ import {
 } from "./models.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
 import { acceptanceSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from "./pr-body.ts";
-import type { ForgeIssue, ForgePr, IssueState, PrCheck } from "./forge.ts";
-import { type ChecksWait, isBranchProtectionError, waitForChecks } from "./merge-checks.ts";
+import type { ForgeIssue, ForgePr, IssueState } from "./forge.ts";
+import { type MergeFlowDeps, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
 import { loadProject } from "./profile.ts";
 import { messages } from "./i18n.ts";
 import { duration, startGateProgress } from "./gate-progress.ts";
@@ -1044,24 +1044,8 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
       await dropTestResources(issue.id);
       opened = undefined;
     }
-    // force-push 后 PR 上的检查重新跑：等它们通过再合并（等的时候放开宿主机锁、不占空位）。
-    // After the force-push the PR's checks rerun: wait for them to pass before merging (releasing the host lock and the slot meanwhile).
-    const checks = await waitChecksOffSlot(issue, pr, host);
-    if (!checks.ok) return { ok: false, reason: checksReason(checks) };
-    // 平台重新计算可合并状态要一点时间。 / The forge needs a moment to recompute mergeability.
-    let last = "";
-    for (let tries = 0; tries < 3; tries++) {
-      await sleep(10_000);
-      const merged = attempt(() => forge.mergePr(pr, project.mergeMethod));
-      if (merged.ok) {
-        forge.commentPr(pr, M.rebasedMerged(BASE_REF));
-        return { ok: true };
-      }
-      // 分支保护挡住的再重试也没用，直接交给人。 / Retrying won't get past branch protection; hand it to a human.
-      if (isBranchProtectionError(merged.out)) return { ok: false, reason: M.reasonBranchProtection(merged.out.slice(0, 300)) };
-      last = merged.out;
-    }
-    return { ok: false, reason: M.rebaseMergeFailed(last.slice(0, 300)) };
+    // 等检查、再重试合并（merge-flow.ts）。 / Wait for checks, then retry the merge (merge-flow.ts).
+    return await mergeAfterPush(issue.id, pr, mergeDeps(issue, pr, host));
   } finally {
     if (opened) {
       await opened.close();
@@ -1159,41 +1143,20 @@ async function rebaseIfConflicting(issue: Issue, pr: string, host: HostGap): Pro
 }
 
 /**
- * 把检查列成 `- 名字（链接）` 多行，给 PR 评论用。
- * List checks as `- name (link)` lines for a PR comment.
+ * 给 merge-flow.ts 组装依赖：模块级的 forge、配置、文案、空位与锁都从这里传进去。
+ * Assemble the dependencies for merge-flow.ts: the module-level forge, config, messages, slots and lock are passed in here.
  */
-function checksList(checks: PrCheck[]): string {
-  return checks.map((c) => (c.link ? t(`- ${c.name}（${c.link}）`, `- ${c.name} (${c.link})`) : `- ${c.name}`)).join("\n");
-}
-
-/**
- * 检查没通过或超时时留给人的原因。
- * The reason left for a human when checks failed or timed out.
- */
-function checksReason(r: Extract<ChecksWait, { ok: false }>): string {
-  const list = checksList(r.checks);
-  return r.why === "fail" ? M.reasonChecksFailed(list) : M.reasonChecksTimeout(list, project.mergeRequires.timeoutMinutes);
-}
-
-/**
- * 等 PR 上的 forge 检查：等的时候票留在 running 里但不算空位，并放开宿主机锁；等完先移出 ciWaiting 再重新拿锁。
- * Wait for the forge checks on a PR: meanwhile the ticket stays in running but doesn't count as a slot, and the host lock is released; afterwards leave ciWaiting first, then take the lock again.
- */
-async function waitChecksOffSlot(issue: Issue, pr: string, host: HostGap): Promise<ChecksWait> {
-  if (project.mergeRequires.checks === "none" || !forge.prChecks) return { ok: true };
-  ciWaiting.add(issue.id);
-  signalSlotFreed();
-  host.release();
-  console.log(t(`  ⧗ #${issue.id} 等 PR #${pr} 上的检查（最多 ${project.mergeRequires.timeoutMinutes} 分钟，不占空位）`, `  ⧗ #${issue.id} waiting for checks on PR #${pr} (up to ${project.mergeRequires.timeoutMinutes} minutes, not holding a slot)`));
-  try {
-    return await waitForChecks(forge, pr, project.mergeRequires);
-  } finally {
-    ciWaiting.delete(issue.id);
-    await host.reacquire();
-  }
-}
-
-let warnedNoChecks = false; // forge 不支持查检查的警告只打一次 / warn only once that the forge can't list checks
+const mergeDeps = (issue: Issue, pr: string, host: HostGap): MergeFlowDeps => ({
+  forge,
+  mergeMethod: project.mergeMethod,
+  mergeRequires: project.mergeRequires,
+  M,
+  baseRef: BASE_REF,
+  host,
+  ciWaiting,
+  signalSlotFreed,
+  leaveForHuman: (reason) => leaveForHuman(issue, pr, reason),
+});
 
 async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnType<typeof build>>>, host: HostGap) {
   // 运行期间人已经合并了这张票的 PR 或关了票：不再 push、开 PR、打标签，本地分支留着备查。
@@ -1358,43 +1321,13 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   // The integrity check must run on the host first: without a text conflict the forge would merge anyway, putting the broken state into main.
   await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
   const chainOk = trySh("sh", ["-c", integrityOk(issue.branch)]).ok;
-  // 合并条件是门槛加 forge 检查：一致性检查过了才等检查，没过的走下面的 rebase 补救（里面会重新等）。
-  // Merging requires the gate plus forge checks: only wait for checks when the integrity check passed; otherwise rebase recovery below waits again.
-  if (chainOk) {
-    if (project.mergeRequires.checks !== "none" && !forge.prChecks && !warnedNoChecks) {
-      warnedNoChecks = true;
-      console.warn(t(`  ⚠ forge 不支持查 PR 上的检查，按没有检查合并（mergeRequires.checks: "${project.mergeRequires.checks}"）`, `  ⚠ The forge can't list PR checks; merging as if there were none (mergeRequires.checks: "${project.mergeRequires.checks}")`));
-    }
-    const checks = await waitChecksOffSlot(issue, pr, host);
-    if (!checks.ok) {
-      leaveForHuman(issue, pr, checksReason(checks));
-      console.log(
-        checks.why === "fail"
-          ? t(`  ◐ #${issue.id} PR 上的检查没通过，留 PR #${pr}`, `  ◐ #${issue.id} checks on the PR failed; PR #${pr} left open`)
-          : t(`  ◐ #${issue.id} PR 上的检查超时没跑完，留 PR #${pr}`, `  ◐ #${issue.id} checks on the PR still running at the deadline; PR #${pr} left open`),
-      );
-      return;
-    }
-  }
-  const merged = chainOk
-    ? attempt(() => forge.mergePr(pr, project.mergeMethod))
-    : { ok: false as const, out: `${integrityBroken()}。` };
-  if (!merged.ok) {
-    // 分支保护（审批、必需检查、合并队列）挡住时 rebase 也解决不了，直接留 PR。
-    // When branch protection (reviews, required checks, merge queue) blocks the merge a rebase won't help; leave the PR open.
-    if (isBranchProtectionError(merged.out)) {
-      leaveForHuman(issue, pr, M.reasonBranchProtection(merged.out.slice(0, 300)));
-      console.log(t(`  ◐ #${issue.id} 被分支保护挡住，留 PR #${pr}`, `  ◐ #${issue.id} blocked by branch protection; PR #${pr} left open`));
-      return;
-    }
-    console.log(t(`  ↻ #${issue.id} 没能直接合并，rebase 到最新的 ${BASE_REF} 后重试`, `  ↻ #${issue.id} couldn't merge directly; rebasing onto the latest ${BASE_REF} and retrying`));
-    const retry = await untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host));
-    if (!retry.ok) {
-      leaveForHuman(issue, pr, M.reasonMergeFailed(merged.out.slice(0, 300), retry.reason));
-      console.log(t(`  ◐ #${issue.id} 合并失败，留 PR #${pr}`, `  ◐ #${issue.id} merge failed; PR #${pr} left open`));
-      return;
-    }
-  }
+  // 等检查 → 合并 → 分支保护 / rebase 补救 → 留 PR（merge-flow.ts）。
+  // Wait for checks → merge → branch protection / rebase recovery → leave the PR (merge-flow.ts).
+  const r = await mergeWhenReady(
+    { issueId: issue.id, pr, chainOk, brokenOut: `${integrityBroken()}。`, rebase: () => untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host)) },
+    mergeDeps(issue, pr, host),
+  );
+  if (r === "left") return;
   await gitRemote(["push", REMOTE, "--delete", issue.branch]);
   trySh("git", ["branch", "-D", issue.branch]);
   console.log(t(`  ✓ #${issue.id} 已合并（PR #${pr}）`, `  ✓ #${issue.id} merged (PR #${pr})`));
