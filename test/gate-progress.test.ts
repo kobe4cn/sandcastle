@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { duration, gateEnv, startGateProgress } from "../src/gate-progress.ts";
+import { duration, flakyTicketsLine, gateDoneLine, gateEnv, startGateProgress } from "../src/gate-progress.ts";
+import { setTermLanguage } from "../src/term.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "gate-progress-"));
 
@@ -104,5 +105,31 @@ describe("duration", () => {
   it("不到一分钟显示秒，否则分钟", () => {
     expect(duration(12_000)).toBe("12 秒");
     expect(duration(90_000)).toBe("1.5 分钟");
+  });
+});
+
+describe("gateDoneLine / flakyTicketsLine", () => {
+  it("门槛通过且有偶发失败时带标记，和 main 兜底的写法一致", () => {
+    expect(gateDoneLine("7", "按依赖选门槛用时 3 秒", true, true)).toBe("  ⏱ #7 按依赖选门槛用时 3 秒，通过（有偶发失败，重跑通过）");
+    expect(gateDoneLine("7", "按依赖选门槛用时 3 秒", true, false)).toBe("  ⏱ #7 按依赖选门槛用时 3 秒，通过");
+    expect(gateDoneLine("7", "按依赖选门槛用时 3 秒", false, true)).toBe("  ⏱ #7 按依赖选门槛用时 3 秒，失败");
+  });
+
+  it("记入的票号另打一行；没有票时不打", () => {
+    expect(flakyTicketsLine("7", ["#12", "#13"])).toBe("  ⚠ #7 门槛偶发失败已记入 #12、#13");
+    expect(flakyTicketsLine("7", [])).toBeUndefined();
+  });
+
+  it("英文", () => {
+    try {
+      setTermLanguage("en", {});
+      expect(gateDoneLine("7", "gate took 3s", true, true)).toBe("  ⏱ #7 gate took 3s, passed (flaky failures passed on rerun)");
+      expect(gateDoneLine("7", "gate took 3s", true, false)).toBe("  ⏱ #7 gate took 3s, passed");
+      expect(gateDoneLine("7", "gate took 3s", false, true)).toBe("  ⏱ #7 gate took 3s, failed");
+      expect(flakyTicketsLine("7", ["#12", "#13"])).toBe("  ⚠ #7 gate flaky failures recorded in #12, #13");
+      expect(flakyTicketsLine("7", [])).toBeUndefined();
+    } finally {
+      setTermLanguage("zh", {});
+    }
   });
 });

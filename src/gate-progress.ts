@@ -29,6 +29,25 @@ export const HEARTBEAT_MS = 5 * 60_000;
 export const duration = (ms: number) =>
   ms < 60_000 ? t(`${Math.round(ms / 1000)} 秒`, `${Math.round(ms / 1000)}s`) : t(`${(ms / 60_000).toFixed(1)} 分钟`, `${(ms / 60_000).toFixed(1)} min`);
 
+/**
+ * 门槛结束时的 ⏱ 行：通过且输出含 GATE_FLAKY 时带「有偶发失败」标记（和 main 兜底检查的写法一致），失败时不带。
+ * The ⏱ line when a gate ends: when it passed and the output has GATE_FLAKY, it carries the "flaky failures" marker (same wording as the main fallback check); not on failure.
+ */
+export function gateDoneLine(issueId: string, line: string, passed: boolean, flaky: boolean): string {
+  const result = passed ? t("，通过", ", passed") : t("，失败", ", failed");
+  const mark = passed && flaky ? t("（有偶发失败，重跑通过）", " (flaky failures passed on rerun)") : "";
+  return `  ⏱ #${issueId} ${line}${result}${mark}`;
+}
+
+/**
+ * 票落地时门槛偶发失败记入了哪些 flaky 票（可能是复用的老票，所以说「记入」）；没有票时返回 undefined，不打。
+ * Which flaky tickets the gate's flaky failures were recorded in when the ticket lands (may be reused existing tickets, hence "recorded in"); undefined when there are none, so nothing is printed.
+ */
+export function flakyTicketsLine(issueId: string, tickets: string[]): string | undefined {
+  if (tickets.length === 0) return undefined;
+  return t(`  ⚠ #${issueId} 门槛偶发失败已记入 ${tickets.join("、")}`, `  ⚠ #${issueId} gate flaky failures recorded in ${tickets.join(", ")}`);
+}
+
 const pad = (n: number) => String(n).padStart(2, "0");
 const stamp = (ms: number) => {
   const d = new Date(ms);

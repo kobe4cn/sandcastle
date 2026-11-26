@@ -94,7 +94,7 @@ import {
   acquireRunLock, errorLine, exitWhenDone, isAgentIdleTimeout, logErrorDetail, onInterrupt, podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath,
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
-import { duration, gateEnv, startGateProgress } from "./gate-progress.ts";
+import { duration, flakyTicketsLine, gateDoneLine, gateEnv, startGateProgress } from "./gate-progress.ts";
 import { createGateQueue, type GatePriority } from "./gate-queue.ts";
 import { setTermLanguage, t } from "./term.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
@@ -289,7 +289,7 @@ async function runGate<R extends ExecResult>(
     const took = duration(Date.now() - started);
     const before = waited > 5_000 ? t(`（之前排队 ${duration(waited)}）`, ` (queued ${duration(waited)} before)`) : "";
     const line = t(`${tier}门槛用时 ${took}${before}`, `${tier} gate took ${took}${before}`);
-    console.log(`  ⏱ #${issueId} ${line}${r.exitCode === 0 ? t("，通过", ", passed") : t("，失败", ", failed")}`);
+    console.log(gateDoneLine(issueId, line, r.exitCode === 0, stdout.includes("GATE_FLAKY")));
     return { ...r, stdout: `${stdout}\nGATE_TIME: ${line}` };
   };
   return gateQueue.run(go, prio);
@@ -1292,12 +1292,22 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   );
   reportDecisions(issue.id, pr);
   if (flaky && result.gate.ok) {
-    const { tickets, deferred } = reportFlaky(issue, pr, result.gate.output);
-    const notes = [
-      ...(tickets.length ? [M.flakyTicketsOpened(M.list(tickets))] : []),
-      ...(deferred.length ? [M.flakyDeferred(M.list(deferred.map((f) => `\`${f}\``)))] : []),
-    ];
-    if (notes.length) forge.commentPr(pr, notes.join("\n\n"));
+    // 开 flaky 票 / 评论老票时 gh 出错不让整个落地失败（票会被打成 stuck）：打一行提示，跳过 PR 评论，继续合并。
+    // A gh error while filing / commenting on flaky tickets must not fail the whole landing (the ticket would go stuck): print a line, skip the PR comment, keep merging.
+    const reported = attempt(() => reportFlaky(issue, pr, result.gate.output));
+    if (!reported.ok) {
+      const first = reported.out.trim().split("\n")[0] ?? "";
+      console.log(t(`  ⚠ #${issue.id} 门槛有偶发失败，开 flaky 票失败：${first}`, `  ⚠ #${issue.id} gate had flaky failures; filing the flaky ticket failed: ${first}`));
+    } else {
+      const { tickets, deferred } = reported.value;
+      const ticketsLine = flakyTicketsLine(issue.id, tickets);
+      if (ticketsLine) console.log(ticketsLine);
+      const notes = [
+        ...(tickets.length ? [M.flakyTicketsOpened(M.list(tickets))] : []),
+        ...(deferred.length ? [M.flakyDeferred(M.list(deferred.map((f) => `\`${f}\``)))] : []),
+      ];
+      if (notes.length) forge.commentPr(pr, notes.join("\n\n"));
+    }
   }
 
   // 外部 PR 一律留给人合并：不 rebase、不合并，只报告 review 与门槛结果。
