@@ -84,6 +84,73 @@ export function podmanProblem(run: Run = trySh): string | null {
 }
 
 /**
+ * podman 自身连不上时的报错（在 exec 结果的 stderr 里；门槛命令的 `2>&1` 在容器内，管不到 podman 自己的错误）。
+ * podman's own connection errors (in the exec result's stderr; the gate command's `2>&1` runs inside the container and doesn't catch podman's own errors).
+ */
+export const PODMAN_CONNECTION = /Cannot connect to Podman|ssh: handshake failed|connection reset by peer|podman rm failed/i;
+
+/** 门槛基础设施故障的报错前缀（main.ts 的 TRANSIENT 认它）。 / Prefix of gate infrastructure errors (matched by TRANSIENT in main.ts). */
+export const GATE_INFRA_PREFIX = "gate infra:";
+
+/**
+ * 门槛进程被基础设施杀掉（podman 断连等）：不是门槛失败，抛给 retryTransient 整步重跑。
+ * The gate process was killed by infrastructure (podman disconnected, etc.): not a gate failure; thrown to retryTransient to rerun the whole step.
+ */
+export class GateInfraError extends Error {
+  constructor(reason: string) {
+    super(`${GATE_INFRA_PREFIX} ${reason}`);
+    this.name = "GateInfraError";
+  }
+}
+
+/**
+ * 门槛结束后判断是不是基础设施故障，是就返回一行原因，否则 null。
+ * 退出码 125 / 255（podman 自己出错）、stderr 命中连接类错误、或此刻 `podman info` 不通，都算；退出码 137 只有 podman 不通时才算（podman 正常时多半是 OOM，按门槛失败处理）。
+ * 退出码 0 直接返回 null，不去查 podman（podmanProblem 是同步调用）。
+ * After a gate ends, decide whether it was an infrastructure failure: a one-line reason if so, otherwise null.
+ * Exit code 125 / 255 (podman's own errors), stderr matching a connection error, or `podman info` failing right now all count; 137 counts only when podman is unreachable (with podman fine it's most likely OOM, a real gate failure).
+ * Exit code 0 returns null without probing podman (podmanProblem is synchronous).
+ */
+export function isGateInfraFailure(exitCode: number, stderr: string, run: Run = trySh): string | null {
+  if (exitCode === 0) return null;
+  const line = stderr.split("\n").map((l) => l.trim()).find((l) => PODMAN_CONNECTION.test(l));
+  if (line) return line.replace(/^Error:\s*/i, "").slice(0, 300);
+  const problem = podmanProblem(run);
+  if (problem !== null) return problem || t("podman 连不上", "podman unreachable");
+  if (exitCode === 125 || exitCode === 255) return t(`podman 退出码 ${exitCode}`, `podman exit code ${exitCode}`);
+  return null;
+}
+
+/**
+ * 等 podman 连上：每次探测之间异步 sleep（podmanProblem 是同步调用，连续探测会卡住事件循环、停掉别的票心跳）。
+ * 连上返回 true；等满 budgetMs 还连不上返回 false。
+ * Wait for podman to come back: an async sleep between probes (podmanProblem is synchronous; probing back to back would block the event loop and stall other tickets' heartbeats).
+ * Returns true once connected; false if still unreachable after budgetMs.
+ */
+export async function waitForPodman(
+  run: Run = trySh,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  budgetMs = 60_000,
+  intervalMs = 15_000,
+): Promise<boolean> {
+  for (let waited = 0; ; waited += intervalMs) {
+    if (podmanProblem(run) === null) return true;
+    if (waited >= budgetMs) return false;
+    await sleep(intervalMs);
+  }
+}
+
+/** 库的「镜像不在本地」报错里的镜像名；不是这个报错返回 null。 / The image name in the library's "image not found locally" error; null for other errors. */
+export function missingImage(message: string): string | null {
+  return /Image '([^']+)' not found locally/.exec(message)?.[1] ?? null;
+}
+
+/** 镜像在不在本地（`podman image exists`）。 / Whether the image exists locally (`podman image exists`). */
+export function imageExists(tag: string, run: Run = trySh): boolean {
+  return run("podman", ["image", "exists", tag], 60_000).ok;
+}
+
+/**
  * 这个仓库的路径前缀：仓库根（prep 挂的是工作区本身）和它下面的一切（`.git`、`.sandcastle/worktrees/…`）。
  * 同时认原路径和 realpath（macOS 上 /tmp → /private/tmp 之类）。
  * Path prefixes of this repository: the repo root (prep mounts the workspace itself) and everything under it (`.git`, `.sandcastle/worktrees/…`).

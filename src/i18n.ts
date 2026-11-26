@@ -102,6 +102,7 @@ const zh = {
   missingBlocker: (blockers: string, stuckLabel: string) =>
     `\`## Blocked by\` 里的 ${blockers} 在本仓库查不到（票号写错，或者是从别的仓库复制来的）。改正 Blocked by 或者删掉这一行，然后去掉 ${stuckLabel} 就能继续。`,
   sandboxError: (err: string) => `沙箱出错：${err}`,
+  podmanDown: (err: string) => `podman 连不上（重试多次仍失败）：${err}`,
   agentIdleTimeout: (seconds: number, stuckLabel: string) =>
     `agent 连续 ${seconds} 秒没有输出，按卡住处理（AgentIdleTimeoutError）。如果测试或构建本来就要跑这么久，在 \`.sandcastle/sandcastle.config.ts\` 里调大 \`agentIdleTimeoutS\`（现在是 ${seconds}），然后去掉 ${stuckLabel} 再运行。`,
   pushedTo: (branch: string) => `已有的提交推到了分支 \`${branch}\`。`,
@@ -255,6 +256,7 @@ const en: Messages = {
   missingBlocker: (blockers, stuckLabel) =>
     `${blockers} in \`## Blocked by\` can't be found in this repository (a mistyped number, or copied from another repository). Fix Blocked by or delete that line, then remove ${stuckLabel} to continue.`,
   sandboxError: (err) => `sandbox error: ${err}`,
+  podmanDown: (err) => `podman unreachable (still failing after several retries): ${err}`,
   agentIdleTimeout: (seconds, stuckLabel) =>
     `The agent produced no output for ${seconds} seconds and was treated as stuck (AgentIdleTimeoutError). If tests or builds legitimately take this long, raise \`agentIdleTimeoutS\` in \`.sandcastle/sandcastle.config.ts\` (currently ${seconds}), then remove ${stuckLabel} and run again.`,
   pushedTo: (branch) => `Existing commits were pushed to \`${branch}\`. `,

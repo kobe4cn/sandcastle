@@ -91,10 +91,11 @@ import type { ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { type MergeFlowDeps, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
 import { loadProject } from "./profile.ts";
 import {
-  acquireRunLock, errorLine, exitWhenDone, isAgentIdleTimeout, logErrorDetail, onInterrupt, podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath,
+  acquireRunLock, errorLine, exitWhenDone, GATE_INFRA_PREFIX, GateInfraError, imageExists, isAgentIdleTimeout, isGateInfraFailure, logErrorDetail, missingImage, onInterrupt,
+  podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath, waitForPodman,
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
-import { duration, flakyTicketsLine, gateDoneLine, gateEnv, startGateProgress } from "./gate-progress.ts";
+import { duration, flakyTicketsLine, gateDoneLine, gateEnv, gateInfraLine, startGateProgress } from "./gate-progress.ts";
 import { createGateQueue, type GatePriority } from "./gate-queue.ts";
 import { setTermLanguage, t } from "./term.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
@@ -247,7 +248,7 @@ const gateQueue = createGateQueue({
       t(`  ⏳ main 兜底完整测试让位：${n} 张票在等门槛，先跑票的`, `  ⏳ The fallback full run on main yields: ${n} ticket(s) waiting for the gate run first`),
     ),
 });
-type ExecResult = { stdout: string; exitCode: number };
+type ExecResult = { stdout: string; stderr?: string; exitCode: number };
 
 const GATE_LOG_DIR = ".sandcastle/logs";
 /** 报错的完整内容（含堆栈）：终端和 issue 评论只写一行，全文追加到这里。 / Full errors (with stacks): the terminal and issue comments get one line, the full text is appended here. */
@@ -284,6 +285,15 @@ async function runGate<R extends ExecResult>(
     // provider 没回调 onLine 时（第三方 provider 可能没实现）退回它返回的 stdout。
     // If the provider never called onLine (a third-party provider may not implement it), fall back to the stdout it returned.
     // 兜底的 stdout 也去掉 ANSI 转义码，和 output() 一样是纯文本。 / Strip ANSI escape codes from the fallback stdout too, so it is plain text like output().
+    // 门槛进程是被基础设施杀掉的（podman 断连、退出码 125 / 255、podman 断时的 137）：报「没跑成」，抛给 retryTransient 整步重跑，不打「失败」、不进 fix 会话。
+    // podman 的连接错误在 r.stderr 里（门槛命令的 2>&1 在容器内）。排队的票断连时 exec 立刻失败，同样走这里。
+    // If infrastructure killed the gate (podman disconnected, exit code 125 / 255, 137 while podman is down): report "didn't run" and throw to retryTransient to rerun the whole step; no "failed", no fix session.
+    // podman's connection errors are in r.stderr (the gate command's 2>&1 runs inside the container). A queued ticket whose exec fails at once during a disconnect lands here too.
+    const infra = isGateInfraFailure(r.exitCode, r.stderr ?? "");
+    if (infra !== null) {
+      console.warn(gateInfraLine(issueId, infra));
+      throw new GateInfraError(infra);
+    }
     const stdout = progress.output() || stripVTControlCharacters(r.stdout);
     const tier = gateTierName(gateTier(stdout));
     const took = duration(Date.now() - started);
@@ -318,7 +328,13 @@ const sandboxFor = (env: Record<string, string>) => project.sandbox({ ...claudeE
 // Transient errors in sandboxes and landing (on 2026-11-07, after the machine woke from sleep: copying node_modules into the worktree took over 60 seconds,
 // GitHub API read timeouts) don't mark the ticket stuck right away: wait, then rerun the whole step. build reruns on the same branch, and the implementer continues from existing commits;
 // land first checks whether the issue is closed or a PR already exists, so a rerun adds at most one extra comment.
-const TRANSIENT = new RegExp(`${REMOTE_TRANSIENT.source}|CopyToWorktreeTimeoutError|timed out`, "i");
+// podman 连接短暂断开（2026-11-26：ssh: handshake failed … connection reset by peer）也算：门槛没跑成、podman create 报镜像不在（其实只是连不上）、podman rm 失败。
+// A brief podman disconnect counts too (2026-11-26: ssh: handshake failed … connection reset by peer): the gate didn't run, podman create reporting a missing image (really just unreachable), podman rm failing.
+const PODMAN_TRANSIENT = new RegExp(
+  [GATE_INFRA_PREFIX, "Cannot connect to Podman", "ssh: handshake failed", "Image '.*' not found locally", "podman rm failed"].join("|"),
+  "i",
+);
+const TRANSIENT = new RegExp(`${REMOTE_TRANSIENT.source}|CopyToWorktreeTimeoutError|timed out|${PODMAN_TRANSIENT.source}`, "i");
 const TRANSIENT_RETRY_WAITS_MS = [60_000, 300_000, 900_000];
 
 async function retryTransient<T>(what: string, fn: () => Promise<T>): Promise<T> {
@@ -331,9 +347,30 @@ async function retryTransient<T>(what: string, fn: () => Promise<T>): Promise<T>
       if (wait === undefined || !TRANSIENT.test(message)) throw e;
       const first = message.split("\n")[0].slice(0, 160);
       const n = `${attempt + 1}/${TRANSIENT_RETRY_WAITS_MS.length}`;
-      console.warn(t(`  ⚠ ${what} 撞上临时错误（${first}），${wait / 1000} 秒后重跑（第 ${n} 次）`, `  ⚠ ${what} hit a transient error (${first}); rerunning in ${wait / 1000}s (attempt ${n})`));
-      await new Promise((resolve) => setTimeout(resolve, wait));
+      if (!PODMAN_TRANSIENT.test(message)) {
+        console.warn(t(`  ⚠ ${what} 撞上临时错误（${first}），${wait / 1000} 秒后重跑（第 ${n} 次）`, `  ⚠ ${what} hit a transient error (${first}); rerunning in ${wait / 1000}s (attempt ${n})`));
+        await new Promise((resolve) => setTimeout(resolve, wait));
+        continue;
+      }
+      // podman 类错误：等 podman 连上（最多等这次的间隔）再重跑；「镜像不在本地」在连上后复查，真缺镜像就按原路径报错。
+      // podman errors: wait until podman is reachable (at most this attempt's interval), then rerun; "image not found locally" is rechecked once connected, and a truly missing image fails as before.
+      console.warn(t(`  ⚠ ${what} 撞上 podman 连接问题（${first}），等 podman 连上（最多 ${wait / 1000} 秒）后重跑（第 ${n} 次）`, `  ⚠ ${what} hit a podman connection problem (${first}); rerunning once podman is reachable (up to ${wait / 1000}s, attempt ${n})`));
+      const up = await waitForPodman(trySh, undefined, wait);
+      const image = missingImage(message);
+      if (up && image !== null && !imageExists(image)) throw e;
     }
+  }
+}
+
+/**
+ * 关沙箱：podman 断连时 `podman rm` 会失败，只打一行警告，不让它盖掉门槛结果、也不跳过后面的清理；残留的容器交给每次调度的孤儿清理。
+ * Close a sandbox: `podman rm` fails while podman is disconnected; only print a warning so it neither masks the gate result nor skips the cleanup after it; leftover containers are left to the orphan cleanup on every pass.
+ */
+async function closeQuietly(issueId: string, close: () => Promise<unknown>) {
+  try {
+    await close();
+  } catch (e) {
+    console.warn(t(`  ⚠ #${issueId} 关沙箱失败（${errorLine(e)}），残留容器下次调度清理`, `  ⚠ #${issueId} closing the sandbox failed (${errorLine(e)}); leftover containers are cleaned up on the next pass`));
   }
 }
 
@@ -939,7 +976,7 @@ async function build(issue: Issue) {
       usage,
     };
   } finally {
-    await sandbox.close();
+    await closeQuietly(issue.id, () => sandbox.close());
     await dropTestResources(issue.id);
   }
 }
@@ -1057,7 +1094,7 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     // 等检查前先关沙箱、清测试库：等的时候空位已让出，新开的票不该和这张票的资源同时占着。
     // Close the sandbox and drop test resources before waiting for checks: the slot is freed meanwhile, so a newly started ticket shouldn't overlap this ticket's resources.
     if (opened) {
-      await opened.close();
+      await closeQuietly(issue.id, () => opened!.close());
       await dropTestResources(issue.id);
       opened = undefined;
     }
@@ -1065,7 +1102,7 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     return await mergeAfterPush(issue.id, pr, mergeDeps(issue, pr, host));
   } finally {
     if (opened) {
-      await opened.close();
+      await closeQuietly(issue.id, () => opened!.close());
       await dropTestResources(issue.id);
     }
     await host.reacquire();
@@ -1212,7 +1249,11 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     console.error(`  ✗ #${issue.id} ${t("失败：", "failed: ")}${why}${t(`（详情见 ${ERROR_LOG}）`, ` (details in ${ERROR_LOG})`)}`);
     markStuck(
       issue.id,
-      isAgentIdleTimeout(outcome.reason) ? M.agentIdleTimeout(AGENT_IDLE_TIMEOUT_S, LABEL.stuck) : M.sandboxError(errorLine(outcome.reason)),
+      isAgentIdleTimeout(outcome.reason)
+        ? M.agentIdleTimeout(AGENT_IDLE_TIMEOUT_S, LABEL.stuck)
+        : PODMAN_TRANSIENT.test(String(outcome.reason))
+          ? M.podmanDown(errorLine(outcome.reason))
+          : M.sandboxError(errorLine(outcome.reason)),
     );
     return;
   }
@@ -1491,7 +1532,7 @@ async function fullGateAt(sha: string): Promise<ExecResult> {
   try {
     return await runGate((c, o) => sandbox.exec(c, o), MAIN_CHECK_ID, { ...env, GATE_FULL: "1" }, "fallback");
   } finally {
-    await sandbox.close();
+    await closeQuietly(MAIN_CHECK_ID, () => sandbox.close());
     await dropTestResources(MAIN_CHECK_ID);
     // 跑完就扔：worktree 里测试留下的文件不要（close 没删掉时强删），再删本地分支
     // Discard when done: files the tests left in the worktree aren't needed (force-remove if close didn't), then delete the local branch

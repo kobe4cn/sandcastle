@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { duration, flakyTicketsLine, gateDoneLine, gateEnv, startGateProgress } from "../src/gate-progress.ts";
+import { duration, flakyTicketsLine, gateDoneLine, gateEnv, gateInfraLine, startGateProgress } from "../src/gate-progress.ts";
 import { setTermLanguage } from "../src/term.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "gate-progress-"));
@@ -120,6 +120,10 @@ describe("gateDoneLine / flakyTicketsLine", () => {
     expect(flakyTicketsLine("7", [])).toBeUndefined();
   });
 
+  it("门槛没跑成（基础设施故障）：不说失败", () => {
+    expect(gateInfraLine("7", "Cannot connect to Podman")).toBe("  ⚠ #7 门槛没跑成（Cannot connect to Podman），不算失败，稍后重试");
+  });
+
   it("英文", () => {
     try {
       setTermLanguage("en", {});
@@ -128,6 +132,7 @@ describe("gateDoneLine / flakyTicketsLine", () => {
       expect(gateDoneLine("7", "gate took 3s", false, true)).toBe("  ⏱ #7 gate took 3s, failed");
       expect(flakyTicketsLine("7", ["#12", "#13"])).toBe("  ⚠ #7 gate flaky failures recorded in #12, #13");
       expect(flakyTicketsLine("7", [])).toBeUndefined();
+      expect(gateInfraLine("7", "Cannot connect to Podman")).toBe("  ⚠ #7 gate didn't run (Cannot connect to Podman); not a failure, will retry");
     } finally {
       setTermLanguage("zh", {});
     }

@@ -9,7 +9,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { messages } from "../src/i18n.ts";
 import {
-  acquireRunLock, errorLine, interruptNotice, isAgentIdleTimeout, orphanContainers, parseContainers, podmanProblem, removeOrphanContainers,
+  acquireRunLock, errorLine, GateInfraError, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, missingImage, orphanContainers,
+  parseContainers, podmanProblem, removeOrphanContainers, waitForPodman,
 } from "../src/lifecycle.ts";
 import type { TryResult } from "../src/shell.ts";
 import { setTermLanguage } from "../src/term.ts";
@@ -88,6 +89,81 @@ describe("孤儿容器", () => {
 
   it("podman 列不出容器时什么都不做", () => {
     expect(removeOrphanContainers(ROOT, false, () => ({ ok: false, out: "Cannot connect to Podman" }))).toEqual([]);
+  });
+
+  it("断连时 ps 失败返回 [] 不抛；恢复后下一次调用删掉已退出的", () => {
+    let up = false;
+    const run = (_cmd: string, args: string[]): TryResult => {
+      if (!up) return { ok: false, out: "Error: ssh: handshake failed: read tcp: connection reset by peer" };
+      if (args[0] === "ps") return { ok: true, out: "id1\nid2" };
+      if (args[0] === "inspect") return { ok: true, out };
+      return { ok: true, out: "" };
+    };
+    expect(removeOrphanContainers(ROOT, true, run)).toEqual([]);
+    up = true;
+    expect(removeOrphanContainers(ROOT, true, run)).toEqual(["sandcastle-2"]);
+  });
+});
+
+describe("门槛基础设施故障", () => {
+  const podmanUp = (): TryResult => ({ ok: true, out: "arm64" });
+  const podmanDown = (): TryResult => ({ ok: false, out: "Error: Cannot connect to Podman. Please verify your connection" });
+
+  it("退出码 0 不算，也不去查 podman", () => {
+    let called = false;
+    expect(isGateInfraFailure(0, "", () => ((called = true), podmanDown()))).toBeNull();
+    expect(called).toBe(false);
+  });
+  it("退出码 125 / 255 算基础设施故障", () => {
+    expect(isGateInfraFailure(125, "", podmanUp)).toContain("125");
+    expect(isGateInfraFailure(255, "", podmanUp)).toContain("255");
+  });
+  it("137 且 podman 连不上：基础设施故障，原因是 podman 的报错", () => {
+    expect(isGateInfraFailure(137, "", podmanDown)).toBe("Cannot connect to Podman. Please verify your connection");
+  });
+  it("137 但 podman 正常：当作门槛真失败（多半 OOM）", () => {
+    expect(isGateInfraFailure(137, "", podmanUp)).toBeNull();
+  });
+  it("普通失败（退出码 1、podman 正常）不算", () => {
+    expect(isGateInfraFailure(1, "FAIL test/a.test.ts", podmanUp)).toBeNull();
+  });
+  it("stderr 命中连接类错误：取那一行", () => {
+    const stderr = "\nError: ssh: handshake failed: read tcp 127.0.0.1:1->127.0.0.1:2: read: connection reset by peer\n";
+    expect(isGateInfraFailure(1, stderr, podmanUp)).toBe("ssh: handshake failed: read tcp 127.0.0.1:1->127.0.0.1:2: read: connection reset by peer");
+  });
+  it("GateInfraError 的消息带固定前缀", () => {
+    const e = new GateInfraError("Cannot connect to Podman");
+    expect(e.message).toBe("gate infra: Cannot connect to Podman");
+    expect(e).toBeInstanceOf(Error);
+  });
+});
+
+describe("waitForPodman", () => {
+  it("第 2 次探测连上：返回 true，中间让出一次", async () => {
+    let n = 0;
+    const sleeps: number[] = [];
+    const run = (): TryResult => (++n >= 2 ? { ok: true, out: "arm64" } : { ok: false, out: "Cannot connect to Podman" });
+    expect(await waitForPodman(run, async (ms) => void sleeps.push(ms), 60_000, 15_000)).toBe(true);
+    expect(n).toBe(2);
+    expect(sleeps).toEqual([15_000]);
+  });
+  it("等满预算还连不上：返回 false", async () => {
+    const sleeps: number[] = [];
+    expect(await waitForPodman(() => ({ ok: false, out: "down" }), async (ms) => void sleeps.push(ms), 30_000, 15_000)).toBe(false);
+    expect(sleeps).toEqual([15_000, 15_000]);
+  });
+});
+
+describe("镜像不存在的报错", () => {
+  it("取出镜像名；别的报错返回 null", () => {
+    expect(missingImage("Error: Image 'sandcastle:app' not found locally. Build it first with 'podman build -t sandcastle:app .'")).toBe("sandcastle:app");
+    expect(missingImage("podman rm failed: x")).toBeNull();
+  });
+  it("imageExists 用 podman image exists 复查", () => {
+    const calls: string[][] = [];
+    expect(imageExists("sandcastle:app", (_c, args) => (calls.push(args), { ok: true, out: "" }))).toBe(true);
+    expect(calls[0]).toEqual(["image", "exists", "sandcastle:app"]);
+    expect(imageExists("sandcastle:app", () => ({ ok: false, out: "" }))).toBe(false);
   });
 });
 

@@ -40,6 +40,14 @@ export function gateDoneLine(issueId: string, line: string, passed: boolean, fla
 }
 
 /**
+ * 门槛被基础设施杀掉（podman 断连等）时的一行：说「没跑成」，不说「失败」，也不计入票的失败。
+ * The line when infrastructure killed the gate (podman disconnected, etc.): says "didn't run", not "failed", and doesn't count against the ticket.
+ */
+export function gateInfraLine(issueId: string, reason: string): string {
+  return t(`  ⚠ #${issueId} 门槛没跑成（${reason}），不算失败，稍后重试`, `  ⚠ #${issueId} gate didn't run (${reason}); not a failure, will retry`);
+}
+
+/**
  * 票落地时门槛偶发失败记入了哪些 flaky 票（可能是复用的老票，所以说「记入」）；没有票时返回 undefined，不打。
  * Which flaky tickets the gate's flaky failures were recorded in when the ticket lands (may be reused existing tickets, hence "recorded in"); undefined when there are none, so nothing is printed.
  */
