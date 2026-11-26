@@ -91,6 +91,8 @@ const zh = {
 
   // —— issue 评论：停下 / 退回 —— / Issue comments: stop / send back
   stuck: (reason: string) => `Sandcastle 停下了：${reason}`,
+  missingBlocker: (blockers: string, stuckLabel: string) =>
+    `\`## Blocked by\` 里的 ${blockers} 在本仓库查不到（票号写错，或者是从别的仓库复制来的）。改正 Blocked by 或者删掉这一行，然后去掉 ${stuckLabel} 就能继续。`,
   sandboxError: (err: string) => `沙箱出错：${err}`,
   pushedTo: (branch: string) => `已有的提交推到了分支 \`${branch}\`。`,
   pushedHere: "已有的提交推到了这个分支。",
@@ -232,6 +234,8 @@ const en: Messages = {
   integrityBroken: "the integrity check failed",
 
   stuck: (reason) => `Sandcastle stopped: ${reason}`,
+  missingBlocker: (blockers, stuckLabel) =>
+    `${blockers} in \`## Blocked by\` can't be found in this repository (a mistyped number, or copied from another repository). Fix Blocked by or delete that line, then remove ${stuckLabel} to continue.`,
   sandboxError: (err) => `sandbox error: ${err}`,
   pushedTo: (branch) => `Existing commits were pushed to \`${branch}\`. `,
   pushedHere: "Existing commits were pushed to this branch.",

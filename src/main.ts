@@ -86,7 +86,7 @@ import {
 } from "./models.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, splitChildren } from "./guide.ts";
 import { acceptanceSection, checkAcceptanceNotes, replaceSection, restSections } from "./pr-body.ts";
-import type { ForgeIssue, ForgePr } from "./forge.ts";
+import type { ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { loadProject } from "./profile.ts";
 import { messages } from "./i18n.ts";
 import { duration, startGateProgress } from "./gate-progress.ts";
@@ -363,20 +363,40 @@ const listIssues = (include: string[], exclude: string[] = []): ListedIssue[] =>
 // ---------------------------------------------------------------------------
 
 /**
- * 票的 open 状态，每次调度开头清空（blocker 可能在两次调度之间被合并）。
- * Open state of tickets, cleared at the start of every pass (blockers may be merged between passes).
+ * 票的状态，每次调度开头清空（blocker 可能在两次调度之间被合并）。
+ * State of tickets, cleared at the start of every pass (blockers may be merged between passes).
  */
-const openStates = new Map<number, boolean>();
-function isOpen(n: number): boolean {
-  if (!openStates.has(n)) {
+const issueStates = new Map<number, IssueState>();
+function issueState(n: number): IssueState {
+  if (!issueStates.has(n)) {
     const r = attempt(() => forge.issueState(String(n)));
-    openStates.set(n, !r.ok || r.value === "open"); // 查不到时当作 open，宁可少做 / treat as open when the lookup fails, preferring to do less
+    issueStates.set(n, r.ok ? r.value : "open"); // 查询出错时当作 open，宁可少做 / treat as open when the lookup fails, preferring to do less
   }
-  return openStates.get(n)!;
+  return issueStates.get(n)!;
 }
+const isOpen = (n: number) => issueState(n) === "open";
 
 /** `## Blocked by` 里还没关的票。 / Tickets in `## Blocked by` that are still open. */
 const openBlockers = (body: string) => blockersOf(body).filter(isOpen);
+
+/** `## Blocked by` 里平台确认不存在的票。 / Tickets in `## Blocked by` that the forge confirms don't exist. */
+const missingBlockers = (body: string) => blockersOf(body).filter((n) => issueState(n) === "missing");
+
+/**
+ * blocker 不存在的票：打印原因，打 stuck 并留言；人改好 Blocked by、去掉 stuck 后照常调度。
+ * Tickets whose blocker doesn't exist: log why, label stuck and comment; once a human fixes Blocked by and removes stuck, scheduling resumes.
+ */
+function stuckOnMissing(issue: { number: number }, missing: number[]) {
+  const refs = missing.map((n) => `#${n}`);
+  console.log(
+    t(
+      `  跳过 #${issue.number}：blocker ${refs.join("、")} 不存在或无权访问`,
+      `  Skipping #${issue.number}: blocker ${refs.join(", ")} doesn't exist or isn't accessible`,
+    ),
+  );
+  const r = attempt(() => markStuck(String(issue.number), M.missingBlocker(M.list(refs), LABEL.stuck)));
+  if (!r.ok) console.warn(t(`  ⚠ #${issue.number} 打 ${LABEL.stuck} 失败：`, `  ⚠ Labelling #${issue.number} ${LABEL.stuck} failed: `) + r.out.slice(0, 200));
+}
 
 /**
  * 拆过的父票：prep 拆票时去掉父票的 Sandcastle，正文加 `## Split into`，之后没人管它，
@@ -403,7 +423,7 @@ function closeFinishedParents() {
     const closed = attempt(() => forge.closeIssue(String(parent.number), M.parentClosed(M.list(refs))));
     const list = refs.join(t("、", ", "));
     if (closed.ok) {
-      openStates.set(parent.number, false);
+      issueStates.set(parent.number, "closed");
       console.log(t(`  ✓ 父票 #${parent.number} 的子票 ${list} 都已关闭，已关闭父票`, `  ✓ Children ${list} of #${parent.number} are all closed; closed the parent`));
     } else {
       console.warn(t(`  ⚠ 关闭父票 #${parent.number} 失败：`, `  ⚠ Closing parent #${parent.number} failed: `) + closed.out.slice(0, 200));
@@ -508,6 +528,11 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
   }
   const picked: Issue[] = [];
   for (const issue of candidates.filter((c) => allowed(c.number) && !running.has(String(c.number))).sort(byUrgency)) {
+    const missing = missingBlockers(issue.body);
+    if (missing.length > 0) {
+      if (!quiet) stuckOnMissing(issue, missing); // quiet 时只跳过，不打 stuck / when quiet, only skip, don't label stuck
+      continue;
+    }
     const open = openBlockers(issue.body);
     if (open.length > 0) {
       const blockers = open.map((n) => `#${n}`);
@@ -1563,7 +1588,7 @@ type ScheduleResult = { started: number; split: boolean; prepLimitedUntil?: numb
 async function schedule(): Promise<ScheduleResult> {
   reloadModels(); // 每次调度读一次 .sandcastle/models.json：改了配置不用重启，下次生效 / read .sandcastle/models.json every pass: config changes apply next pass without a restart
   await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]); // 刚合并进远端 main 的代码 / code just merged into the remote main
-  openStates.clear();
+  issueStates.clear();
   syncHostBase();
   reopenRequestedRevisions();
   closeFinishedParents();
@@ -1599,6 +1624,11 @@ async function schedule(): Promise<ScheduleResult> {
     if (slots > 0 && plan(new Set(running.keys()), slots, true).length >= slots) {
       console.log(t(`  已有 ${slots} 张可开工的票，先开工；其余票下次调度再 prep`, `  ${slots} ticket(s) ready to start, starting them first; the rest are prepped next pass`));
       break;
+    }
+    const missing = missingBlockers(issue.body);
+    if (missing.length > 0) {
+      stuckOnMissing(issue, missing);
+      continue;
     }
     const open = openBlockers(issue.body);
     if (open.length > 0) {

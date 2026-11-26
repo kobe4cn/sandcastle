@@ -40,6 +40,9 @@ export type ForgePr = {
 
 export type MergeMethod = "rebase" | "squash" | "merge";
 
+/** 票的状态。 / A ticket's state. */
+export type IssueState = "open" | "closed" | "missing";
+
 export interface Forge {
   /** 平台名，打日志用 / Host name, for logs */
   readonly name: string;
@@ -67,7 +70,11 @@ export interface Forge {
   listClosedIssueNumbers(label: string): number[];
   /** 正文含 `## Split into`、且不带 withoutLabel 的 open issue（拆过的父票）。 */
   listSplitParents(withoutLabel: string): { number: number; body: string }[];
-  issueState(id: string): "open" | "closed";
+  /**
+   * 票的状态；`missing` 表示平台确认这个编号不存在，其他查询错误照旧抛出。
+   * The ticket's state; `missing` means the forge confirmed this number doesn't exist; other lookup errors still throw.
+   */
+  issueState(id: string): IssueState;
   issueUpdatedAt(id: string): string;
   /** 全部评论正文，按时间先后。 / All comment bodies, oldest first. */
   issueComments(id: string): string[];

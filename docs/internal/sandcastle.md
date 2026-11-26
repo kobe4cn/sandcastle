@@ -17,7 +17,7 @@
 | 等人审 | + `sandcastle:pr-open` | 脚本（没能自动合并时） | 人审 PR：没问题就合并（issue 自动关闭）；要改就在 PR 上发 `/sandcastle` 开头的评论或 review |
 | 打回 | 去掉 `sandcastle:pr-open` | 脚本（每次调度开头看到打回信号时） | 这次调度重新 plan，implementer 在原分支上先处理 PR 意见 |
 | 退回重新准备 | 去掉 `sandcastle:prepped`，issue 上留 `<!-- sandcastle:reprep -->` 评论 | 脚本（implementer 第一次用完会话没做完时） | 下次调度 prep 按进度：指引不对就重写；票太大就把没完成的验收标准拆成子票（被本票 block），本票只留已完成的部分，在原分支上收尾合并 |
-| 需要人 | + `sandcastle:stuck`（评论里写原因） | 脚本（重新准备后仍没做完、沙箱出错、implementer 输出 `NEEDS_DECISION`）或 agent（含 prep 缺意图信息：评论写明缺什么、写进哪份文档，提示 `/fill-project-docs`） | 人处理后去掉 `sandcastle:stuck`；带 `ready-for-human` 的（prep 打的、implementer 输出 `NEEDS_DECISION` 的）一并去掉 |
+| 需要人 | + `sandcastle:stuck`（评论里写原因） | 脚本（重新准备后仍没做完、沙箱出错、implementer 输出 `NEEDS_DECISION`、Blocked by 引用的票不存在）或 agent（含 prep 缺意图信息：评论写明缺什么、写进哪份文档，提示 `/fill-project-docs`） | 人处理后去掉 `sandcastle:stuck`；带 `ready-for-human` 的（prep 打的、implementer 输出 `NEEDS_DECISION` 的）一并去掉 |
 | 代拍板 | + `sandcastle:decided`（票仍照常合并或留 PR） | 脚本（落地时 issue 上有 `<!-- sandcastle:decided -->` 开头的评论） | 人看 PR 上的「代拍板」评论：同意就去掉标签；不同意在 issue 上回复，另开票改 |
 
 ## 设计决定：代拍板还是停下
@@ -79,7 +79,7 @@ GitHub CI 不作为门槛。
 - 只跑指定的票：`SANDCASTLE_ONLY=328,329 npm run run:sandcastle`（prep 与 plan 都只看名单里的票；拆出来的子票不在名单里，要另外加）。
 - plan 由脚本自己算，不用 agent：在已准备的票里排除 `## Blocked by` 里还有 open 票的（括号里的票号是说明，不算），剩下的按编号从小到大选（`sandcastle:main-broken` 修复票排最前），和已选的票改同一个文件（指引里 `- **Change**: \`path\`` 行的路径，以及 `**Change**` 下缩进子条目开头的路径；一条 Change 都没有时兜底取指引里 New / Reuse / ADRs / Tests 之外的 `path:行号` 引用，并在日志里警告；解析在 `.sandcastle/guide.ts`）就跳过，所以冲突时总是编号小的先做，最多 `MAX_PARALLEL`（2）张。只追加的索引文件（`APPEND_ONLY`：`test/CATALOG.md`、`test/README.md`、`CONTEXT.md`、`docs/adr/README.md`，以及翻译表 `app/i18n/en.client.json`、`app/i18n/en.server.json`（按键排序，`npm run i18n:sort`，新词条插在各自位置，并行的票很少文本冲突）和中文棘轮基线 `test/i18n-ratchet-baseline.json`，冲突时 rebase 重算）不算改同一个文件，两张票都改它们也照常并行——冲突交给 rebase（`rebase-prompt.md` 已写明两边都在追加的文件两边都保留）。被 blocker 挡住的票不占文件。等人审（`sandcastle:pr-open`）的票也占着它的文件：PR 合入或关闭之前，改同一个文件的票不会开工，免得两个 PR 在同一个文件上冲突；代价是 PR 一直不审，这些票就一直排不上。跳过原因会打在日志里。
 - prep 和 plan 都按票号从小到大处理：prep 一张接一张串行跑完，plan 才开始选票。
-- 有 open blocker 的票不会被 prep（脚本直接跳过，不开 prep 会话，日志打「跳过 prep #n」），也不会被 plan 选中。blocker 留成 PR 时，依赖它的票在你合并之后的下一次轮询开工（运行已结束时要重新运行）。
+- 有 open blocker 的票不会被 prep（脚本直接跳过，不开 prep 会话，日志打「跳过 prep #n」），也不会被 plan 选中。`## Blocked by` 里的票号在本仓库查不到（gh 报 `Could not resolve to an issue or pull request`）时不当成 open 一直等：日志打「跳过 #n：blocker #m 不存在或无权访问」，票打 `sandcastle:stuck` 并留言；人改好 Blocked by、去掉 stuck 后照常调度。网络、权限等其他查询错误仍按 open 处理，不打 stuck。blocker 留成 PR 时，依赖它的票在你合并之后的下一次轮询开工（运行已结束时要重新运行）。
 - 每次调度开头重新查询 issue，拆出来的子票在下次调度被看到。plan 选不出票、但这次拆出了还没 prep 的子票时，马上再调度一次，不算空转。
 - 轮询比原来按轮跑频繁，所以本次运行里 prep 过、却既没打上 prepped 也没拆的票（比如 prep 会话出错），只有 issue 有了变化（评论、正文、标签）才再开 prep 会话。
 - 撞上 Claude 用量限额（`You've hit your … limit · resets 6:20am (UTC)`）不算票失败，不打 `sandcastle:stuck`：脚本从报错里解析重置时间，等到那之后再多等 2 分钟，然后重跑撞上的那一步。prep 不在调度里等（会占着宿主机，做完的票落不了地）：停下这次的 prep，下次调度再试；没有票在做时，主循环等到重置再调度，不算空转。实现中的票先把已有提交推到远端，再在原分支上从 implement 重跑，implementer 看到已有提交会直接收尾，review 与门槛从头跑；rebase 补救同样重跑。认不出重置时间就每 30 分钟试一次。进程被中断（Ctrl-C、关机）时，已有提交在本地同名分支上，重跑 `npm run run:sandcastle` 会接着做。

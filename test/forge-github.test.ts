@@ -42,6 +42,15 @@ describe("githubForge 发给 gh 的参数", () => {
     expect(calls[0]).toEqual(["issue", "view", "9", "--json", "state", "--jq", ".state"]);
   });
 
+  it("issueState 在 gh 报编号不存在时返回 missing，其他错误照旧抛出", () => {
+    const failing = (stderr: string) =>
+      githubForge(() => {
+        throw Object.assign(new Error("gh"), { stderr });
+      });
+    expect(failing("GraphQL: Could not resolve to an issue or pull request with the number of 99. (repository.issue)").issueState("99")).toBe("missing");
+    expect(() => failing("error connecting to api.github.com").issueState("99")).toThrow();
+  });
+
   it("issueComments 每条评论一行 JSON，多行评论不被拆开", () => {
     const { forge, calls } = fakeGh(`${JSON.stringify("第一行\n第二行")}\n${JSON.stringify("b")}`);
     expect(forge.issueComments("4")).toEqual(["第一行\n第二行", "b"]);

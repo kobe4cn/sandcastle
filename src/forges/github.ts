@@ -125,7 +125,16 @@ export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefin
       ) as { number: number; body: string }[];
     },
     issueState(id) {
-      return gh(["issue", "view", id, "--json", "state", "--jq", ".state"]) === "CLOSED" ? "closed" : "open";
+      let state: string;
+      try {
+        state = gh(["issue", "view", id, "--json", "state", "--jq", ".state"]);
+      } catch (e) {
+        // 只有 gh 明确说编号不存在才算 missing；网络、权限等错误照旧抛出 / Only gh's explicit "not found" counts as missing; network, permission and other errors still throw
+        const msg = String((e as { stderr?: unknown }).stderr || (e as Error).message);
+        if (/Could not resolve to an issue or pull request/i.test(msg)) return "missing";
+        throw e;
+      }
+      return state === "CLOSED" ? "closed" : "open";
     },
     issueUpdatedAt(id) {
       return gh(["issue", "view", id, "--json", "updatedAt", "--jq", ".updatedAt"]);
