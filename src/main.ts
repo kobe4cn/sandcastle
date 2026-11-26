@@ -95,6 +95,7 @@ import {
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
 import { duration, gateEnv, startGateProgress } from "./gate-progress.ts";
+import { createGateQueue, type GatePriority } from "./gate-queue.ts";
 import { setTermLanguage, t } from "./term.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
@@ -238,7 +239,14 @@ const GATE_SCRIPT = project.gate.script({ baseRef: BASE_REF });
 // 门槛独占时可以给更多资源（项目配置 gate.env，比如更多 worker）。
 // Only one gate runs at a time (regardless of tier): in parallel, CPU and the test services saturate, making them slower and more timeout-prone than running in sequence.
 // With the gate to itself it can be given more resources (project config gate.env, e.g. more workers).
-let gateQueue: Promise<unknown> = Promise.resolve();
+// 票优先，兜底让位：有票在等门槛时 main 兜底完整测试不开跑（已开跑的不中断），同档内先来先得（src/gate-queue.ts）。
+// Tickets first, the fallback yields: the main fallback full run doesn't start while a ticket waits for the gate (one already running is not interrupted); first come first served within a tier (src/gate-queue.ts).
+const gateQueue = createGateQueue({
+  onYield: (n) =>
+    console.log(
+      t(`  ⏳ main 兜底完整测试让位：${n} 张票在等门槛，先跑票的`, `  ⏳ The fallback full run on main yields: ${n} ticket(s) waiting for the gate run first`),
+    ),
+});
 type ExecResult = { stdout: string; exitCode: number };
 
 const GATE_LOG_DIR = ".sandcastle/logs";
@@ -246,15 +254,16 @@ const GATE_LOG_DIR = ".sandcastle/logs";
 const ERROR_LOG = ".sandcastle/logs/errors.log";
 
 /**
- * 跑一次门槛：所有门槛排同一个队；用时（和排队时间）打进日志，并追加在输出末尾一行 GATE_TIME（进 PR 的 Gate 一节）。
+ * 跑一次门槛：所有门槛排同一个队，票（prio "ticket"）优先于 main 兜底（"fallback"）；用时（和排队时间）打进日志，并追加在输出末尾一行 GATE_TIME（进 PR 的 Gate 一节）。
  * 运行中输出实时写进 .sandcastle/logs/gate-*.log，定时打印心跳（gate-progress.ts 的 HEARTBEAT_MS）。
- * Run the gate once: all gates share one queue; the time taken (and time queued) is logged and appended as a GATE_TIME line at the end of the output (goes into the PR's Gate section).
+ * Run the gate once: all gates share one queue, tickets (prio "ticket") ahead of the main fallback ("fallback"); the time taken (and time queued) is logged and appended as a GATE_TIME line at the end of the output (goes into the PR's Gate section).
  * While running, output is written live to .sandcastle/logs/gate-*.log and a heartbeat is printed periodically (HEARTBEAT_MS in gate-progress.ts).
  */
 async function runGate<R extends ExecResult>(
   exec: (command: string, opts?: SandboxExecOptions) => Promise<R>,
   issueId: string,
   env: Record<string, string>,
+  prio: GatePriority = "ticket",
 ): Promise<R> {
   const queued = Date.now();
   const go = async () => {
@@ -283,9 +292,7 @@ async function runGate<R extends ExecResult>(
     console.log(`  ⏱ #${issueId} ${line}${r.exitCode === 0 ? t("，通过", ", passed") : t("，失败", ", failed")}`);
     return { ...r, stdout: `${stdout}\nGATE_TIME: ${line}` };
   };
-  const run = gateQueue.then(go);
-  gateQueue = run.catch(() => {});
-  return run;
+  return gateQueue.run(go, prio);
 }
 
 // 沙箱建好后装依赖（项目配置 install）：拷进来的 node_modules 等是宿主机的，可能缺容器平台的原生包。
@@ -1411,11 +1418,11 @@ async function resumeMerging(issue: Issue, host: HostGap) {
 // ---------------------------------------------------------------------------
 // main 上定期的兜底完整测试（2026-11-24）
 // ---------------------------------------------------------------------------
-// 按依赖选测试的票每合并 MAIN_CHECK_EVERY 张，对当时的 origin/main 跑一次完整测试（和票的门槛排同一个队）。
+// 按依赖选测试的票每合并 MAIN_CHECK_EVERY 张，对当时的 origin/main 跑一次完整测试（排在票的门槛后面，有票在等就让位；已开跑的不中断）。
 // 兜住依赖图漏选，和「两张票各自通过、合在一起才坏」。失败就开一张带 LABEL.mainBroken 的修复票（调度时排最前），
 // 自动合并照常、不暂停。状态存在 MAIN_CHECK_FILE：重启后接着计数，失败票里列出上次通过以来进 main 的提交。
 // Periodic fallback full run on main (2026-11-24)
-// After every MAIN_CHECK_EVERY merged dependency-selected tickets, run the full suite on the origin/main of the moment (sharing the tickets' gate queue).
+// After every MAIN_CHECK_EVERY merged dependency-selected tickets, run the full suite on the origin/main of the moment (queued behind tickets' gates, yielding while a ticket waits; a run already started is not interrupted).
 // Catches what the dependency graph misses, and "two tickets that pass alone but break together". On failure open a fix ticket labelled LABEL.mainBroken (scheduled first);
 // auto-merge carries on without pausing. State lives in MAIN_CHECK_FILE: counting resumes after a restart, and the failure ticket lists commits merged into main since the last pass.
 const MAIN_CHECK_EVERY = project.mainCheckEvery;
@@ -1469,7 +1476,7 @@ async function fullGateAt(sha: string): Promise<ExecResult> {
   const env = testEnv(MAIN_CHECK_ID);
   const sandbox = await sandcastle.createSandbox({ branch, baseBranch: BASE_REF, sandbox: sandboxFor(env), hooks, copyToWorktree });
   try {
-    return await runGate((c, o) => sandbox.exec(c, o), MAIN_CHECK_ID, { ...env, GATE_FULL: "1" });
+    return await runGate((c, o) => sandbox.exec(c, o), MAIN_CHECK_ID, { ...env, GATE_FULL: "1" }, "fallback");
   } finally {
     await sandbox.close();
     await dropTestResources(MAIN_CHECK_ID);

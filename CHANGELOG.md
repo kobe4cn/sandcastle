@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- main 兜底完整测试不再挡票的门槛：之前兜底和票的门槛先来先得，兜底先排上时后到的票要等它跑完（一个完整测试约 50 分钟的项目上，两张票分别排了 41.9 分钟和 48.9 分钟，自己的按依赖选门槛只跑了 3.7 分钟和 2 秒）。现在门槛队列票优先，有票在等时兜底不开跑、终端打一行让位提示；已开跑的完整测试不中断，照常跑完。新模块 `src/gate-queue.ts`
 - 孤儿沙箱容器会自动清了：主进程被 SIGKILL、或运行中途 podman 挂掉后留下的 `sandcastle-<uuid>` 容器（只剩 `sleep infinity` 的 Up 容器或 Exited 容器），之前一直不清。现在开跑时删掉本仓库的全部 sandcastle 容器、每次调度再删本仓库已退出的，各打一行 `🧹` 提示。库没给容器打 label，按名字前缀和挂载来源（本仓库根、`.git`、`.sandcastle/worktrees/…`）认，别的仓库的容器不碰（e2e L1 / L4 发现）
 - 同一仓库同时只能跑一个 sandpipe：`run` / `baseline` 开跑时拿运行锁 `.sandcastle/logs/run.lock`（写 pid），已有活着的 sandpipe 在跑就一行报错、退出码 1；上次被 SIGKILL 留下的锁（pid 已不在）直接接管。新模块 `src/lifecycle.ts`
 - agent 空闲超时（`AgentIdleTimeoutError`）后，进程打完「全部完成」不再挂着不退：原因在依赖 `@ai-hero/sandcastle` 0.12，超时后被放弃的 `podman exec` 还会送来输出，又起一个没人停的「Agent idle for N minutes」提醒定时器，事件循环一直不空。改不了依赖，运行结束时兜底：事件循环空了照常退出，否则 2 秒后按退出码退出（e2e L6 发现）
