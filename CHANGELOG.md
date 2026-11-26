@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 空位全满时改 `models.json` 也生效了：之前只在有空位、开调度时才重读，一张票只配了一个会撞限额的档案、在限额里循环等待时，往配置里补上新档案也没用，只能重启。现在主循环每轮都读（不管有没有空位），限额等待醒来、重跑前也重读一次，等待期间补上的档案马上能用。限额等待的逻辑搬到 `src/limit-wait.ts`（closes #43）
 - 别家档案（设了 `ANTHROPIC_BASE_URL`）的会话里，容器内任何进程都拿不到 Claude 凭据了：之前只对 claude 进程 `env -u`，`podman exec` 起的父进程 sh 的环境里仍有 `CLAUDE_CODE_OAUTH_TOKEN`，第三方模型驱动的 agent 可从 `/proc/<pid>/environ` 读到。现在 sandbox env 把 `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` 覆盖成空串，容器级 env 不再有凭据；Claude 档案的会话从 stdin 拿到 `.sandcastle/.env` 里的凭据（`read` 进 shell 变量后 `exec` 成 claude，值不进命令行），按会话给，同一个容器里先后跑 Claude 和别家的会话也互不影响。自定义 `sandbox` 的项目要把 env 原样传给容器（closes #42）
 - 「模型：」一行不再每轮调度都打：启动时打一次，之后只在 `models.json` 内容变了（phases 或档案内容，空白和格式不算）时打一行「模型配置已更新：…」；models.json 的警告也只在警告文本变化时重打。改坏时「沿用上一次读到的配置」的提示照旧每轮都打（closes #40）
 - PR 和 main 有冲突时不再误报「没有 CI」：GitHub 不给有冲突的 PR 跑 CI，之前等满 60 秒宽限期后打「没有 CI，只按门槛合并」，再白试一次合并才走 rebase。现在 PR 上没有检查时每轮先查 PR 是否冲突（Forge 新增可选方法 `prMergeable`，GitHub 用 `gh pr view --json mergeable,mergeStateStatus`），连续两轮（约 30 秒）都冲突就打「PR 和 main 有冲突，先 rebase」（只看一次可能读到 force-push 前的旧状态，把已解决冲突的 PR 误判成冲突）、不试合并，直接 rebase；rebase 后仍冲突时留 PR 并写明冲突。可合并状态还没算出来或查询出错时照旧按宽限期等（closes #39）

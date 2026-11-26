@@ -34,6 +34,7 @@
 | `src/gate-progress.ts` | 门槛进度：输出实时写进 `.sandcastle/logs/gate-*.log`、心跳、用时文案 |
 | `src/shell.ts` | 宿主机命令（超时、远端重试） |
 | `src/guide.ts` `src/pr-body.ts` `src/models.ts` | 票正文解析、空转退出原因、PR 正文、模型档案 |
+| `src/limit-wait.ts` | 撞用量限额后等到重置、醒来重读 models.json 再重跑 |
 | `templates/.sandcastle/` | 装到新项目的 PROJECT.md 模板、配置模板、Containerfile、models.json |
 | `claude/` | 上下文预算 hook、screenshot-checker 子代理、prep-ticket 和 fill-project-docs skill（后者附 NOTICE，改编自 mattpocock/skills，MIT） |
 | `examples/duckdb_crm/` | 第一个接入方的完整配置 |

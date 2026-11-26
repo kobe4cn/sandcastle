@@ -185,6 +185,24 @@ describe("N1b 撞限额换档案", () => {
     expect(fn).not.toHaveBeenCalled();
   });
 
+  it("只配一个档案、撞限额后等待期间配置补上新档案：reloadModels 后重跑用新档案（#43）", async () => {
+    writeModels({ profiles: { fake: claude("fake-model") }, phases: phasesAll(["fake"]) });
+    m.reloadModels();
+    const err = await m
+      .runWithProfile("implement", "#104", async () => {
+        throw new Error(LIMIT);
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(m.AllProfilesLimited);
+    writeModels({ profiles: { fake: claude("fake-model"), sonnet: claude("claude-sonnet-4-5") }, phases: phasesAll(["fake", "sonnet"]) });
+    m.reloadModels();
+    const tried: string[] = [];
+    const { profile } = await m.runWithProfile("implement", "#104", async (p) => (tried.push(p.name), done()));
+    // fake 还在跳过期内，直接用 sonnet
+    expect(tried).toEqual(["sonnet"]);
+    expect(profile.name).toBe("sonnet");
+  });
+
   it("认不出重置时间：跳过 1 小时", async () => {
     const err = await m
       .runWithProfile("implement", "#7", async () => {

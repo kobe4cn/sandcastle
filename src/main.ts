@@ -82,9 +82,10 @@ import { stripVTControlCharacters } from "node:util";
 import * as sandcastle from "@ai-hero/sandcastle";
 import type { SandboxExecOptions } from "@ai-hero/sandcastle";
 import {
-  AllProfilesLimited, CLAUDE_CREDENTIALS_CLEARED, CLAUDE_LIMIT_PATTERN, agentFor, limitResetAt, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
+  CLAUDE_CREDENTIALS_CLEARED, agentFor, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
   type AgentRun, type Phase, type UsageRecord,
 } from "./models.ts";
+import { limitWait, sleepUntil, untilAfterLimit } from "./limit-wait.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
 import { acceptanceSection, browserSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from "./pr-body.ts";
 import type { ForgeIssue, ForgePr, IssueState } from "./forge.ts";
@@ -1004,7 +1005,6 @@ async function build(issue: Issue) {
 // ---------------------------------------------------------------------------
 
 const REBASE_STATE = "test -d \"$(git rev-parse --git-path rebase-merge)\" || test -d \"$(git rev-parse --git-path rebase-apply)\"";
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // 合并前的额外一致性检查（项目配置 integrity，比如数据库迁移链没分叉）：rebase 没有文本冲突也可能坏。
 // 没配置时恒为通过。
@@ -1131,50 +1131,7 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
 // Usage limits: wait for the reset and continue, not counted as a ticket failure
 // ---------------------------------------------------------------------------
 
-// 撞限额的识别、重置时间的解析和换档案在 models.ts；这里处理「这个阶段的档案都在等」：等到最早恢复的那个再从头跑。
-// Detecting limits, parsing reset times and switching profiles live in models.ts; this handles "every profile for this phase is waiting": wait for the earliest one, then rerun from the start.
-const LIMIT_RESUME_SLACK_MS = 2 * 60_000; // 重置时间之后再多等一会儿 / wait a little longer after the reset time
-const LIMIT_FALLBACK_WAIT_MS = 30 * 60_000; // 认不出重置时间时每次等这么久再试 / how long to wait between tries when the reset time can't be read
-
-/** 分步睡：笔记本合盖时计时器会停，醒来按墙上时间判断。 / Sleep in steps: timers stop while a laptop lid is closed, so after waking judge by wall-clock time. */
-async function sleepUntil(at: number) {
-  while (Date.now() < at) await sleep(Math.min(60_000, at - Date.now()));
-}
-
-/**
- * 跑 fn，撞上用量限额就等到重置后重跑；其他错误照抛。
- * fn 要能从头重跑：prep 本来就幂等；build 重跑时在原分支上接着做（implementer 先看已有提交）。
- * onLimit 在等之前调用，比如把分支推到远端。
- * Run fn; on a usage limit wait for the reset and rerun it; other errors are rethrown.
- * fn must be rerunnable from the start: prep is idempotent anyway; build continues on the same branch when rerun (the implementer looks at existing commits first).
- * onLimit is called before waiting, e.g. to push the branch to the remote.
- */
-async function untilAfterLimit<T>(what: string, fn: () => Promise<T>, onLimit?: () => void | Promise<void>): Promise<T> {
-  for (;;) {
-    try {
-      return await fn();
-    } catch (e) {
-      const limit = limitWait(e);
-      if (!limit) throw e;
-      await onLimit?.();
-      const until = new Date(limit.until).toLocaleString();
-      console.log(t(`  ⏸ ${what} 撞上用量限额，${limit.why}等到 ${until} 再接着跑`, `  ⏸ ${what} hit the usage limit; ${limit.why}resuming at ${until}`));
-      await sleepUntil(limit.until);
-    }
-  }
-}
-
-/** 错误是用量限额时，该等到什么时候（含余量）；不是限额返回 null。 / When the error is a usage limit, when to resume (with slack); null when it isn't a limit. */
-function limitWait(e: unknown): { until: number; why: string } | null {
-  // AllProfilesLimited 的 until 已经含了余量。 / AllProfilesLimited's until already includes the slack.
-  if (e instanceof AllProfilesLimited) return { until: e.until, why: "" };
-  const message = String(e);
-  if (!CLAUDE_LIMIT_PATTERN.test(message)) return null;
-  const resetAt = limitResetAt(message);
-  return resetAt === null
-    ? { until: Date.now() + LIMIT_FALLBACK_WAIT_MS, why: t(`认不出重置时间（${message.slice(0, 200)}），`, `couldn't read the reset time (${message.slice(0, 200)}); `) }
-    : { until: resetAt + LIMIT_RESUME_SLACK_MS, why: "" };
-}
+// 等限额、醒来重读 models.json 再重跑在 limit-wait.ts。 / Waiting on limits, rereading models.json on waking and rerunning live in limit-wait.ts.
 
 /** 分支上已有提交时推到远端，免得只留在宿主机上。 / Push to the remote when the branch has commits, so they aren't only on the host. */
 async function pushIfAhead(issue: Issue) {
@@ -1798,7 +1755,6 @@ type ScheduleResult = { started: number; split: boolean; prepLimitedUntil?: numb
 
 /** 一次调度：整理 → prep → plan，把空位补满。在 withHost 里跑。 / One pass: tidy → prep → plan, filling the slots. Runs inside withHost. */
 async function schedule(): Promise<ScheduleResult> {
-  reloadModels(); // 每次调度读一次 .sandcastle/models.json：改了配置不用重启，下次生效 / read .sandcastle/models.json every pass: config changes apply next pass without a restart
   // 运行中途 podman 挂掉又恢复后，留下的 Exited 容器库不会再删：每次调度清一次本仓库已退出的容器（在跑的可能是正在用的沙箱，不碰）。
   // After podman dies mid-run and comes back, the library won't remove the Exited containers it left: clear this repo's exited containers every pass (running ones may be live sandboxes and are left alone).
   if (!project.customSandbox) reportOrphans(removeOrphanContainers(process.cwd(), true));
@@ -1973,6 +1929,9 @@ if (process.env.SANDCASTLE_BASELINE === "1") {
 let idlePolls = 0;
 let everStarted = false; // 这次运行开工过票没有 / whether this run ever started a ticket
 for (let pass = 1; ; pass++) {
+  // 每轮读一次 .sandcastle/models.json，不管有没有空位：改了配置不用重启，下一轮生效（#43：空位全满时也要读）。
+  // Read .sandcastle/models.json every pass whether or not a slot is free: config changes apply next pass without a restart (#43: read even when every slot is taken).
+  reloadModels();
   if (busy() < MAX_PARALLEL) {
     const now = new Date().toLocaleString();
     console.log(t(`\n=== 调度 ${pass}（${now}，${busy()}/${MAX_PARALLEL} 个空位已占）===\n`, `\n=== Pass ${pass} (${now}, ${busy()}/${MAX_PARALLEL} slots taken) ===\n`));
