@@ -13,19 +13,19 @@
 
 ## B. onboard（开着 agent）
 
-- [ ] B1 探测结果：python、uv、`uv sync`、`uv run mypy .`、`uv run ruff check .`、`uv run pytest`、github、main、commitLanguage en、没有 webUi、没有 services
-- [ ] B2 生成的 `sandcastle.config.ts` 能加载；`gate.typecheck` 有值；`autoMerge: false`、`maxParallel: 1`
-- [ ] B3 agent 写的 PROJECT.md：没有「待补」，内容符合本项目（金额用分、LEDGER_DB、英文提交），没有照抄 shop-admin 示例
-- [ ] B4 Containerfile 是 Python 版（有 uv，没有 playwright），`podman build` 能建成
-- [ ] B5 `.gitignore`、`.claude/settings.json` hook、`.claude/skills/prep-ticket` 已装好
-- [ ] B6 再跑一次 onboard，什么都不覆盖
+- [x] B1 探测结果：python、uv、`uv sync`、`uv run mypy .`、`uv run ruff check .`、`uv run pytest`、github、main、commitLanguage en、没有 webUi、没有 services（✓ 全新副本 da3f657；pyproject 的 `[tool.mypy]` 配了 files 时 typecheck 是 `uv run mypy`，不加 `.`）
+- [x] B2 生成的 `sandcastle.config.ts` 能加载；`gate.typecheck` 有值；`autoMerge: false`、`maxParallel: 1`（✓ 配置在 `.sandcastle/sandcastle.config.ts`；typecheck `uv run mypy`）
+- [x] B3 agent 写的 PROJECT.md：没有「待补」，内容符合本项目（金额用分、LEDGER_DB、英文提交），没有照抄 shop-admin 示例（✓ 70 行，没有「待补」，没有 shop 字样；另生成 OPEN-QUESTIONS.md 6 条）
+- [x] B4 Containerfile 是 Python 版（有 uv，没有 playwright），`podman build` 能建成（✓ node:22-bookworm + python3 + uv，没有 playwright；build 返回 0）
+- [x] B5 `.gitignore`、`.claude/settings.json` hook、`.claude/skills/prep-ticket` 已装好（✓ 另装了 fill-project-docs；没有网页界面也装了 screenshot-checker 和浏览器相关 gitignore，无害）
+- [x] B6 再跑一次 onboard，什么都不覆盖（✓ 跑前跑后哈希和 git status 一致）
 
 ## C. doctor
 
-- [ ] C1 没有 `.env`：✗，并给出修法
+- [x] C1 没有 `.env`：✗，并给出修法（✓ `✗ .env` 并提示 cp .env.example）
 - [x] C2 ✓ 填好 `.env`、还没建标签：⚠/✗ 提示缺标签
 - [x] C3 ✓（顺带：改名后 hook 不一致，`update` 刷新后 doctor 全绿）`doctor --fix` 建好标签，GitHub 上能看到；再跑全部 ✓
-- [ ] C4 镜像不存在时 ✗，并给出 build 命令
+- [x] C4 镜像不存在时 ✗，并给出 build 命令（✓ `✗ Sandbox image` 并给出 podman build 命令，build 后变 ✓）
 
 ## D. baseline
 
