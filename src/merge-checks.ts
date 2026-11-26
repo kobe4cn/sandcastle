@@ -47,9 +47,9 @@ export type ChecksWaitOptions = {
 
 /**
  * 轮询 PR 上的检查直到全部通过、有失败或超时。checks 为 "none" 或 forge 没有 prChecks 时直接通过；prChecks 抛错当作这一轮还在跑。
- * 检查列表为空的轮次先问 prMergeable：PR 和目标分支冲突就立刻返回 conflict（平台不会跑 CI），不等宽限期。
+ * 检查列表为空的轮次先问 prMergeable：连续两轮都说 PR 和目标分支冲突就返回 conflict（平台不会跑 CI），不等满宽限期。
  * Poll the PR's checks until all pass, one fails, or the timeout hits. Passes at once when checks is "none" or the forge has no prChecks; a prChecks error counts as pending for that round.
- * On rounds with an empty list, ask prMergeable first: a PR conflicting with its base returns conflict at once (the host won't run CI) instead of waiting out the grace period.
+ * On rounds with an empty list, ask prMergeable first: two rounds in a row reporting a conflict with the base return conflict (the host won't run CI) without waiting out the grace period.
  */
 export async function waitForChecks(
   forge: Pick<Forge, "prChecks" | "prMergeable">,
@@ -65,6 +65,7 @@ export async function waitForChecks(
   const start = now();
   const deadline = start + req.timeoutMinutes * 60_000;
   let pending: PrCheck[] = [];
+  let conflictSeen = false; // 上一轮空列表时看到了冲突 / The previous empty-list round saw a conflict
   for (;;) {
     let checks: PrCheck[] | undefined;
     try {
@@ -76,10 +77,14 @@ export async function waitForChecks(
     const expired = now() >= deadline;
     if (checks) {
       if (checks.length === 0) {
-        if (prConflicts(forge, pr)) return { ok: false, why: "conflict" };
-        // 宽限期过了（或已到超时）仍为空：当作没有 CI / Still empty after the grace period (or at the timeout): treat as no CI
-        if (now() - start >= emptyGraceMs || expired) return { ok: true, noChecks: true };
+        // 连续两轮都冲突才算：刚 force-push 完平台可能还报着旧提交的冲突 / Only two conflicting rounds in a row count: right after a force-push the host may still report the old commit's conflict
+        const conflicting = prConflicts(forge, pr);
+        if (conflicting && conflictSeen) return { ok: false, why: "conflict" };
+        conflictSeen = conflicting;
+        // 宽限期过了（或已到超时）仍为空：当作没有 CI；冲突待确认时多等一轮 / Still empty after the grace period (or at the timeout): treat as no CI; wait one more round while a conflict awaits confirmation
+        if ((now() - start >= emptyGraceMs && !conflictSeen) || expired) return { ok: true, noChecks: true };
       } else {
+        conflictSeen = false;
         const v = checksVerdict(checks);
         if (v.kind === "pass") return { ok: true };
         if (v.kind === "fail") return { ok: false, why: "fail", checks: v.failed };

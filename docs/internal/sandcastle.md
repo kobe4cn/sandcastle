@@ -58,7 +58,7 @@ reviewer 的结论有三种：`merge`、`revise`、`pr`（规则在 `.sandcastle
 
 4. 验收说明齐全：implementer 写了 `.pr-notes/验收说明.md` 且格式对（三个小标题、「怎么验证」有编号步骤，检查在 `.sandcastle/pr-body.ts` 的 `checkAcceptanceNotes`）。缺失或格式不对时正文写警告、留 PR（见「验收说明」）。
 
-5. PR 上的 forge 检查（CI）通过（[ADR 0002](../adr/0002-merge-requires-forge-checks.md)）：以上都满足、`autoMerge: true` 时，合并前按 `mergeRequires` 等检查（默认 `checks: "all"`、最多 30 分钟，`"required"` 只看必需检查）。有失败或超时留 PR（`sandcastle:pr-open`），评论列出检查名和链接；PR 上没有检查不阻塞（空列表宽限 60 秒后当作没有 CI）；空列表时先看 PR 是否和 main 冲突（forge 的 `prMergeable`，GitHub 对有冲突的 PR 不跑 CI），冲突就不等也不试合并，终端打「有冲突，先 rebase」后直接走 rebase 补救，不当作没有 CI。rebase 补救 force-push 后要重新等检查再合。`checks: "none"` 时只看门槛，给 CI 不可靠的项目用。forge 没实现 `prChecks` 时每次运行在终端警告一次、按没有检查合并。
+5. PR 上的 forge 检查（CI）通过（[ADR 0002](../adr/0002-merge-requires-forge-checks.md)）：以上都满足、`autoMerge: true` 时，合并前按 `mergeRequires` 等检查（默认 `checks: "all"`、最多 30 分钟，`"required"` 只看必需检查）。有失败或超时留 PR（`sandcastle:pr-open`），评论列出检查名和链接；PR 上没有检查不阻塞（空列表宽限 60 秒后当作没有 CI）；空列表时先看 PR 是否和 main 冲突（forge 的 `prMergeable`，GitHub 对有冲突的 PR 不跑 CI），连续两轮（约 30 秒）都冲突就不再等、也不试合并（只看一次可能读到 force-push 前的旧状态），终端打「有冲突，先 rebase」后直接走 rebase 补救，不当作没有 CI。rebase 补救 force-push 后要重新等检查再合。`checks: "none"` 时只看门槛，给 CI 不可靠的项目用。forge 没实现 `prChecks` 时每次运行在终端警告一次、按没有检查合并。
 
    以上都满足但 `gh pr merge` 被仓库的分支保护挡住（报错含 `base branch policy prohibits the merge`、`required status check`、`approving review` / `review is required`、`protected branch`，`isBranchProtectionError`）时，不走 rebase 补救（rebase 解决不了审批和必需检查，只会白跑一遍门槛），直接留 PR（`sandcastle:pr-open`），评论写明是分支保护挡住的并附 gh 报错，由人合并或调整分支保护 / `mergeRequires`；rebase 补救里的合并重试碰到这类报错也立刻停（#29）。只看报错文本，不查保护规则（那要 admin 权限）。
 

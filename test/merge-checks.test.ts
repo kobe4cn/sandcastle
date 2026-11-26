@@ -93,20 +93,40 @@ describe("waitForChecks", () => {
     expect(forge.calls).toHaveLength(3);
   });
 
-  it("空列表且 PR 有冲突：第一轮就返回 conflict，不等宽限期", async () => {
+  it("空列表且 PR 有冲突：连续两轮都冲突才返回 conflict（刚 push 完平台可能还是旧状态），不等满宽限期", async () => {
     const c = clock();
     const forge = withMergeable(fakeForge([]), "conflicting");
     expect(await waitForChecks(forge, "13", all, c)).toEqual({ ok: false, why: "conflict" });
-    expect(c.slept).toEqual([]);
-    expect(forge.mergeableCalls).toEqual(["13"]);
+    expect(c.slept).toEqual([30_000]);
+    expect(forge.mergeableCalls).toEqual(["13", "13"]);
   });
 
-  it("空列表、可合并状态先 unknown 后 conflicting：第二轮返回 conflict", async () => {
+  it("空列表、可合并状态先 unknown 后 conflicting：连续两轮冲突后返回 conflict", async () => {
     const c = clock();
     const forge = withMergeable(fakeForge([]), "unknown", "conflicting");
     expect(await waitForChecks(forge, "13", all, c)).toEqual({ ok: false, why: "conflict" });
-    expect(c.slept).toEqual([30_000]);
-    expect(forge.mergeableCalls).toHaveLength(2);
+    expect(c.slept).toEqual([30_000, 30_000]);
+    expect(forge.mergeableCalls).toHaveLength(3);
+  });
+
+  it("先冲突后不冲突（旧状态）：不算冲突，宽限期后照旧当作没有 CI", async () => {
+    const c = clock();
+    const forge = withMergeable(fakeForge([]), "conflicting", "clean");
+    expect(await waitForChecks(forge, "13", all, c)).toEqual({ ok: true, noChecks: true });
+    expect(c.now()).toBe(60_000);
+  });
+
+  it("宽限期到时刚第一次看到冲突：多等一轮确认，不当作没有 CI", async () => {
+    const c = clock();
+    const forge = withMergeable(fakeForge([]), "unknown", "unknown", "conflicting");
+    expect(await waitForChecks(forge, "13", all, c)).toEqual({ ok: false, why: "conflict" });
+    expect(c.now()).toBe(90_000);
+  });
+
+  it("冲突待确认时到了总超时：照旧当作没有 CI（合并失败后再走 rebase）", async () => {
+    const c = clock();
+    const forge = withMergeable(fakeForge([]), "unknown", "unknown", "conflicting");
+    expect(await waitForChecks(forge, "13", { checks: "all", timeoutMinutes: 1 }, c)).toEqual({ ok: true, noChecks: true });
   });
 
   it("空列表且 PR 没冲突（或查可合并状态抛错）：宽限期后照旧当作没有 CI", async () => {
