@@ -41,11 +41,13 @@ export function configDir(cwd = process.cwd(), env: NodeJS.ProcessEnv = process.
  * - 失败的测试文件单独重跑后通过时输出 `GATE_FLAKY`，它前面列出的、匹配 testFile 的行是重跑过的文件，
  *   后面是第一次的失败摘要（摘要里 ` FAIL  <文件>` 行后面跟报错，用来给偶发失败去重开票）；
  * - 环境变量 GATE_FULL=1 时必须跑完整测试（main 上的兜底检查用）。
+ * 门槛环境默认设 NO_COLOR=1、FORCE_COLOR=0（env 可以覆盖）；输出按纯文本逐行解析，ANSI 转义码会被去掉。
  * Merge gate. script runs with `sh -c` in the sandbox worktree; exit code 0 means pass. Output conventions (parsed by main.ts):
  * - a line `GATE_TIER: selected …` means only selected tests ran; otherwise it counts as the full suite;
  * - when failing test files pass on a solo rerun, print `GATE_FLAKY`; the lines before it that match testFile are the rerun files,
  *   and after it comes the first failure summary (` FAIL  <file>` lines followed by the error, used to dedupe flaky tickets);
  * - with environment variable GATE_FULL=1 the full suite must run (used by the fallback check on main).
+ * The gate environment defaults to NO_COLOR=1 and FORCE_COLOR=0 (env can override them); output is parsed line by line as plain text, with ANSI escape codes stripped.
  */
 export interface GateConfig {
   /** 门槛脚本；baseRef 是 `origin/main` 这样的远端基线。 / Gate script; baseRef is the remote base such as `origin/main`. */

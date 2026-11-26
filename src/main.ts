@@ -78,6 +78,7 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, loadavg, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import * as sandcastle from "@ai-hero/sandcastle";
 import type { SandboxExecOptions } from "@ai-hero/sandcastle";
 import {
@@ -90,7 +91,7 @@ import type { ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { type MergeFlowDeps, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
 import { loadProject } from "./profile.ts";
 import { messages } from "./i18n.ts";
-import { duration, startGateProgress } from "./gate-progress.ts";
+import { duration, gateEnv, startGateProgress } from "./gate-progress.ts";
 import { setTermLanguage, t } from "./term.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
@@ -260,7 +261,7 @@ async function runGate<R extends ExecResult>(
     const progress = startGateProgress({ issueId, logDir: GATE_LOG_DIR });
     let r: R;
     try {
-      r = await exec(`${envPrefix({ ...env, ...project.gate.env })} sh -c ${shellQuote(GATE_SCRIPT)} 2>&1`, { onLine: progress.onLine });
+      r = await exec(`${envPrefix(gateEnv(env, project.gate.env))} sh -c ${shellQuote(GATE_SCRIPT)} 2>&1`, { onLine: progress.onLine });
     } finally {
       progress.stop();
     }
@@ -268,7 +269,8 @@ async function runGate<R extends ExecResult>(
     // With onLine passed, the sandbox's stdout may be only a tail (podman keeps 64KB), losing GATE_TIER at the top: use the full output accumulated here instead.
     // provider 没回调 onLine 时（第三方 provider 可能没实现）退回它返回的 stdout。
     // If the provider never called onLine (a third-party provider may not implement it), fall back to the stdout it returned.
-    const stdout = progress.output() || r.stdout;
+    // 兜底的 stdout 也去掉 ANSI 转义码，和 output() 一样是纯文本。 / Strip ANSI escape codes from the fallback stdout too, so it is plain text like output().
+    const stdout = progress.output() || stripVTControlCharacters(r.stdout);
     const tier = gateTierName(gateTier(stdout));
     const took = duration(Date.now() - started);
     const before = waited > 5_000 ? t(`（之前排队 ${duration(waited)}）`, ` (queued ${duration(waited)} before)`) : "";

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { duration, startGateProgress } from "../src/gate-progress.ts";
+import { duration, gateEnv, startGateProgress } from "../src/gate-progress.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "gate-progress-"));
 
@@ -58,6 +58,31 @@ describe("startGateProgress", () => {
     expect(full.length).toBeGreaterThan(64 * 1024);
     expect(p.output()).toBe(full);
     expect(readFileSync(p.path, "utf8")).toBe(`${full}\n`);
+  });
+
+  it("带 ANSI 转义码的行：文件内容和 output() 都是纯文本，文字保留", () => {
+    const p = startGateProgress({ issueId: "2", logDir: tmp(), log: () => {} });
+    p.onLine("\x1b[33m FAIL \x1b[39m src/a.test.ts");
+    p.onLine("\x1b[2m✓\x1b[22m src/b.test.ts");
+    p.stop();
+    const plain = " FAIL  src/a.test.ts\n✓ src/b.test.ts";
+    expect(p.output()).toBe(plain);
+    expect(p.output()).not.toContain("\x1b");
+    expect(readFileSync(p.path, "utf8")).toBe(`${plain}\n`);
+  });
+});
+
+describe("gateEnv", () => {
+  it("没给覆盖时有默认值 NO_COLOR=1、FORCE_COLOR=0", () => {
+    expect(gateEnv({ A: "x" })).toEqual({ NO_COLOR: "1", FORCE_COLOR: "0", A: "x" });
+  });
+
+  it("env 里的 NO_COLOR 覆盖默认值", () => {
+    expect(gateEnv({ NO_COLOR: "" })).toEqual({ NO_COLOR: "", FORCE_COLOR: "0" });
+  });
+
+  it("overrides 里的 FORCE_COLOR 同时覆盖默认值和 env", () => {
+    expect(gateEnv({ FORCE_COLOR: "2" }, { FORCE_COLOR: "1" })).toEqual({ NO_COLOR: "1", FORCE_COLOR: "1" });
   });
 });
 

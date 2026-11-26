@@ -48,6 +48,7 @@ Gate script output conventions (optional; used to select tests by dependency and
 - Print a line `GATE_TIER: selected …` to say only dependency-selected tests ran; without it the run counts as the full suite.
 - When the environment variable `GATE_FULL=1` is set, the full suite must run (`baseline` and the fallback check on main set it).
 - When failing files pass on a solo rerun, print `GATE_FLAKY`. List the rerun files before it and the summary of the first failure after it. The pipeline opens `flaky` tickets for those files.
+- Output is parsed line by line as plain text, with ANSI escape codes stripped. The gate sets `NO_COLOR=1` / `FORCE_COLOR=0` by default; to get colors back, set `NO_COLOR: ""` in `gate.env`. When the gate script greps its own failure lines, do not rely on color codes.
 
 ## Isolation helpers
 

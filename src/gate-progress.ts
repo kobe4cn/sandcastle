@@ -8,7 +8,16 @@
 
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { t } from "./term.ts";
+
+/**
+ * 门槛的环境变量：默认值 NO_COLOR=1、FORCE_COLOR=0 在最前，项目的 env（isolation.env）和 overrides（gate.env）依次覆盖。
+ * Gate environment variables: defaults NO_COLOR=1, FORCE_COLOR=0 come first, then the project's env (isolation.env) and overrides (gate.env) override them in turn.
+ */
+export function gateEnv(env: Record<string, string>, overrides?: Record<string, string>): Record<string, string> {
+  return { NO_COLOR: "1", FORCE_COLOR: "0", ...env, ...overrides };
+}
 
 /** 心跳间隔：5 分钟。 / Heartbeat interval: 5 minutes. */
 export const HEARTBEAT_MS = 5 * 60_000;
@@ -29,7 +38,7 @@ const stamp = (ms: number) => {
 export interface GateProgress {
   /** 日志文件路径。 / Path of the log file. */
   path: string;
-  /** 传给 exec 的 onLine：追加一行到日志文件并留在内存里。 / onLine for exec: appends a line to the log file and keeps it in memory. */
+  /** 传给 exec 的 onLine：去掉 ANSI 转义码后追加一行到日志文件并留在内存里。 / onLine for exec: strips ANSI escape codes, then appends the line to the log file and keeps it in memory. */
   onLine(line: string): void;
   /** 到目前为止的完整输出。 / The full output so far. */
   output(): string;
@@ -69,7 +78,9 @@ export function startGateProgress(opts: {
   let writeFailed = false;
   return {
     path,
-    onLine(line) {
+    onLine(raw) {
+      // 去掉 ANSI 转义码，日志文件和 output() 都是纯文本。 / Strip ANSI escape codes so the log file and output() are plain text.
+      const line = stripVTControlCharacters(raw);
       lines.push(line);
       if (writeFailed) return;
       // 写日志失败（磁盘满、目录被删）不能打断门槛：警告一次，之后不再写，完整输出仍留在内存里。
