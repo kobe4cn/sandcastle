@@ -103,6 +103,18 @@ describe("用 duckdb_crm 的 PROJECT.md 渲染", () => {
     expect(out.prep).toContain("`sandcastle:prepped`");
     expect(out.prep).toContain("/fill-project-docs");
   });
+
+  it("票里写了待决定项但没写明选了哪个时，不从标签推断、交给人（#18）", () => {
+    expect(out.prep).toContain("不代表待决定项已经选好");
+    expect(out.prep).toContain("先看正文有没有没决定的选项");
+    for (const name of ["prep", "implement", "review"] as const) {
+      expect(out[name], name).toContain("票里写了但没写明选了哪个的设计决定");
+      expect(out[name], name).toContain("不管票带什么标签都交给人");
+      expect(out[name], name).toContain("没写明选了哪个的待决定项，也一律归这一类，不能代选");
+    }
+    expect(out.review).toContain("decided 评论选的正好是票正文列出的待决定项");
+    expect(out.review).toContain("decided 评论的内容碰了「必须停下」");
+  });
 });
 
 describe("没有浏览器验收的项目", () => {

@@ -22,7 +22,7 @@
 
 ## 设计决定：代拍板还是停下
 
-prep、implementer、reviewer 遇到票和指引都没写到的设计决定时，按 `.sandcastle/DECISIONS.md` 分两类处理：
+prep、implementer、reviewer 遇到票和指引都没写到的设计决定、或票里写了待决定项但没写明选了哪个时，按 `.sandcastle/DECISIONS.md` 分两类处理。票正文列了待决定的选项、正文和人的评论（不以 `<!-- sandcastle:decided -->` 开头的）里又没有人的决定时，按必须停下处理：`ready-for-agent` 标签只说明可以排期，不算决定；碰到「必须停下」（含修订 ADR）的，不管票带什么标签都交给人。reviewer 看到 decided 评论选的正是票正文的待决定项、或内容碰了「必须停下」时，写进「需要人判断」，票留 PR（#18）。
 
 - **必须停下**：要改 ADR 的方向、改公共接口语义或数据库 schema、涉及权限和敏感字段、删改用户数据、选项都难以撤回或给不出推荐。prep 打 `sandcastle:stuck` + `ready-for-human`；implementer 提交已完成的部分、评论选项后输出 `<promise>NEEDS_DECISION</promise>`，脚本推上分支、直接打 stuck，不再开新会话，也不退回 prep。
 - **可以代拍板**：收窄范围（没做到的部分记进 `KNOWN_GAPS`、另开后续票）或可以撤回的局部取舍。agent 按推荐做，在 issue 上留 `<!-- sandcastle:decided -->` 开头的评论，写清选项和理由，照常做完。落地时脚本给票打 `sandcastle:decided`，把这些评论贴到 PR 上。reviewer 会核对代拍板属于这一类，不属于的写进「需要人判断」，留 PR。
@@ -42,7 +42,7 @@ reviewer 的结论有三种：`merge`、`revise`、`pr`（规则在 `.sandcastle
 
 全部满足才合并（`gh pr merge --rebase`），否则留 PR 并在 PR 上评论原因：
 
-1. reviewer 给出 `<verdict>merge</verdict>`：验收标准都实现且有测试、没有要人判断的问题、改了页面的浏览器验收每步都通过（见「浏览器验收」）、没动权限 / 敏感字段处理、没有改已有数据或删改列的迁移、票里没要求人亲自验收、没改弱已有测试（新增 / 修改 ADR 和代拍板本身不再拦合并，2026-11-24）（规则在 `.sandcastle/review-prompt.md`）。
+1. reviewer 给出 `<verdict>merge</verdict>`：验收标准都实现且有测试、没有要人判断的问题、改了页面的浏览器验收每步都通过（见「浏览器验收」）、没动权限 / 敏感字段处理、没有改已有数据或删改列的迁移、票里没要求人亲自验收、没改弱已有测试（新增 / 修改 ADR 和代拍板本身不再拦合并，2026-11-24；前提是改 ADR 是票正文或人明确要求的，agent 自己决定修订 ADR 属于「必须停下」）（规则在 `.sandcastle/review-prompt.md`）。
 2. 门槛通过：脚本在沙箱里自己跑 `npm run typecheck` 与完整测试。
    - 门槛同一时间只跑一个，不分档位（`runGate` 排队）：两个沙箱同时跑时 CPU 和 PG 被挤满，2026-11-24 实测完整门槛同时跑要 76.6 分钟（失败）、精简门槛 37.7 分钟，比先后跑（约 33 + 21 分钟）还慢。排上队的门槛用 8 个 worker（`GATE_WORKERS`），宿主机 PG 要 `max_connections` ≥ 600（`db_script/pg_setup.sh`）；agent 自己在沙箱里跑单个测试文件不排队，仍是 4 个 worker。门槛用时（和排队时间）打进日志，并在 PR 的 **Gate** 一节末尾写一行 `GATE_TIME`。门槛开始时打印日志路径，输出逐行实时写进 `.sandcastle/logs/gate-<票号>-<时间戳>.log`（每次重跑另开新文件），运行中每 5 分钟打印一次心跳（`src/gate-progress.ts`）；终端不逐行打印门槛输出，免得多个沙箱的输出混在一起。档位、`GATE_FLAKY`、`GATE_TIME` 看的是自己累积的完整输出，不是沙箱传了 `onLine` 后只剩末尾 64KB 的 stdout。
    - 顺序：typecheck → `test/` 根目录的单元测试（约 1–2 分钟）→ `test/http` 与 `test/pipeline`。单元测试失败就直接判门槛失败，不再等后面的测试；i18n 棘轮这类几秒就能报的失败，以前要等 40 分钟的完整测试跑完才看到（2026-11-24 #1172、#1182）。implementer 提交前也要跑 `npm run i18n:ratchet`（`implement-prompt.md`）。
