@@ -1,6 +1,6 @@
 # 更新记录
 
-## Unreleased
+## 0.2.0
 
 - 英文终端和 PR 评论里等检查的分钟数按单复数写：`up to 1 minute`、`after 1 minute`，不再写成 `1 minutes`（e2e I3 发现）
 - 等 PR 上的检查时，过了宽限期 PR 上仍然没有任何检查（仓库没有 CI）、按只看门槛合并的，终端多打一行 `· #n 的 PR #m 上没有检查（没有 CI），只按门槛合并`，不再在 ⧗ 之后直接合并、看不出原因；`waitForChecks` 这种情况返回 `{ ok: true, noChecks: true }`（e2e I8 发现）
