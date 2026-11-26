@@ -86,6 +86,24 @@ describe("githubForge 发给 gh 的参数", () => {
     expect(() => failing("", "error connecting to api.github.com").prChecks!("13", false)).toThrow();
   });
 
+  it.each([
+    [{ mergeable: "CONFLICTING", mergeStateStatus: "DIRTY" }, "conflicting"],
+    [{ mergeable: "MERGEABLE", mergeStateStatus: "DIRTY" }, "conflicting"],
+    [{ mergeable: "UNKNOWN", mergeStateStatus: "UNKNOWN" }, "unknown"],
+    [{ mergeable: "MERGEABLE", mergeStateStatus: "CLEAN" }, "clean"],
+  ])("prMergeable 发 gh pr view --json mergeable,mergeStateStatus：%j → %s", (row, expected) => {
+    const { forge, calls } = fakeGh(JSON.stringify(row));
+    expect(forge.prMergeable!("13")).toBe(expected);
+    expect(calls).toEqual([["pr", "view", "13", "--json", "mergeable,mergeStateStatus"]]);
+  });
+
+  it("prMergeable：gh 报错照旧抛出", () => {
+    const forge = githubForge(() => {
+      throw new Error("error connecting to api.github.com");
+    });
+    expect(() => forge.prMergeable!("13")).toThrow();
+  });
+
   it("issueComments 每条评论一行 JSON，多行评论不被拆开", () => {
     const { forge, calls } = fakeGh(`${JSON.stringify("第一行\n第二行")}\n${JSON.stringify("b")}`);
     expect(forge.issueComments("4")).toEqual(["第一行\n第二行", "b"]);

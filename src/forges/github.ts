@@ -216,6 +216,13 @@ export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefin
         ...(r.link ? { link: r.link } : {}),
       }));
     },
+    prMergeable(id) {
+      // 有冲突的 PR 上 GitHub 不跑 pull_request 工作流，检查一直为空 / GitHub doesn't run pull_request workflows on a conflicting PR, so its checks stay empty
+      const r = JSON.parse(gh(["pr", "view", id, "--json", "mergeable,mergeStateStatus"]) || "{}") as { mergeable?: string; mergeStateStatus?: string };
+      if (r.mergeable === "CONFLICTING" || r.mergeStateStatus === "DIRTY") return "conflicting";
+      if (r.mergeable === "UNKNOWN") return "unknown";
+      return "clean";
+    },
 
     viewIssueCommand: (issueId) => `gh issue view ${issueId}`,
     agentGuide: () => GITHUB_AGENT_GUIDE,

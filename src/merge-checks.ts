@@ -22,8 +22,15 @@ export function checksVerdict(checks: PrCheck[]): ChecksVerdict {
   return { kind: "pass" };
 }
 
-/** waitForChecks 的结果；超时用 why 区分，不抛错。 / waitForChecks's result; a timeout is told apart by why, never thrown. */
-export type ChecksWait = { ok: true; noChecks?: true } | { ok: false; why: "fail"; checks: PrCheck[] } | { ok: false; why: "timeout"; checks: PrCheck[] };
+/**
+ * waitForChecks 的结果；超时用 why 区分，不抛错。why 为 "conflict" 表示 PR 上没有检查是因为它和目标分支冲突（平台不跑 CI），该先 rebase。
+ * waitForChecks's result; a timeout is told apart by why, never thrown. why "conflict" means the PR has no checks because it conflicts with its base (the host won't run CI), so rebase first.
+ */
+export type ChecksWait =
+  | { ok: true; noChecks?: true }
+  | { ok: false; why: "fail"; checks: PrCheck[] }
+  | { ok: false; why: "timeout"; checks: PrCheck[] }
+  | { ok: false; why: "conflict" };
 
 /** waitForChecks 的可选参数（测试注入时钟）。 / Optional parameters for waitForChecks (tests inject the clock). */
 export type ChecksWaitOptions = {
@@ -40,10 +47,12 @@ export type ChecksWaitOptions = {
 
 /**
  * 轮询 PR 上的检查直到全部通过、有失败或超时。checks 为 "none" 或 forge 没有 prChecks 时直接通过；prChecks 抛错当作这一轮还在跑。
+ * 检查列表为空的轮次先问 prMergeable：PR 和目标分支冲突就立刻返回 conflict（平台不会跑 CI），不等宽限期。
  * Poll the PR's checks until all pass, one fails, or the timeout hits. Passes at once when checks is "none" or the forge has no prChecks; a prChecks error counts as pending for that round.
+ * On rounds with an empty list, ask prMergeable first: a PR conflicting with its base returns conflict at once (the host won't run CI) instead of waiting out the grace period.
  */
 export async function waitForChecks(
-  forge: Pick<Forge, "prChecks">,
+  forge: Pick<Forge, "prChecks" | "prMergeable">,
   pr: string,
   req: Project["mergeRequires"],
   opts: ChecksWaitOptions = {},
@@ -67,6 +76,7 @@ export async function waitForChecks(
     const expired = now() >= deadline;
     if (checks) {
       if (checks.length === 0) {
+        if (prConflicts(forge, pr)) return { ok: false, why: "conflict" };
         // 宽限期过了（或已到超时）仍为空：当作没有 CI / Still empty after the grace period (or at the timeout): treat as no CI
         if (now() - start >= emptyGraceMs || expired) return { ok: true, noChecks: true };
       } else {
@@ -78,6 +88,18 @@ export async function waitForChecks(
     }
     if (expired) return { ok: false, why: "timeout", checks: pending };
     await sleep(pollMs);
+  }
+}
+
+/**
+ * PR 是否和目标分支冲突；forge 没实现 prMergeable、查询抛错或平台还没算出来都算不冲突。
+ * Whether the PR conflicts with its base; a forge without prMergeable, a query error, or a not-yet-computed state all count as no conflict.
+ */
+function prConflicts(forge: Pick<Forge, "prMergeable">, pr: string): boolean {
+  try {
+    return forge.prMergeable?.(pr) === "conflicting";
+  } catch {
+    return false;
   }
 }
 

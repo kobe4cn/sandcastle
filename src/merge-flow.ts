@@ -16,7 +16,7 @@ import { t } from "./term.ts";
  * Dependencies of the merge finish. waitForChecks / sleep / log / warn default to the real ones; tests inject fakes.
  */
 export type MergeFlowDeps = {
-  forge: Pick<Forge, "prChecks" | "mergePr" | "commentPr">;
+  forge: Pick<Forge, "prChecks" | "prMergeable" | "mergePr" | "commentPr">;
   mergeMethod: MergeMethod;
   mergeRequires: Project["mergeRequires"];
   M: Pick<Messages, "reasonChecksFailed" | "reasonChecksTimeout" | "reasonBranchProtection" | "reasonMergeFailed" | "rebaseMergeFailed" | "rebasedMerged">;
@@ -63,9 +63,17 @@ function checksList(checks: PrCheck[]): string {
  * 检查没通过或超时时留给人的原因。
  * The reason left for a human when checks failed or timed out.
  */
-function checksReason(r: Extract<ChecksWait, { ok: false }>, d: MergeFlowDeps): string {
+function checksReason(r: Extract<ChecksWait, { why: "fail" | "timeout" }>, d: MergeFlowDeps): string {
   const list = checksList(r.checks);
   return r.why === "fail" ? d.M.reasonChecksFailed(list) : d.M.reasonChecksTimeout(list, d.mergeRequires.timeoutMinutes);
+}
+
+/**
+ * PR 和目标分支冲突时的说明，留给人的原因里用。
+ * The note for a PR that conflicts with its base, used in the reason left for a human.
+ */
+function conflictNote(pr: string, d: MergeFlowDeps): string {
+  return t(`PR #${pr} 和 ${d.baseRef} 有冲突`, `PR #${pr} conflicts with ${d.baseRef}`);
 }
 
 /**
@@ -115,6 +123,7 @@ async function mergeWhenReadyMarked(
 ): Promise<"merged" | "left"> {
   const { issueId, pr, chainOk } = args;
   const log = logOf(d);
+  let conflict = false;
   // 合并条件是门槛加 forge 检查：一致性检查过了才等检查，没过的走下面的 rebase 补救（里面会重新等）。
   // Merging requires the gate plus forge checks: only wait for checks when the integrity check passed; otherwise rebase recovery below waits again.
   if (chainOk) {
@@ -123,7 +132,12 @@ async function mergeWhenReadyMarked(
       warnOf(d)(t(`  ⚠ forge 不支持查 PR 上的检查，按没有检查合并（mergeRequires.checks: "${d.mergeRequires.checks}"）`, `  ⚠ The forge can't list PR checks; merging as if there were none (mergeRequires.checks: "${d.mergeRequires.checks}")`));
     }
     const checks = await waitChecksOffSlot(issueId, pr, d);
-    if (!checks.ok) {
+    // 有冲突的 PR 平台不跑 CI：不试合并，直接走下面的 rebase 补救。
+    // The host runs no CI on a conflicting PR: skip the merge attempt and go straight to rebase recovery below.
+    if (!checks.ok && checks.why === "conflict") {
+      log(t(`  ↻ #${issueId} 的 ${conflictNote(pr, d)}，先 rebase`, `  ↻ #${issueId}: ${conflictNote(pr, d)}; rebasing first`));
+      conflict = true;
+    } else if (!checks.ok) {
       d.leaveForHuman(checksReason(checks, d));
       log(
         checks.why === "fail"
@@ -133,9 +147,10 @@ async function mergeWhenReadyMarked(
       return "left";
     }
   }
-  const merged = chainOk
-    ? attempt(() => d.forge.mergePr(pr, d.mergeMethod))
-    : { ok: false as const, out: args.brokenOut };
+  let merged: ReturnType<typeof attempt<void>>;
+  if (conflict) merged = { ok: false, out: conflictNote(pr, d) };
+  else if (chainOk) merged = attempt(() => d.forge.mergePr(pr, d.mergeMethod));
+  else merged = { ok: false, out: args.brokenOut };
   if (!merged.ok) {
     // 分支保护（审批、必需检查、合并队列）挡住时 rebase 也解决不了，直接留 PR。
     // When branch protection (reviews, required checks, merge queue) blocks the merge a rebase won't help; leave the PR open.
@@ -144,7 +159,7 @@ async function mergeWhenReadyMarked(
       log(t(`  ◐ #${issueId} 被分支保护挡住，留 PR #${pr}`, `  ◐ #${issueId} blocked by branch protection; PR #${pr} left open`));
       return "left";
     }
-    log(t(`  ↻ #${issueId} 没能直接合并，rebase 到最新的 ${d.baseRef} 后重试`, `  ↻ #${issueId} couldn't merge directly; rebasing onto the latest ${d.baseRef} and retrying`));
+    if (!conflict) log(t(`  ↻ #${issueId} 没能直接合并，rebase 到最新的 ${d.baseRef} 后重试`, `  ↻ #${issueId} couldn't merge directly; rebasing onto the latest ${d.baseRef} and retrying`));
     const retry = await args.rebase();
     if (!retry.ok) {
       d.leaveForHuman(d.M.reasonMergeFailed(merged.out.slice(0, 300), retry.reason));
@@ -164,7 +179,7 @@ export async function mergeAfterPush(issueId: string, pr: string, d: MergeFlowDe
   // force-push 后 PR 上的检查重新跑：等它们通过再合并（等的时候放开宿主机锁、不占空位）。
   // After the force-push the PR's checks rerun: wait for them to pass before merging (releasing the host lock and the slot meanwhile).
   const checks = await waitChecksOffSlot(issueId, pr, d);
-  if (!checks.ok) return { ok: false, reason: checksReason(checks, d) };
+  if (!checks.ok) return { ok: false, reason: checks.why === "conflict" ? d.M.rebaseMergeFailed(conflictNote(pr, d)) : checksReason(checks, d) };
   // 平台重新计算可合并状态要一点时间。 / The forge needs a moment to recompute mergeability.
   let last = "";
   for (let tries = 0; tries < 3; tries++) {

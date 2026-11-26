@@ -9,7 +9,7 @@
 合并条件 = 门槛 + forge 检查。配置项 `mergeRequires: { checks, timeoutMinutes }`，默认 `{ checks: "all", timeoutMinutes: 30 }`：
 
 - `all`：PR 上的检查全部通过才合并；`required`：只看必需检查；`none`：只看门槛，保留给 CI 本身不可靠的项目。
-- PR 上没有检查时不阻塞（刚 push 完宽限 60 秒，仍为空就当作没有 CI）。
+- PR 上没有检查时不阻塞（刚 push 完宽限 60 秒，仍为空就当作没有 CI）；空列表时先看 PR 是否和 main 冲突（平台不给有冲突的 PR 跑 CI），冲突就直接 rebase，不当作没有 CI。
 - 有检查失败或超时，不合并，留 PR（`sandcastle:pr-open`），评论列出检查名和链接。
 - rebase 补救 force-push 后检查会重跑，要重新等检查再合并。
 - 等检查期间放开宿主机锁，这张票不占实现的空位，但仍算「在做」：不会被再次开工，它改的文件仍被占着。
@@ -26,4 +26,4 @@
 
 - 已开 `autoMerge` 的项目升级后默认会等 PR 上的检查，最多多等 `timeoutMinutes` 分钟才合并；想保持旧行为要显式设 `checks: "none"`。
 - CI 不稳定会让更多票留 PR 等人；这时要么修 CI，要么设 `checks: "none"`。
-- 没有 CI 的项目只多等 60 秒宽限期。
+- 没有 CI 的项目只多等 60 秒宽限期；PR 和 main 冲突时不等宽限期，直接 rebase。

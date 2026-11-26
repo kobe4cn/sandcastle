@@ -9,6 +9,8 @@ import { setTermLanguage } from "../src/term.ts";
 const M = messages("zh");
 const BASE = "origin/main";
 const PROTECTED = "GraphQL: Base branch policy prohibits the merge";
+/** 检查前发现 PR 和 main 冲突时留给人的冲突说明。 */
+const PR_CONFLICT = `PR #42 和 ${BASE} 有冲突`;
 const CONFLICT = "Pull request is not mergeable: the merge commit cannot be cleanly created";
 
 const ci: PrCheck = { name: "ci", state: "fail", link: "https://ci/1" };
@@ -109,6 +111,8 @@ describe("mergeWhenReady", () => {
     { name: "其他合并失败 → rebase 失败留 PR", opts: { merges: [CONFLICT] }, rebase: { ok: false, reason: "门槛没过" }, result: "left", merged: true, rebased: true, reason: M.reasonMergeFailed(CONFLICT, "门槛没过") },
     { name: "一致性检查没过 → 不等检查，rebase 成功算合并", opts: {}, chainOk: false, rebase: ok, result: "merged", merged: false, rebased: true },
     { name: "一致性检查没过 → rebase 失败留 PR", opts: {}, chainOk: false, rebase: { ok: false, reason: "还是坏的" }, result: "left", merged: false, rebased: true, reason: M.reasonMergeFailed("迁移链断了。", "还是坏的") },
+    { name: "PR 和 main 冲突 → 不试合并，rebase 成功算合并", opts: { wait: { ok: false, why: "conflict" } }, rebase: ok, result: "merged", merged: false, rebased: true },
+    { name: "PR 和 main 冲突 → rebase 失败留 PR", opts: { wait: { ok: false, why: "conflict" } }, rebase: { ok: false, reason: "还是冲突" }, result: "left", merged: false, rebased: true, reason: M.reasonMergeFailed(PR_CONFLICT, "还是冲突") },
   ])("$name", async ({ opts, chainOk = true, rebase, result, merged, rebased, reason }) => {
     const f = fakeDeps(opts);
     let rebaseCalls = 0;
@@ -130,6 +134,13 @@ describe("mergeWhenReady", () => {
     expect(rebaseCalls).toBe(rebased ? 1 : 0);
     expect(f.left).toEqual(reason === undefined ? [] : [reason]);
     if (!chainOk) expect(f.events).not.toContain("wait");
+  });
+
+  it("PR 和 main 冲突时终端写「有冲突，先 rebase」，不写没有 CI、也不写没能直接合并", async () => {
+    const f = fakeDeps({ wait: { ok: false, why: "conflict" } });
+    await mergeWhenReady({ issueId: "7", pr: "42", chainOk: true, brokenOut: "", rebase: async () => ok }, f.d);
+    expect(f.logs).toEqual(["  ⧗ #7 等 PR #42 上的检查（最多 30 分钟，不占空位）", `  ↻ #7 的 PR #42 和 ${BASE} 有冲突，先 rebase`]);
+    expect(f.left).toEqual([]);
   });
 
   it("forge 没有 prChecks 时只警告一次（跨两次调用）", async () => {
@@ -203,6 +214,12 @@ describe("mergeAfterPush", () => {
   it("检查没过直接返回失败，不合并", async () => {
     const f = fakeDeps({ wait: { ok: false, why: "timeout", checks: [lint] } });
     expect(await mergeAfterPush("7", "42", f.d)).toEqual({ ok: false, reason: M.reasonChecksTimeout(timeoutList, 30) });
+    expect(f.events.filter((e) => e.startsWith("mergePr") || e.startsWith("sleep"))).toEqual([]);
+  });
+
+  it("rebase 后 PR 又和 main 冲突：返回 rebaseMergeFailed，不试合并", async () => {
+    const f = fakeDeps({ wait: { ok: false, why: "conflict" } });
+    expect(await mergeAfterPush("7", "42", f.d)).toEqual({ ok: false, reason: M.rebaseMergeFailed(PR_CONFLICT) });
     expect(f.events.filter((e) => e.startsWith("mergePr") || e.startsWith("sleep"))).toEqual([]);
   });
 

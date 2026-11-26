@@ -7,6 +7,22 @@ const pass = (name: string): PrCheck => ({ name, state: "pass" });
 const fail = (name: string): PrCheck => ({ name, state: "fail" });
 const pending = (name: string): PrCheck => ({ name, state: "pending" });
 
+type Mergeable = "conflicting" | "clean" | "unknown";
+
+/** 给假 forge 加 prMergeable：按顺序回放，回放完后重复最后一个；Error 会被抛出。调用单独记在 mergeableCalls。 */
+function withMergeable<F extends object>(forge: F, ...rounds: (Mergeable | Error)[]) {
+  const mergeableCalls: string[] = [];
+  return Object.assign(forge, {
+    mergeableCalls,
+    prMergeable(id: string) {
+      mergeableCalls.push(id);
+      const r = rounds.length > 1 ? rounds.shift()! : rounds[0];
+      if (r instanceof Error) throw r;
+      return r;
+    },
+  });
+}
+
 /** 可推进的假时钟：sleep 直接把时间往前推。 */
 function clock() {
   let t = 0;
@@ -75,6 +91,38 @@ describe("waitForChecks", () => {
     expect(await waitForChecks(forge, "13", all, c)).toEqual({ ok: true, noChecks: true });
     expect(c.now()).toBe(60_000);
     expect(forge.calls).toHaveLength(3);
+  });
+
+  it("空列表且 PR 有冲突：第一轮就返回 conflict，不等宽限期", async () => {
+    const c = clock();
+    const forge = withMergeable(fakeForge([]), "conflicting");
+    expect(await waitForChecks(forge, "13", all, c)).toEqual({ ok: false, why: "conflict" });
+    expect(c.slept).toEqual([]);
+    expect(forge.mergeableCalls).toEqual(["13"]);
+  });
+
+  it("空列表、可合并状态先 unknown 后 conflicting：第二轮返回 conflict", async () => {
+    const c = clock();
+    const forge = withMergeable(fakeForge([]), "unknown", "conflicting");
+    expect(await waitForChecks(forge, "13", all, c)).toEqual({ ok: false, why: "conflict" });
+    expect(c.slept).toEqual([30_000]);
+    expect(forge.mergeableCalls).toHaveLength(2);
+  });
+
+  it("空列表且 PR 没冲突（或查可合并状态抛错）：宽限期后照旧当作没有 CI", async () => {
+    for (const m of ["clean", new Error("network")] as const) {
+      const c = clock();
+      const forge = withMergeable(fakeForge([]), m);
+      expect(await waitForChecks(forge, "13", all, c)).toEqual({ ok: true, noChecks: true });
+      expect(c.now()).toBe(60_000);
+      expect(forge.calls).toHaveLength(3);
+    }
+  });
+
+  it("有检查的轮次不查可合并状态", async () => {
+    const forge = withMergeable(fakeForge([pending("ci")], [pass("ci")]), "conflicting");
+    expect(await waitForChecks(forge, "13", all, clock())).toEqual({ ok: true });
+    expect(forge.mergeableCalls).toEqual([]);
   });
 
   it("宽限期内检查登记上了就照常等", async () => {

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- PR 和 main 有冲突时不再误报「没有 CI」：GitHub 不给有冲突的 PR 跑 CI，之前等满 60 秒宽限期后打「没有 CI，只按门槛合并」，再白试一次合并才走 rebase。现在 PR 上没有检查时每轮先查 PR 是否冲突（Forge 新增可选方法 `prMergeable`，GitHub 用 `gh pr view --json mergeable,mergeStateStatus`），冲突就立刻打「PR 和 main 有冲突，先 rebase」、不试合并，直接 rebase；rebase 后仍冲突时留 PR 并写明冲突。可合并状态还没算出来或查询出错时照旧按宽限期等（closes #39）
 - 浏览器验收的两处提醒：改了页面但票正文没有 `- **Browser check**` 时，PR 正文的 Browser check 一节写「票里没有 Browser check，建议补 prep 规则」（没有 `.browser-check/` 也出这一节），另发一条 PR 评论；探测到网页界面或配了 `browser.pagePaths`、而 PROJECT.md 没有「浏览器验收」时，`sandpipe run` 启动就打一行警告，给两种补法（重跑 onboard，或手动在 PROJECT.md 加这一节，附 docs/config 路径）。doctor 的同一提醒改用同一段文案（`browserSetupWarning`，`src/browser-gate.ts`），配了 `browser.pagePaths` 的项目也会提醒。中英文案齐全（closes #38）
 - 浏览器验收成为自动合并的硬条件，由脚本自己核对（新增 `src/browser-gate.ts`）：改了页面（diff 命中 `browser.pagePaths`、有 `.browser-check/`、或 review 的 `browser-check` 是 `done` / `missing`）且 PROJECT.md 有「浏览器验收」时，还要至少一张截图、`RESULT.md` 存在且列表 / 表格行里没有 ❌ / ⚠、引用的截图文件都在、review 的 `browser-check` 为 `done`，缺哪条就留 PR，终端和 PR 评论逐条写缺什么（没有 `.browser-check/` 时写「改了页面但没做浏览器验收」）；改了页面但 PROJECT.md 没有这一节时留 PR，写「改了页面、本项目没配浏览器验收」并给补法（重跑 onboard 或手动加这一节）。改了哪些文件在沙箱里用 `git diff --name-only` 取，取不到时退回原来的判断、不挡合并。没改页面的票流程不变（closes #37）
 - 项目配置新增 `browser.pagePaths`（页面文件路径的正则数组，不写时为 `[]`），后续用来判断票是否「改了页面」。onboard 按探测到的前端框架写默认值（next、remix / react-router、nuxt / vue、svelte、astro，其它有网页界面的按 `src/` 下的 tsx / jsx / vue / svelte / css），没有网页界面的项目不写；docs/config 说明后端项目加了前端时要补 PROJECT.md 的浏览器验收一节并配它（closes #36）

@@ -116,6 +116,13 @@ export interface Forge {
    * Checks on a PR; with requiredOnly, only those required by branch protection. An empty array means the PR has no checks. Optional: a forge without this method is treated as having no checks.
    */
   prChecks?(id: string, requiredOnly: boolean): PrCheck[];
+  /**
+   * PR 能否干净地合进目标分支：有冲突为 "conflicting"，平台还没算出来为 "unknown"，其余为 "clean"。出错就抛。
+   * 可选：不实现这个方法的 forge 不做冲突判断，PR 上没有检查时照旧按宽限期等。
+   * Whether the PR merges cleanly into its base: "conflicting" when it conflicts, "unknown" while the host is still computing, otherwise "clean". Throws on error.
+   * Optional: a forge without this method skips the conflict check, and a PR without checks waits out the grace period as before.
+   */
+  prMergeable?(id: string): "conflicting" | "clean" | "unknown";
 
   // ---- 给 agent 的提示词用 ---- / For the agent's prompts
   /** agent 在沙箱里看 issue 的命令，比如 `gh issue view 12`。 / Command the agent uses in the sandbox to view an issue, e.g. `gh issue view 12`. */
