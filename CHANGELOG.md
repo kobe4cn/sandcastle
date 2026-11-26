@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `sandpipe doctor` 新增「Blocked by」检查：列出带 `Sandcastle` 标签的 open 票，逐个确认 `## Blocked by` 里引用的票在本仓库是否存在；有不存在的引用时警告并列出 `#n → #m`，提示改正 Blocked by，接入时就能发现，不用等调度打 stuck。引用都存在或没有这类票时通过；列票失败时整项警告，单个 blocker 查询出错（不是不存在）时跳过它。不会不通过，`--fix` 不处理（closes #25）。
 - 调度区分「blocker 不存在」和「还开着」：`## Blocked by` 里的票号在本仓库查不到时，prep 和 plan 打印「跳过 #n：blocker #m 不存在或无权访问」，给票打 `sandcastle:stuck` 并留言说明（票号写错或从别的仓库复制来的，改正后去掉标签即可），不再当成 open 一直跳过；网络、权限等其他查询错误仍按 open 处理，不打 stuck。`Forge.issueState` 的返回类型加宽为 `"open" | "closed" | "missing"`（`missing` = 平台确认编号不存在），自定义 forge 不用改照样能编译；GitHub 实现在 gh 报 `Could not resolve to an issue or pull request` 时返回 `missing`（closes #24）。
 - 有网页界面的项目补「浏览器验收」有指引了：config 文档（中英）新增「浏览器验收」一节，说明 dev server 在沙箱里要的变量放进 `isolation.env`、用 `withDbSuffix` 分出独立的库、验收数据怎么建，并附 PROJECT.md 这一节的通用写法；接入清单（中英）和 onboard 提示词指向它。`sandpipe doctor` 新增「浏览器验收」检查：探测到网页界面但 PROJECT.md 没有这一节时警告并指向文档，有时通过，没有网页界面时不出现；「PROJECT.md」一项不再附带浏览器验收的说明（closes #15）。
 - onboard 生成缺口清单 `.sandcastle/OPEN-QUESTIONS.md`（提交进仓库），取代原来只打印到终端、只存在 `logs/` 里的拿不准的点。每条一行 `- [类别] 问题 → 写到哪`，类别是 `规范` / `意图`（英文项目 `convention` / `intent`）；清单已存在就不碰。写完校验格式，结尾提示剩几条，以及在 Claude Code 里运行 `/fill-project-docs`。

@@ -26,8 +26,16 @@ const runner =
     return trySh(cmd, args);
   };
 
-/** tokenOk=false 时用 .env 的 token 调 gh api 返回 403（模拟 token 没给 Pull requests 权限）。 */
-function fakeGh(labels: string[], created: string[][], tokenOk = true) {
+/**
+ * tokenOk=false 时用 .env 的 token 调 gh api 返回 403（模拟 token 没给 Pull requests 权限）。
+ * issues 是 issue list 返回的 open 票；missing 里的编号 issue view 报不存在，failing 里的报网络错误，其他返回 OPEN。
+ */
+function fakeGh(
+  labels: string[],
+  created: string[][],
+  tokenOk = true,
+  tickets: { issues?: { number: number; body: string }[]; missing?: number[]; failing?: number[]; listError?: boolean } = {},
+) {
   return githubForge((args, env) => {
     if (args[0] === "auth") return "";
     if (args[0] === "repo") return args.includes(".nameWithOwner") ? "acme/shop" : "acme/shop WRITE";
@@ -40,6 +48,19 @@ function fakeGh(labels: string[], created: string[][], tokenOk = true) {
     if (args[0] === "label" && args[1] === "create") {
       created.push(args);
       return "";
+    }
+    if (args[0] === "issue" && args[1] === "list") {
+      if (tickets.listError) throw new Error("issue list 超时");
+      return JSON.stringify(
+        (tickets.issues ?? []).map((i) => ({ ...i, title: `票 ${i.number}`, labels: [{ name: "Sandcastle" }], updatedAt: "2026-11-26T00:00:00Z" })),
+      );
+    }
+    if (args[0] === "issue" && args[1] === "view") {
+      const m = Number(args[2]);
+      if (tickets.missing?.includes(m))
+        throw Object.assign(new Error("gh"), { stderr: `GraphQL: Could not resolve to an issue or pull request with the number of ${m}.` });
+      if (tickets.failing?.includes(m)) throw new Error("connection reset");
+      return "OPEN";
     }
     throw new Error(`没料到的 gh ${args.join(" ")}`);
   });
@@ -69,6 +90,7 @@ describe("diagnose", () => {
       ".env": "fail",
       "平台（github）": "ok",
       标签: "fail",
+      "Blocked by": "ok",
       远端分支: "ok",
       沙箱镜像: "fail",
       编辑器类型: "ok",
@@ -193,6 +215,42 @@ describe("diagnose：浏览器验收", () => {
     const root = pythonRepo();
     installFiles(root, detectProject(root));
     expect(check(await run(root), "浏览器验收")).toBeUndefined();
+  });
+});
+
+describe("diagnose：Blocked by", () => {
+  const run = (tickets: Parameters<typeof fakeGh>[3]) =>
+    diagnose({ cwd: readyRepo(), env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, [], true, tickets) });
+
+  it("没有带 Sandcastle 标签的票：通过", async () => {
+    expect(check(await run({}), "Blocked by")?.level).toBe("ok");
+  });
+
+  it("引用都存在：通过，写明查了几张票", async () => {
+    const c = check(await run({ issues: [{ number: 5, body: "## Blocked by\n#3\n" }, { number: 6, body: "无" }] }), "Blocked by");
+    expect(c).toMatchObject({ level: "ok", detail: expect.stringContaining("2") });
+  });
+
+  it("引用了不存在的票：警告，列出 #n → #m，提示改正", async () => {
+    const issues = [
+      { number: 5, body: "## Blocked by\n#3\n#99\n" },
+      { number: 7, body: "## Blocked by\n- #99、#4\n" },
+    ];
+    const c = check(await run({ issues, missing: [99] }), "Blocked by");
+    expect(c).toMatchObject({ level: "warn", fix: expect.stringContaining("Blocked by") });
+    expect(c?.detail).toContain("#5 → #99");
+    expect(c?.detail).toContain("#7 → #99");
+    expect(c?.detail).not.toContain("#3");
+  });
+
+  it("单个 blocker 查询出错（不是 missing）：跳过这个 blocker", async () => {
+    const c = check(await run({ issues: [{ number: 5, body: "## Blocked by\n#8\n" }], failing: [8] }), "Blocked by");
+    expect(c?.level).toBe("ok");
+  });
+
+  it("列票失败：整项警告并附错误", async () => {
+    const c = check(await run({ listError: true }), "Blocked by");
+    expect(c).toMatchObject({ level: "warn", detail: expect.stringContaining("issue list 超时") });
   });
 });
 

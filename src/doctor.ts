@@ -1,10 +1,10 @@
 // doctor：跑流水线之前把能在宿主机上查的都查一遍，每项给出结论和修法。
 // 查：仓库根目录、配置能加载、宿主机依赖与 env 文件、PROJECT.md 与提示词能渲染、项目知识（缺口清单）、models.json、.env 的 token、平台登录与权限、
-// 标签（--fix 时补建）、远端基础分支、沙箱镜像、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
+// 标签（--fix 时补建）、Sandcastle 票的 Blocked by 引用、远端基础分支、沙箱镜像、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
 // 有一项 ✗ 退出码就是 1。
 // doctor: before running the pipeline, check everything that can be checked on the host, giving a verdict and a fix for each.
 // Checks: repository root, config loads, host dependencies and env files, PROJECT.md and prompts render, project knowledge (open questions list), models.json, .env tokens, forge login and permissions,
-// labels (created with --fix), remote base branch, sandbox image, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
+// labels (created with --fix), Blocked by references in Sandcastle tickets, remote base branch, sandbox image, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
 // Exit code 1 if any check is ✗.
 
 import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -12,7 +12,8 @@ import { dirname, join, relative, resolve } from "node:path";
 import { parseEnv } from "node:util";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { detectProject } from "./detect.ts";
-import type { Forge } from "./forge.ts";
+import type { Forge, IssueState } from "./forge.ts";
+import { blockersOf } from "./guide.ts";
 import { inspectModels } from "./models.ts";
 import { setTermLanguage, t } from "./term.ts";
 import { CLAUDE_FILES, fillDocsHint, manual, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
@@ -300,6 +301,39 @@ export async function diagnose(opts: {
         } else add(L, "ok", t(`都在${later}`, `present${later}`));
       } catch (e) {
         add(t("标签", "Labels"), "fail", errText(e));
+      }
+    }
+
+    // ---- Blocked by ---- / Blocked by
+    // 只警告：open 的 Sandcastle 票在 ## Blocked by 里引用了本仓库不存在的票，调度会把它打成 stuck，接入时就提示。单个 blocker 查询出错（不是 missing）记成 open，即跳过它。名字是票里的节名，中英相同。
+    // Warn only: an open Sandcastle ticket whose ## Blocked by references a ticket that doesn't exist in this repo gets marked stuck by the scheduler, so flag it at onboarding. A blocker whose lookup errors (other than missing) counts as open, i.e. is skipped. The name is the ticket's section name, the same in both languages.
+    if (reachable) {
+      const name = "Blocked by";
+      try {
+        const issues = forge.listOpenIssues([project.labels.picked]);
+        const states = new Map<number, IssueState>();
+        const stateOf = (m: number) => {
+          if (!states.has(m)) {
+            try {
+              states.set(m, forge.issueState(String(m)));
+            } catch {
+              states.set(m, "open");
+            }
+          }
+          return states.get(m);
+        };
+        const bad = issues.flatMap((i) => blockersOf(i.body).filter((m) => stateOf(m) === "missing").map((m) => `#${i.number} → #${m}`));
+        if (!issues.length) add(name, "ok", t(`没有带 ${project.labels.picked} 标签的 open 票`, `No open tickets labelled ${project.labels.picked}`));
+        else if (!bad.length) add(name, "ok", t(`查了 ${issues.length} 张票，引用都存在`, `checked ${issues.length} ticket(s), all references exist`));
+        else
+          add(
+            name,
+            "warn",
+            t(`引用了不存在的票：${bad.join("、")}`, `References to tickets that don't exist: ${bad.join(", ")}`),
+            t("改正票里的 ## Blocked by，或删掉这一行", "Fix the ticket's ## Blocked by, or remove the line"),
+          );
+      } catch (e) {
+        add(name, "warn", errText(e));
       }
     }
 
