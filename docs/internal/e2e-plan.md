@@ -110,7 +110,7 @@ e2e 实跑（sandcastle-e2e）：
 - [x] N6 （✓/⚠ bac5152：假接口返回「Usage limit reached… reset at」，implement=fake→sonnet 时 fake 撞限额、按解析出的重置时间 +2 分钟跳过，同一会话换 sonnet 完成 PR #105；之后 #103 不再试 fake。⚠ 只配 [fake] 时每次到点重试再撞，票一直占空位，票上无评论无标签；撞限额的会话不进 usage.jsonl / PR 用量表；恢复时间只在内存，重启后会再试一次）限额切换：implement 的第一个档案用一个必然命中 limitPattern 的档案（如 limitPattern 匹配一定会出现的输出，或指向返回限额报错的假接口），自动换到第二个并完成
 - [x] N7 （✓/⚠ 运行中 review opus→sonnet 下一轮生效（usage.jsonl 170 vs 174+）；改坏 JSON 保留旧配置并提示（提示带多余的「Error: 」前缀）。⚠ 空位全满时主循环不调 schedule()，reloadModels 不跑：限额循环里改 models.json 救不回来，只能重启）运行中改 models.json（换 review 的档案），下一轮调度生效，不用重启
 - [x] N8 （✓ 容器里进程 `claude … --model claude-sonnet-5-5 --effort medium`，env 带 SANDCASTLE_PROFILE/PHASE）effort：sonnet 档案的 effort 传到容器里的 claude（日志或进程参数可见）
-- [x] N9 （✓ implement=glm 跑 #107 合并 PR #109；容器内 claude 进程有 ANTHROPIC_BASE_URL/AUTH_TOKEN，无 CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY。⚠ 只对 claude 进程 env -u，父进程 sh 的环境里仍有 CLAUDE_CODE_OAUTH_TOKEN，第三方模型驱动的 agent 可从 /proc 读到（推断，未实际读）——#42 已修，凭据移出容器级 env、只给 Claude 档案的会话，待 e2e 复测：第三方档案会话里 /proc/*/environ 都没有这两个键；usage.jsonl 的 model 记别名 opus）别家接口（GLM）：有 GLM_API_KEY 才测，否则记为跳过
+- [x] N9 （✓ implement=glm 跑 #107 合并 PR #109；容器内 claude 进程有 ANTHROPIC_BASE_URL/AUTH_TOKEN，无 CLAUDE_CODE_OAUTH_TOKEN/ANTHROPIC_API_KEY。⚠ 只对 claude 进程 env -u，父进程 sh 的环境里仍有 CLAUDE_CODE_OAUTH_TOKEN，第三方模型驱动的 agent 可从 /proc 读到（推断，未实际读）——#42 已修，凭据移出容器级 env、只给 Claude 档案的会话。✓ 复测 8a4842a：#114 prep=opus、implement=glm、review=opus（与 implement 同一个容器），合并 PR #116；每 10 秒扫一遍容器内所有进程的 /proc/*/environ：容器 pid 1、podman exec 起的 sh、glm 会话的 sh / claude / agent 的子进程（uv、测试等）都没有这两个键的值，只有 opus 的 prep 和 review 会话的 claude 进程有，且没有另外的父 sh（exec 替换掉了）；usage.jsonl 的 model 记别名 opus）别家接口（GLM）：有 GLM_API_KEY 才测，否则记为跳过
 
 ## L. 意外退出的兜底与长时间运行（sandcastle-e2e）
 
