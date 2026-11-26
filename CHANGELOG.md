@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 有网页界面的项目补「浏览器验收」有指引了：config 文档（中英）新增「浏览器验收」一节，说明 dev server 在沙箱里要的变量放进 `isolation.env`、用 `withDbSuffix` 分出独立的库、验收数据怎么建，并附 PROJECT.md 这一节的通用写法；接入清单（中英）和 onboard 提示词指向它。`sandpipe doctor` 新增「浏览器验收」检查：探测到网页界面但 PROJECT.md 没有这一节时警告并指向文档，有时通过，没有网页界面时不出现；「PROJECT.md」一项不再附带浏览器验收的说明（closes #15）。
 - onboard 生成缺口清单 `.sandcastle/OPEN-QUESTIONS.md`（提交进仓库），取代原来只打印到终端、只存在 `logs/` 里的拿不准的点。每条一行 `- [类别] 问题 → 写到哪`，类别是 `规范` / `意图`（英文项目 `convention` / `intent`）；清单已存在就不碰。写完校验格式，结尾提示剩几条，以及在 Claude Code 里运行 `/fill-project-docs`。
 - onboard 的 agent 可写的文件从只有 PROJECT.md 改成一个列表（PROJECT.md 和缺口清单）。
 - 探测文档时认 `GLOSSARY.md`。

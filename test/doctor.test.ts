@@ -10,7 +10,7 @@ import { installFiles, installGlobalSkill } from "../src/onboard.ts";
 import { VERSION } from "../src/version.ts";
 import { DEFAULT_LABELS } from "../src/profile.ts";
 import { trySh } from "../src/shell.ts";
-import { nodeRepo } from "./fixtures.ts";
+import { nodeRepo, pythonRepo } from "./fixtures.ts";
 
 /** git 本地命令真跑；连远端和 podman 的换成假的。 */
 const runner =
@@ -62,6 +62,8 @@ describe("diagnose", () => {
       // 探测到服务时生成的 isolation.env 读项目根的 .env，刚 onboard 时还没有
       "宿主机 env 文件": "warn",
       "PROJECT.md": "warn",
+      // nodeRepo 有 react，草稿不生成浏览器验收
+      浏览器验收: "warn",
       项目知识: "warn",
       "models.json": "ok",
       ".env": "fail",
@@ -111,6 +113,9 @@ describe("diagnose", () => {
   });
 });
 
+/** nodeRepo 有 react（探测到网页界面），准备好的项目要写上浏览器验收。 */
+const BROWSER_SECTION = "\n## 浏览器验收\n\n1. 起服务：`pnpm dev --port 5180 &`，等 curl 通。\n";
+
 /** onboard 生成、.env 填好、PROJECT.md 写完（去掉「待补」）的项目。 */
 function readyRepo() {
   const root = nodeRepo();
@@ -118,7 +123,7 @@ function readyRepo() {
   writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=y\n");
   writeFileSync(join(root, ".env"), "DATABASE_URL=postgres://u:p@localhost:5432/app\n");
   const doc = join(root, ".sandcastle/PROJECT.md");
-  writeFileSync(doc, readFileSync(doc, "utf8").replace(/<!--[\s\S]*?-->/g, ""));
+  writeFileSync(doc, readFileSync(doc, "utf8").replace(/<!--[\s\S]*?-->/g, "") + BROWSER_SECTION);
   writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "");
   return root;
 }
@@ -158,6 +163,36 @@ describe("diagnose：项目知识", () => {
     rmSync(join(root, ".sandcastle/PROJECT.md"));
     const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
     expect(check(checks, "项目知识")).toBeUndefined();
+  });
+});
+
+describe("diagnose：浏览器验收", () => {
+  const run = (root: string) => diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+
+  it("有网页界面、PROJECT.md 没有这一节：警告，指向 config 文档", async () => {
+    const root = readyRepo();
+    const doc = join(root, ".sandcastle/PROJECT.md");
+    const before = readFileSync(doc, "utf8");
+    expect(before).toContain(BROWSER_SECTION);
+    writeFileSync(doc, before.replace(BROWSER_SECTION, ""));
+    const checks = await run(root);
+    expect(check(checks, "浏览器验收")).toMatchObject({
+      level: "warn",
+      detail: expect.stringContaining("网页界面"),
+      fix: expect.stringContaining("docs/config.zh-CN.md"),
+    });
+    // PROJECT.md 那一项不再拼浏览器验收的文字
+    expect(check(checks, "PROJECT.md")?.detail).not.toContain("浏览器验收");
+  });
+
+  it("有网页界面、有这一节：通过", async () => {
+    expect(check(await run(readyRepo()), "浏览器验收")?.level).toBe("ok");
+  });
+
+  it("没有网页界面：没有这一项", async () => {
+    const root = pythonRepo();
+    installFiles(root, detectProject(root));
+    expect(check(await run(root), "浏览器验收")).toBeUndefined();
   });
 });
 

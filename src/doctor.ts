@@ -11,10 +11,11 @@ import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { parseEnv } from "node:util";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
+import { detectProject } from "./detect.ts";
 import type { Forge } from "./forge.ts";
 import { inspectModels } from "./models.ts";
 import { setTermLanguage, t } from "./term.ts";
-import { CLAUDE_FILES, fillDocsHint, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
+import { CLAUDE_FILES, fillDocsHint, manual, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
 import { OPEN_QUESTIONS, readOpenQuestions } from "./open-questions.ts";
 import { CONFIG_FILE, configDir, loadProject, type Labels, type Project } from "./profile.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
@@ -146,27 +147,42 @@ export async function diagnose(opts: {
   const forge = opts.forge ?? project?.forge;
 
   // ---- PROJECT.md 与提示词 ---- / PROJECT.md and prompts
+  // 解析失败时 doc 留空，后面的浏览器验收检查跳过。
+  // doc stays undefined when parsing fails, and the browser check below is skipped.
+  let doc: ReturnType<typeof loadProjectDoc> | undefined;
   try {
-    const doc = loadProjectDoc(dir);
+    doc = loadProjectDoc(dir);
     if (project && forge)
       rmSync(dirname(Object.values(renderPrompts({ doc, forgeGuide: forge.agentGuide(), labels: project.labels, dir, language: project.language }))[0]!), {
         recursive: true,
       });
     const source = readFileSync(join(dir, "PROJECT.md"), "utf8");
-    const browser = doc.hasBrowser
-      ? t("有浏览器验收", "has a browser check")
-      : t("没有「浏览器验收」：改页面的票会留给人看", "no browser check section: tickets that change pages are left for a human");
     const todo = source.match(TODO_MARK)?.length ?? 0;
     if (todo)
       add(
         "PROJECT.md",
         "warn",
-        t(`还有 ${todo} 处「待补」，是没写完的草稿；${browser}`, `${todo} TODO marker(s) left, the draft isn't finished; ${browser}`),
+        t(`还有 ${todo} 处「待补」，是没写完的草稿`, `${todo} TODO marker(s) left, the draft isn't finished`),
         t("跑 onboard 让 agent 补全，或手工写完", "Run onboard to let the agent finish it, or finish it by hand"),
       );
-    else add("PROJECT.md", "ok", t(`能渲染进提示词；${browser}`, `renders into the prompts; ${browser}`));
+    else add("PROJECT.md", "ok", t("能渲染进提示词", "renders into the prompts"));
   } catch (e) {
     add("PROJECT.md", "fail", errText(e));
+  }
+
+  // ---- 浏览器验收 ---- / Browser check
+  // 启发式检查，只警告：探测到网页界面但 PROJECT.md 没写怎么在沙箱里起 dev server，改页面的票只能留给人看；PROJECT.md 解析失败上面已经报过，这里跳过。
+  // A heuristic check that only warns: a web UI was detected but PROJECT.md doesn't say how to start the dev server in the sandbox, so tickets that change pages are left for a human; a PROJECT.md parse failure was already reported above, so skip it here.
+  if (doc && detectProject(cwd).webUi) {
+    const name = t("浏览器验收", "Browser check");
+    if (doc.hasBrowser) add(name, "ok", t("PROJECT.md 写了浏览器验收", "PROJECT.md has a browser check"));
+    else
+      add(
+        name,
+        "warn",
+        t("探测到网页界面，但 PROJECT.md 没有「浏览器验收」：改页面的票会留给人看", "A web UI was detected but PROJECT.md has no Browser check section: tickets that change pages are left for a human"),
+        t(`照 ${manual("config", "zh")} 的「浏览器验收」一节补上`, `Add it following the Browser check section of ${manual("config", "en")}`),
+      );
   }
 
   // ---- 项目知识 ---- / Project knowledge

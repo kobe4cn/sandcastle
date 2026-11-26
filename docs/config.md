@@ -60,6 +60,26 @@ Exported from `sandpipe` for `isolation.env` / `cleanup`. The config is imported
 | `withDbSuffix(url, suffix)` | Appends a suffix (e.g. `` `_i${runId}` ``) to the database name or prefix. Keeps the query (`?authSource=admin`) and a trailing `/`; values without `://` are concatenated as is. Throws when the URL has no database name, instead of letting tests hit the dev database |
 | `runHostScript(command, args, label)` | Runs a cleanup script on the host. Returns stdout on success; on failure logs one warning (`label` plus the first 500 characters of stderr) and returns `undefined`. Never throws |
 
+## Browser check
+
+For a project with a web UI, the agent starts the dev server in the sandbox and clicks through the changed pages in a browser only when PROJECT.md has a Browser check section. Without it (a section holding only HTML comments counts as missing), tickets that change pages are left as PRs for a human, and `sandpipe doctor` warns.
+
+- **Put the dev server's variables in `isolation.env`**: every variable the dev server reads in the sandbox (database, session secret, object storage, etc.) must be in what `isolation.env` returns, or it won't start. Read them from the host env files with `readHostEnv` from the previous section, and pass values that point at local services through `toContainerHost`.
+- **Use a separate database**: as for tests, add a `` `_i${runId}` `` suffix to the database name with `withDbSuffix`, so acceptance data never touches the dev database and parallel tickets don't wipe each other's tables (see the example at the top).
+- **Acceptance data**: make the first step of this section the command that creates data (seed script, accounts); fixed setup steps for the human's acceptance go in `acceptancePrep` (see Optional).
+- **How to write it**: spell out commands, port and accounts in four steps: prepare data, start the server in the background and wait until it responds, log in, check the log. If you aren't sure it can start in the sandbox, leave the section out for now; doctor keeps reminding you.
+
+Example (replace the commands, port and accounts with the project's own):
+
+```markdown
+## Browser check
+
+1. Prepare: `pnpm db:seed` (creates the `admin@example.com` / `password` account).
+2. Start the server: `pnpm dev --port 3000 > /tmp/dev.log 2>&1 &`, and wait until `curl -s -o /dev/null http://localhost:3000/login` succeeds.
+3. Log in: `playwright-cli open http://localhost:3000/login`, log in with the account above; it only counts once the address leaves `/login`.
+4. To find errors, `grep -n -i error /tmp/dev.log`.
+```
+
 ## Optional
 
 | Field | Default | Description |

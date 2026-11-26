@@ -60,6 +60,26 @@ export default defineProject({
 | `withDbSuffix(url, suffix)` | 给库名或前缀加后缀（比如 `` `_i${runId}` ``）。保留 query（`?authSource=admin`）和结尾的 `/`；不含 `://` 的值直接拼接。URL 没有库名时抛错，不让测试打到开发库 |
 | `runHostScript(command, args, label)` | 在宿主机上跑回收脚本。成功返回 stdout；失败打一行警告（`label` 加 stderr 前 500 字）并返回 `undefined`，从不抛错 |
 
+## 浏览器验收
+
+有网页界面的项目，PROJECT.md 写了「浏览器验收」一节，agent 才会在沙箱里起 dev server、用浏览器点一遍改过的页面；没有这一节（只有 HTML 注释也算没有），改页面的票只能留 PR 给人看，`sandpipe doctor` 会警告。
+
+- **dev server 要的变量放进 `isolation.env`**：dev server 在沙箱里读的变量（数据库、会话密钥、对象存储等）都要出现在 `isolation.env` 的返回值里，少一个就起不来。用上一节的 `readHostEnv` 从宿主机 env 文件读出来，指向本机服务的值过一遍 `toContainerHost`。
+- **用独立的库**：和测试一样，库名用 `withDbSuffix` 加上 `` `_i${runId}` `` 后缀，验收数据不会碰到开发库，也不会和并行的票互相清表（写法见开头的示例）。
+- **验收数据**：在 PROJECT.md 这一节第一步写建数据的命令（种子脚本、建账号）；给人验收时的固定准备步骤写在 `acceptancePrep`（见「可选」）。
+- **写法**：按「准备数据、后台起服务并等它能访问、登录、查日志」四步写清命令、端口和账号。拿不准沙箱里能不能起来就先不写，doctor 会一直提示。
+
+示例（命令、端口、账号换成项目自己的）：
+
+```markdown
+## 浏览器验收
+
+1. 准备：`pnpm db:seed`（建 `admin@example.com` / `password` 账号）。
+2. 起服务：`pnpm dev --port 3000 > /tmp/dev.log 2>&1 &`，等 `curl -s -o /dev/null http://localhost:3000/login` 成功。
+3. 登录：`playwright-cli open http://localhost:3000/login`，用上面的账号登录，地址离开 `/login` 才算登录成功。
+4. 查错时 `grep -n -i error /tmp/dev.log`。
+```
+
 ## 可选
 
 | 字段 | 默认 | 说明 |
