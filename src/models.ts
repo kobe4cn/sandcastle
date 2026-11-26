@@ -453,8 +453,8 @@ function sessionTotals(it: sandcastle.IterationResult) {
 export const sessionPeak = (it: sandcastle.IterationResult) => sessionTotals(it).peak;
 
 /**
- * 记一次 run 的用量：追加到 .sandcastle/logs/usage.jsonl 并返回，调用方收集起来写进 PR。写不进只警告。
- * Record one run's usage: append to .sandcastle/logs/usage.jsonl and return it; callers collect it for the PR. Write failures only warn.
+ * 记一次 run 的用量：追加到 .sandcastle/logs/usage.jsonl 并返回；build 收集返回值写进 PR，prep 的落地时用 readUsage 读回。写不进只警告。
+ * Record one run's usage: append to .sandcastle/logs/usage.jsonl and return it; build collects the result for the PR, prep's is read back with readUsage on landing. Write failures only warn.
  */
 export function recordUsage(issue: string, phase: Phase, run: AgentRun, name: string, profile: Profile): UsageRecord {
   const totals = run.iterations.map(sessionTotals).reduce(
@@ -475,6 +475,34 @@ export function recordUsage(issue: string, phase: Phase, run: AgentRun, name: st
     console.warn(t(`  ⚠ 用量没写进 ${USAGE_LOG}：`, `  ⚠ Usage wasn't written to ${USAGE_LOG}: `) + String(e));
   }
   return record;
+}
+
+/**
+ * 从 .sandcastle/logs/usage.jsonl 读回这张票的用量记录（可只要某个阶段），按文件顺序即时间顺序。
+ * 文件不存在返回空数组；坏行和并发写入时写了一半的末行跳过。
+ * Read this ticket's usage records back from .sandcastle/logs/usage.jsonl (optionally for one phase), in file order, i.e. time order.
+ * A missing file gives an empty array; broken lines and a half-written last line from concurrent writers are skipped.
+ */
+export function readUsage(issue: string, phase?: Phase): UsageRecord[] {
+  if (!existsSync(USAGE_LOG)) return [];
+  let text: string;
+  try {
+    text = readFileSync(USAGE_LOG, "utf8");
+  } catch {
+    return [];
+  }
+  const records: UsageRecord[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("{")) continue;
+    try {
+      const r = JSON.parse(line);
+      if (typeof r?.issue !== "string" || typeof r.phase !== "string") continue;
+      if (r.issue === issue && (phase === undefined || r.phase === phase)) records.push(r);
+    } catch {
+      // 半行或损坏的行跳过 / Skip half-written or broken lines
+    }
+  }
+  return records;
 }
 
 const k = (n: number) => `${(n / 1000).toFixed(1)}k`;

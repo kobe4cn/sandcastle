@@ -1,7 +1,7 @@
 // src/models.ts 的纯逻辑：按阶段挑档案、撞限额换档案、重置时间解析、别家档案的环境变量、热重载、用量记录（e2e 计划 N1a–N1f）。
 // 不起容器、不调真实 claude：runWithProfile 传假的 fn，agentFor 只看拼出的命令行。
 // models.ts 的配置和「跳过到何时」是模块级状态，每个用例重新 import 一份；路径是相对当前目录的，用例在临时目录里 chdir。
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -511,6 +511,24 @@ describe("N1f 用量记录", () => {
     const rec = m.recordUsage("#1", "prep", { stdout: "", iterations: [] }, "prep", p);
     expect(rec).toMatchObject({ issue: "#1", sessions: 0, peak: 0 });
     expect(warn.mock.calls.flat().join("\n")).toContain("用量没写进 .sandcastle/logs/usage.jsonl");
+  });
+
+  it("readUsage：只返回这张票指定 phase 的记录，按文件顺序；坏行和写了一半的末行跳过", () => {
+    const p = profile();
+    const empty = { stdout: "", iterations: [] };
+    m.recordUsage("41", "prep", empty, "prep-41", p);
+    m.recordUsage("42", "prep", empty, "prep-42", p);
+    m.recordUsage("41", "implement", empty, "implement", p);
+    m.recordUsage("41", "prep", empty, "reprep-41", p);
+    appendFileSync(".sandcastle/logs/usage.jsonl", `{broken\n"str"\nnull\n{"issue":41,"phase":"prep"}\n{"issue":"41","phase":"pr`);
+    expect(m.readUsage("41", "prep").map((r) => r.run)).toEqual(["prep-41", "reprep-41"]);
+    expect(m.readUsage("41").map((r) => r.run)).toEqual(["prep-41", "implement", "reprep-41"]);
+    expect(m.readUsage("99", "prep")).toEqual([]);
+  });
+
+  it("readUsage：usage.jsonl 不存在时返回空数组", () => {
+    profile();
+    expect(m.readUsage("41", "prep")).toEqual([]);
   });
 
   it("usageTable：每次 run 一行，token 以 k 计；没有记录时给提示；英文表头", () => {

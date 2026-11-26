@@ -82,7 +82,7 @@ import { stripVTControlCharacters } from "node:util";
 import * as sandcastle from "@ai-hero/sandcastle";
 import type { SandboxExecOptions } from "@ai-hero/sandcastle";
 import {
-  AllProfilesLimited, CLAUDE_LIMIT_PATTERN, agentFor, limitResetAt, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
+  AllProfilesLimited, CLAUDE_LIMIT_PATTERN, agentFor, limitResetAt, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
   type AgentRun, type Phase, type UsageRecord,
 } from "./models.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
@@ -172,9 +172,9 @@ const claudeEnv = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(CONTEXT_BUDGET) };
 
 /**
  * 跑一次 agent 会话：阶段用哪个档案（模型、厂商）由 .sandcastle/models.json 决定，撞限额换下一个（models.ts）。
- * 用量追加到 .sandcastle/logs/usage.jsonl，也放进 usage（落地时写进 PR）。
+ * 用量追加到 .sandcastle/logs/usage.jsonl，也放进 usage；build 收集的会进 PR 的用量表，prep 的落地时从 usage.jsonl 读回，rebase 的不进表。
  * Run one agent session: which profile (model, vendor) a phase uses comes from .sandcastle/models.json, switching to the next on limits (models.ts).
- * Usage is appended to .sandcastle/logs/usage.jsonl and also returned in usage (written into the PR on landing).
+ * Usage is appended to .sandcastle/logs/usage.jsonl and also pushed onto usage; build's collected records go into the PR's usage table, prep's are read back from usage.jsonl on landing, rebase's stay out of the table.
  */
 async function runAgent<T extends AgentRun>(
   phase: Phase,
@@ -1345,7 +1345,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
         browser: browserSection(result.browser, noTicketCheck, M),
         gate: gateNote,
         budget: `${budgetNote}${overBudget}`,
-        usage: usageTable(result.usage, M),
+        usage: usageTable([...readUsage(issue.id, "prep"), ...result.usage], M),
       }),
     },
     result.browser?.shots ?? [],
@@ -1852,6 +1852,7 @@ async function schedule(): Promise<ScheduleResult> {
     if (prepTried.get(issue.number) === issue.updatedAt) continue;
     console.log(`Prep #${issue.number}: ${issue.title}`);
     try {
+      // 丢弃的数组：prep 用量落地时从 usage.jsonl 读回（可能是上一次进程跑的）。 / Discarded array: prep usage is read back from usage.jsonl on landing (it may have run in an earlier process).
       await runAgent("prep", String(issue.number), `prep-${issue.number}`, {}, [], (agent) => sandcastle.run({
         sandbox: project.sandbox({}),
         name: `prep-${issue.number}`,
