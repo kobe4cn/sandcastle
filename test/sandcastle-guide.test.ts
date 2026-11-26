@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
-import { blockersOf, changedFiles as changedFilesWith, flakyFailures, flakySignature, flakyEnvironmental, flakyTickets, flakyTriage, splitChildren } from '../src/guide.ts';
+import { afterEach, describe, expect, it } from 'vitest';
+import { blockersOf, changedFiles as changedFilesWith, flakyFailures, flakySignature, flakyEnvironmental, flakyTickets, flakyTriage, idleSummary, splitChildren } from '../src/guide.ts';
 import crm from '../examples/duckdb_crm/sandcastle.config.ts';
+import { setTermLanguage, termLanguage } from '../src/term.ts';
 
 // 用 duckdb_crm 的只追加文件列表（test/CATALOG.md 等）跑原来的用例。
 const changedFiles = (body: string) => changedFilesWith(body, new Set(crm.appendOnlyFiles));
@@ -98,6 +99,44 @@ describe('Sandcastle 的 blocker 与子票 blockersOf / splitChildren', () => {
       '上面的检查点改为在 #496、#497 都合并后执行。#465–#468 改为被 #497 block。',
     ].join('\n');
     expect(splitChildren(body)).toEqual([496, 497, 68]);
+  });
+});
+
+describe('Sandcastle 空转退出的原因 idleSummary', () => {
+  const labels = { picked: 'Sandcastle', stuck: 'sandcastle:stuck' };
+  const original = termLanguage();
+  afterEach(() => setTermLanguage(original, {}));
+
+  it('中文：按票号升序逐行写出被哪些 blocker 挡住', () => {
+    setTermLanguage('zh', {});
+    expect(idleSummary(new Map([[12, [3, 5]], [7, [2]]]), labels)).toBe(
+      ['一张票都没开工就结束了，原因：', '  #7 等 #2', '  #12 等 #3、#5'].join('\n'),
+    );
+  });
+
+  it('英文：没有被挡的票时给通用原因，含两个标签名', () => {
+    setTermLanguage('en', {});
+    const s = idleSummary(new Map(), labels);
+    expect(s.split('\n')).toHaveLength(1);
+    expect(s).toContain('Sandcastle');
+    expect(s).toContain('sandcastle:stuck');
+    expect(s).toMatch(/^No ticket/);
+  });
+
+  it('英文：被挡的票用 waiting on 列出', () => {
+    setTermLanguage('en', {});
+    expect(idleSummary(new Map([[12, [3, 5]], [7, [2]]]), labels)).toBe(
+      ['Stopped without starting any ticket:', '  #7 waiting on #2', '  #12 waiting on #3, #5'].join('\n'),
+    );
+  });
+
+  it('中文：没有被挡的票时给通用原因，含两个标签名', () => {
+    setTermLanguage('zh', {});
+    const s = idleSummary(new Map(), labels);
+    expect(s.split('\n')).toHaveLength(1);
+    expect(s).toContain('没有可以开工的票');
+    expect(s).toContain('Sandcastle');
+    expect(s).toContain('sandcastle:stuck');
   });
 });
 

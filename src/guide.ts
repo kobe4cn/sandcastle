@@ -1,13 +1,14 @@
 /**
  * 解析 issue 正文与门槛失败摘要的纯函数：plan() 靠它们判断 blocker 和「两张票改同一个文件」，
- * reportFlaky() 靠 flakyFailures 按报错签名去重开偶发失败的票。单独放出来是为了能测。
+ * reportFlaky() 靠 flakyFailures 按报错签名去重开偶发失败的票，主循环空转退出时用 idleSummary 说明原因。单独放出来是为了能测。
  * 指引的写法见 prompts/ticket-sizing.md 的 `## Implementation guide` 模板。
  * Pure functions parsing issue bodies and gate failure summaries: plan() uses them to find blockers and "two tickets changing the same file",
- * and reportFlaky() uses flakyFailures to dedupe flaky tickets by error signature. Kept separate so they can be tested.
+ * reportFlaky() uses flakyFailures to dedupe flaky tickets by error signature, and the main loop uses idleSummary to explain an idle exit. Kept separate so they can be tested.
  * How guides are written: the `## Implementation guide` template in prompts/ticket-sizing.md.
  */
 
 import { messages, type Messages } from "./i18n.ts";
+import { t } from "./term.ts";
 
 /**
  * 正文里 `## <title>` 一节的内容（到下一个 `## ` 为止），没有这一节时为空串。
@@ -274,4 +275,27 @@ export const flakyTriage = <G extends { files: string[]; signature: string; exis
   const at = now.toISOString();
   const sightings = groups.flatMap((g) => g.files.map((file) => ({ file, signature: g.signature, at, issue })));
   return { ticket, deferred, history: [...recent, ...sightings] };
+};
+
+/**
+ * 一张票都没开工就空转退出时打印的原因。`waiting` 是最后一次调度里被还开着的 blocker 挡住的票（票号 → blocker 票号），
+ * 按票号升序逐行写出「#n 等 #m、#k」；为空时说明没有可以开工的票（没有带 picked 标签、还没开工的票，或者都在等人审 PR / 带 stuck）。
+ * 不存在的 blocker 会被打 stuck，不在 `waiting` 里，所以通用原因里要提到 stuck。
+ * Reason printed when the run idles out without starting any ticket. `waiting` holds the tickets blocked by still-open blockers in the last pass (ticket → blocker numbers),
+ * written one per line in ascending ticket order as "#n waiting on #m, #k"; when empty, explains that no ticket can start (no un-started ticket with the picked label, or all waiting on PR review / labelled stuck).
+ * Missing blockers get labelled stuck and aren't in `waiting`, so the generic reason mentions stuck.
+ */
+export const idleSummary = (waiting: ReadonlyMap<number, number[]>, labels: { picked: string; stuck: string }): string => {
+  if (waiting.size === 0)
+    return t(
+      `没有可以开工的票：没有带 ${labels.picked} 标签、还没开工的票，或者都在等人审 PR / 带 ${labels.stuck} 等人处理`,
+      `No ticket can start: no un-started ticket labelled ${labels.picked}, or all are waiting on PR review / labelled ${labels.stuck} for a human`,
+    );
+  const lines = [...waiting]
+    .sort(([a], [b]) => a - b)
+    .map(([n, blockers]) => {
+      const refs = blockers.map((b) => `#${b}`);
+      return t(`  #${n} 等 ${refs.join("、")}`, `  #${n} waiting on ${refs.join(", ")}`);
+    });
+  return [t("一张票都没开工就结束了，原因：", "Stopped without starting any ticket:"), ...lines].join("\n");
 };

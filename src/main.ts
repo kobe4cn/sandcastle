@@ -84,7 +84,7 @@ import {
   AllProfilesLimited, CLAUDE_LIMIT_PATTERN, agentFor, limitResetAt, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
   type AgentRun, type Phase, type UsageRecord,
 } from "./models.ts";
-import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, splitChildren } from "./guide.ts";
+import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
 import { acceptanceSection, checkAcceptanceNotes, replaceSection, restSections } from "./pr-body.ts";
 import type { ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { loadProject } from "./profile.ts";
@@ -376,6 +376,12 @@ function issueState(n: number): IssueState {
 }
 const isOpen = (n: number) => issueState(n) === "open";
 
+/**
+ * 最后一次调度里被还开着的 blocker 挡住的票（票号 → blocker 票号），每次调度开头清空。一张票都没开工就空转退出时用来说明原因。
+ * Tickets blocked by still-open blockers in the last pass (ticket → blocker numbers), cleared at the start of every pass. Used to explain an idle exit when no ticket was ever started.
+ */
+const waitingOn = new Map<number, number[]>();
+
 /** `## Blocked by` 里还没关的票。 / Tickets in `## Blocked by` that are still open. */
 const openBlockers = (body: string) => blockersOf(body).filter(isOpen);
 
@@ -535,6 +541,7 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
     }
     const open = openBlockers(issue.body);
     if (open.length > 0) {
+      waitingOn.set(issue.number, open);
       const blockers = open.map((n) => `#${n}`);
       log(t(`  跳过 #${issue.number}：blocker ${blockers.join("、")} 还没关`, `  Skipping #${issue.number}: blocker ${blockers.join(", ")} still open`));
       continue;
@@ -1589,6 +1596,7 @@ async function schedule(): Promise<ScheduleResult> {
   reloadModels(); // 每次调度读一次 .sandcastle/models.json：改了配置不用重启，下次生效 / read .sandcastle/models.json every pass: config changes apply next pass without a restart
   await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]); // 刚合并进远端 main 的代码 / code just merged into the remote main
   issueStates.clear();
+  waitingOn.clear();
   syncHostBase();
   reopenRequestedRevisions();
   closeFinishedParents();
@@ -1632,6 +1640,7 @@ async function schedule(): Promise<ScheduleResult> {
     }
     const open = openBlockers(issue.body);
     if (open.length > 0) {
+      waitingOn.set(issue.number, open);
       const blockers = open.map((n) => `#${n}`);
       console.log(t(`  跳过 prep #${issue.number}：blocker ${blockers.join("、")} 还没关`, `  Skipping prep #${issue.number}: blocker ${blockers.join(", ")} still open`));
       continue;
@@ -1693,6 +1702,7 @@ if (process.env.SANDCASTLE_BASELINE === "1") {
   process.exitCode = (await runBaseline()) ? 0 : 1;
 } else {
 let idlePolls = 0;
+let everStarted = false; // 这次运行开工过票没有 / whether this run ever started a ticket
 for (let pass = 1; ; pass++) {
   if (running.size < MAX_PARALLEL) {
     const now = new Date().toLocaleString();
@@ -1701,6 +1711,7 @@ for (let pass = 1; ; pass++) {
     if (r.split) continue;
     if (running.size > 0 || r.started > 0) {
       idlePolls = 0;
+      everStarted = true;
     } else if (r.prepLimitedUntil !== undefined) {
       // 没票在做、prep 在等限额：等到重置再来，不算空转。 / Nothing running and prep is waiting on a limit: wait for the reset, not counted as idle.
       const until = new Date(r.prepLimitedUntil).toLocaleString();
@@ -1734,10 +1745,13 @@ for (let pass = 1; ; pass++) {
 // The last merged tickets reached the remote after the previous fetch, so sync once more at the end.
 await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
 syncHostBase();
+// 一张票都没开工时不说「全部完成」，改为说明空转原因。 / When no ticket was ever started, explain the idle exit instead of "All done".
 console.log(
-  t(
-    `\n全部完成。本地 main 已快进到 ${BASE_REF}（不在 main 上时除外，见上面的警告）；带 ${LABEL.prOpen} 的票在 ${forge.name} 上等你审。`,
-    `\nAll done. Local main is fast-forwarded to ${BASE_REF} (unless the host isn't on main, see the warnings above); tickets labelled ${LABEL.prOpen} are waiting for your review on ${forge.name}.`,
-  ),
+  everStarted
+    ? t(
+        `\n全部完成。本地 main 已快进到 ${BASE_REF}（不在 main 上时除外，见上面的警告）；带 ${LABEL.prOpen} 的票在 ${forge.name} 上等你审。`,
+        `\nAll done. Local main is fast-forwarded to ${BASE_REF} (unless the host isn't on main, see the warnings above); tickets labelled ${LABEL.prOpen} are waiting for your review on ${forge.name}.`,
+      )
+    : `\n${idleSummary(waitingOn, LABEL)}`,
 );
 }
