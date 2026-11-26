@@ -296,12 +296,11 @@ export function projectDocDraft(f: ProjectFacts, lang: Language = f.commitLangua
 }
 
 /**
- * 基于模板的 Containerfile：没有网页界面就去掉浏览器验收那段，按项目语言补工具链。
- * Containerfile from the template: drop the browser-check block when there's no web UI, add the project's toolchain.
+ * 基于模板的 Containerfile：按项目语言补工具链。浏览器验收那段（playwright-cli + Chromium）所有项目都保留：后端项目后来加了前端，只要在 PROJECT.md 补「浏览器验收」一节，不用重建镜像模板。
+ * Containerfile from the template: add the project's toolchain. The browser-check block (playwright-cli + Chromium) stays for every project: when a backend project later adds a frontend, adding the Browser check section to PROJECT.md is enough, no template change needed.
  */
 export function containerfileSource(template: string, f: ProjectFacts): string {
   let out = template;
-  if (!f.webUi) out = out.replace(/# 浏览器验收[\s\S]*?rm -rf \/var\/lib\/apt\/lists\/\*\n\n/, "");
   const toolchain: Partial<Record<ProjectFacts["language"], string>> = {
     python:
       "RUN apt-get update && apt-get install -y python3 python3-pip python3-venv && rm -rf /var/lib/apt/lists/* && pip3 install --break-system-packages uv\n\n",
@@ -606,6 +605,7 @@ export function agentWritable(root: string): string[] {
  * `factsHandling` says (as a sentence) what to do with facts found in the code: written into PROJECT.md in a full onboard, skipped with `--questions-only`.
  * `lang` picks which PROJECT.md section titles are listed: Chinese titles for Chinese projects, English titles for English ones.
  */
+const browserTitle = (lang: Language) => (lang === "en" ? SECTIONS_EN.browser : SECTIONS.browser);
 const questionsFormat = (factsHandling: string, lang: Language) => [
   `把拿不准、需要人补的点写进 \`${OPEN_QUESTIONS}\`，这份文件会提交进仓库，之后由人在 Claude Code 里逐条补完：`,
   "",
@@ -613,6 +613,7 @@ const questionsFormat = (factsHandling: string, lang: Language) => [
   "- 类别只有两种：`规范`（代码风格、测试写法、提交约定这类能从代码推一部分、但你拿不准的）和 `意图`（业务规则、领域术语、红线、设计原因这类只能由人说出来的）。",
   `- 「写到哪」写答案该进哪份文档。写进 PROJECT.md 的只能写成 \`PROJECT.md「节名」\`，节名只能取这几个：${Object.values(lang === "en" ? SECTIONS_EN : SECTIONS).map((s) => `「${s}」`).join("、")}。不能新建节，放不进这些节的答案写最接近的那一节。不写进 PROJECT.md 的，写术语表（GLOSSARY.md / CONTEXT.md）、ADR 之类的其他文件。`,
   `- 什么算缺口：意图层面的信息（术语表、红线、设计原因）在代码和文档里都找不到，或者规范拿不准。代码里查得到的事实不算，${factsHandling}`,
+  `- 浏览器验收是必查的一类：项目有网页界面（事实里 \`webUi\` 为 true，或代码里有页面）、而 PROJECT.md 没有「${browserTitle(lang)}」一节时，必须逐条列出拼不出来的信息，类别写 \`规范\`，写到 \`PROJECT.md「${browserTitle(lang)}」\`：dev server 的启动命令与端口、验收数据怎么建（种子脚本、验收租户）、登录方式与账号、dev server 需要的环境变量（对照 config 的 \`isolation.env\`）。不要笼统写一条「浏览器验收怎么做」。`,
   "- 没有缺口时只写标题那一行。",
   "",
   "示例：",
@@ -629,6 +630,7 @@ const questionsFormat = (factsHandling: string, lang: Language) => [
 const QUESTIONS_EXAMPLE = [
   "# 缺口清单",
   "",
+  `- [规范] dev server 怎么起、监听哪个端口？ → PROJECT.md「${SECTIONS.browser}」`,
   `- [意图] 哪些操作必须交给人（红线）？ → PROJECT.md「${SECTIONS.redLines}」`,
   `- [规范] 分支命名有没有约定？ → PROJECT.md「${SECTIONS.commit}」`,
   "- [意图] 项目还没有术语表 → GLOSSARY.md",
@@ -636,6 +638,7 @@ const QUESTIONS_EXAMPLE = [
 const QUESTIONS_EXAMPLE_EN = [
   "# Open questions",
   "",
+  `- [convention] How is the dev server started, and on which port? → PROJECT.md「${SECTIONS_EN.browser}」`,
   `- [intent] Which operations must be left to a human (red lines)? → PROJECT.md「${SECTIONS_EN.redLines}」`,
   `- [convention] Is there a branch naming convention? → PROJECT.md「${SECTIONS_EN.commit}」`,
   "- [intent] The project has no glossary yet → GLOSSARY.md",

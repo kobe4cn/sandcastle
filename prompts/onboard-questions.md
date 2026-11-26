@@ -17,7 +17,7 @@
 ## 怎么做
 
 1. 先读仓库里现成的说明：README、CLAUDE.md / AGENTS.md、CONTRIBUTING、术语表、ADR 索引（事实里的 `docs`）。
-2. 对照上面的 PROJECT.md 和代码，找出缺口：PROJECT.md 没写、代码和文档里也查不到的意图（业务规则、领域术语、红线、设计原因），以及 PROJECT.md 里写得含糊、你从代码里拿不准的规范。
+2. 对照上面的 PROJECT.md 和代码，找出缺口：PROJECT.md 没写、代码和文档里也查不到的意图（业务规则、领域术语、红线、设计原因），以及 PROJECT.md 里写得含糊、你从代码里拿不准的规范。项目有网页界面（事实里 `webUi` 为 true，或代码里有页面）而 PROJECT.md 没有浏览器验收那一节时，先读事实里的 `browserHints` 和 `scripts/` 里建数据的脚本，再把仍然拿不准的浏览器验收信息逐条列进清单（见下面「缺口清单」）。
 3. 控制成本：用 Grep / Glob 定位，只读需要的片段；整个过程不超过 40 次工具调用。不要跑测试、不要装依赖。
 4. 用 Write 写 {{WRITABLE}}，只许写这一份文件。不要改 `.sandcastle/PROJECT.md`，也不要改其他任何文件；代码里查得到的事实不算缺口，也不要替人补进 PROJECT.md。
 

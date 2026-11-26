@@ -48,6 +48,11 @@ export interface ProjectFacts {
   serviceEnvFrom: string[];
   /** 有网页界面（按依赖判断），可能需要浏览器验收 / Has a web UI (judged by dependencies), may need a browser check */
   webUi: boolean;
+  /**
+   * 提到浏览器验收的现成资料（文档、旧的 .sandcastle 提示词、test/e2e 说明、scripts/ 里建种子或验收数据的脚本），给 onboard 的 agent 先读
+   * Existing material that mentions browser checks (docs, old .sandcastle prompts, test/e2e notes, seed or acceptance-data scripts under scripts/), for onboard's agent to read first
+   */
+  browserHints: string[];
   /** 最近几条提交的标题，用来判断提交信息的语言与风格 / Subjects of the last few commits, used to judge commit message language and style */
   recentCommits: string[];
   commitLanguage: TextLanguage;
@@ -108,6 +113,40 @@ const MIN_DOC_CHARS = 200;
 
 const read = (root: string, f: string) => (existsSync(join(root, f)) ? readFileSync(join(root, f), "utf8") : undefined);
 const isDir = (p: string) => existsSync(p) && statSync(p).isDirectory();
+
+/** 浏览器验收相关的关键字 / Keywords that point at browser-check material */
+const BROWSER_WORDS = /playwright|ego-browser|puppeteer|cypress|browser|浏览器|截图|screenshot|dev server|e2e|验收/i;
+/** scripts/ 下按文件名就算相关的脚本（建种子、验收数据、演示租户） / Scripts under scripts/ that count by name alone (seeds, acceptance data, demo tenants) */
+const BROWSER_SCRIPT_NAMES = /seed|browser|e2e|lab|fixture|demo|playwright/i;
+
+/**
+ * 找提到浏览器验收的现成资料：只看文件名和前 64KB 内容，最多 20 条。
+ * Find existing material that mentions browser checks: only file names and the first 64KB of content, at most 20 entries.
+ */
+export function browserHints(root: string): string[] {
+  const list = (dir: string, keep: (name: string) => boolean) =>
+    isDir(join(root, dir))
+      ? readdirSync(join(root, dir), { withFileTypes: true })
+          .filter((e) => e.isFile() && keep(e.name))
+          .map((e) => `${dir}/${e.name}`)
+      : [];
+  const mentions = (rel: string) => {
+    try {
+      return BROWSER_WORDS.test(readFileSync(join(root, rel), "utf8").slice(0, 65536));
+    } catch {
+      return false;
+    }
+  };
+  const docs = [
+    ...DOC_CANDIDATES.filter((f) => f.endsWith(".md") && existsSync(join(root, f))),
+    ...list("docs", (n) => n.endsWith(".md")),
+    ...["test", "tests", "e2e"].flatMap((d) => list(d, (n) => /\.md$/i.test(n))),
+    ...list(".sandcastle", (n) => /prompt/i.test(n) && n.endsWith(".md")),
+    ...list(".sandcastle/prompts", (n) => n.endsWith(".md")),
+  ];
+  const scripts = list("scripts", (n) => BROWSER_SCRIPT_NAMES.test(n));
+  return [...new Set([...docs.filter(mentions), ...scripts])].slice(0, 20);
+}
 
 /**
  * 项目文档的主要语言：DOC_CANDIDATES 里的文件拼起来，中文字符 × 4 不少于 ASCII 字母算中文；文字不够时返回 undefined。
@@ -380,6 +419,7 @@ export function detectProject(root = process.cwd()): ProjectFacts {
     services: composeServices(root),
     ...scanServiceEnv(root),
     webUi: lang.webUi,
+    browserHints: browserHints(root),
     recentCommits,
     commitLanguage: fromDocs ?? fromCommits,
     commitLanguageBasis,

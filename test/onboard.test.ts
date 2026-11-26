@@ -422,7 +422,7 @@ describe("mergeGitignore", () => {
 });
 
 describe("containerfileSource", () => {
-  it("没有网页界面去掉浏览器那段；python 加工具链", () => {
+  it("所有项目都装 playwright-cli + Chromium（没有网页界面也装）；python 加工具链", () => {
     const base = detectProject(nodeRepo());
     const node = containerfileSource(containerTemplate, base);
     expect(node).toContain("playwright");
@@ -430,10 +430,39 @@ describe("containerfileSource", () => {
     expect(node.indexOf("RUN npm install -g pnpm@10.4.1")).toBeGreaterThan(-1);
     expect(node.indexOf("RUN npm install -g pnpm@10.4.1")).toBeLessThan(node.indexOf("USER "));
     const py = containerfileSource(containerTemplate, { ...base, webUi: false, language: "python", packageManagerSpec: undefined });
-    expect(py).not.toContain("playwright");
+    expect(py).toContain("playwright");
     expect(py).toContain("python3-venv");
     expect(py).toContain("ENTRYPOINT");
     expect(py).not.toContain("pnpm");
+  });
+});
+
+describe("非网页项目也默认装好浏览器验收的产物", () => {
+  it("Containerfile 含 playwright，.gitignore 有工作目录，screenshot-checker 子代理装上", () => {
+    const root = pythonRepo();
+    const f = detectProject(root);
+    expect(f.webUi).toBe(false);
+    installFiles(root, f);
+    expect(readFileSync(join(root, ".sandcastle/Containerfile"), "utf8")).toContain("playwright");
+    const ignore = readFileSync(join(root, ".gitignore"), "utf8");
+    for (const d of [".browser-check/", ".playwright-cli/", ".pr-notes/"]) expect(ignore).toContain(d);
+    expect(existsSync(join(root, ".claude/agents/screenshot-checker.md"))).toBe(true);
+  });
+});
+
+describe("browserHints", () => {
+  it("找出提到浏览器验收的文档、旧 .sandcastle 提示词和 scripts/ 里建数据的脚本", () => {
+    const root = nodeRepo();
+    mkdirSync(join(root, "test"), { recursive: true });
+    writeFileSync(join(root, "test/README.md"), "## 浏览器验收（ego-browser）\n先跑 scripts/browser-lab.ts\n");
+    mkdirSync(join(root, "scripts"), { recursive: true });
+    writeFileSync(join(root, "scripts/browser-lab.ts"), "");
+    writeFileSync(join(root, "scripts/build.ts"), "");
+    mkdirSync(join(root, ".sandcastle"), { recursive: true });
+    writeFileSync(join(root, ".sandcastle/implement-prompt.md"), "起 dev server，用 playwright 登录");
+    const hints = detectProject(root).browserHints;
+    expect(hints).toEqual(expect.arrayContaining(["test/README.md", "scripts/browser-lab.ts", ".sandcastle/implement-prompt.md"]));
+    expect(hints).not.toContain("scripts/build.ts");
   });
 });
 
@@ -441,6 +470,17 @@ describe("onboardPrompt", () => {
   it("给 agent 的示例 PROJECT.md 能通过校验", () => {
     const example = readFileSync(new URL("../templates/example-PROJECT.md", import.meta.url), "utf8");
     expect(parseProjectDoc(example).hasBrowser).toBe(true);
+  });
+
+  it("浏览器验收是必经的一步：先读已有资料，拼不全就把具体问题写进缺口清单", () => {
+    const p = onboardPrompt(detectProject(nodeRepo()));
+    expect(p).toContain("先读项目已有资料");
+    expect(p).toContain("browserHints");
+    expect(p).toContain("ego-browser");
+    expect(p).toContain("换成沙箱里的 `playwright-cli`");
+    expect(p).toContain("dev server 启动命令与端口");
+    expect(p).toContain("PROJECT.md「浏览器验收」");
+    expect(onboardPrompt(detectProject(pythonRepo()), "en")).toContain("PROJECT.md「Browser check」");
   });
 
   it("事实、模板、示例都填进去，没有残留占位符", () => {
@@ -507,6 +547,13 @@ describe("questionsPrompt / --questions-only", () => {
     expect(p).not.toContain("用 Write 写 `.sandcastle/PROJECT.md`");
     expect(p).toContain("[意图]");
     expect(p).not.toContain("需要人确认");
+  });
+
+  it("缺口清单提示词：有网页界面却没有浏览器验收时必须列出具体问题", () => {
+    const p = questionsPrompt(detectProject(nodeRepo()), "zh", projectMd);
+    expect(p).toContain("browserHints");
+    for (const q of ["dev server 的启动命令与端口", "验收数据怎么建", "登录方式与账号", "dev server 需要的环境变量"]) expect(p).toContain(q);
+    expect(p).toContain("PROJECT.md「浏览器验收」");
   });
 
   it("英文：清单类别用 [convention] / [intent]，没有残留占位符", () => {

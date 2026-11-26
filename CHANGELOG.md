@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- onboard 把浏览器验收当成必经的一步：有网页界面时先读项目已有的验收资料（README / CLAUDE.md / AGENTS.md、测试说明、docs、旧的 `.sandcastle/*prompt*.md` / `.sandcastle/prompts/`、`scripts/` 里建种子或验收数据的脚本），能拼出四步（准备数据、后台起服务并等 curl 通、`playwright-cli` 登录、查日志）就写「浏览器验收」，宿主机工具（如 ego-browser）换成沙箱里的 `playwright-cli`；拼不全就不写这一节，把 dev server 启动命令与端口、验收数据怎么建、登录方式与账号、dev server 要的变量逐条列进缺口清单（`--questions-only` 同样要求）。探测的事实新增 `browserHints`：提到浏览器验收的文档和 `scripts/` 里相关脚本的路径。之前 onboard 拿不准就不写，也不追问（duckdb_crm 的 test/README.md 写了 ego-browser 验收、有 scripts/browser-lab.ts，生成的 PROJECT.md 仍然没有这一节）
+- onboard 生成的 Containerfile 默认装 playwright-cli + Chromium：之前探测不到网页界面就删掉这段，后端项目后来加前端时沙箱里没有浏览器。`.gitignore` 的工作目录和 `.claude/agents/screenshot-checker.md` 本来就不分项目都装；网页界面的探测保留给 doctor 的警告用
 - 票的门槛偶发失败在终端看得到了：之前票的门槛输出了 `GATE_FLAKY`（失败的文件单独重跑后通过）、也开了 flaky 票，运行日志里只有「⏱ #n 按依赖选门槛用时 …，通过」。现在门槛通过且有偶发失败时 `⏱` 行带「（有偶发失败，重跑通过）」，和 main 兜底检查一致；票落地时另打一行 `⚠ #n 门槛偶发失败已记入 #m`（可能是复用的老票）。开 flaky 票 / 评论老票时 gh 出错不再让整个落地失败、把票打成 stuck，只打一行 `⚠` 带报错首行，继续合并（closes #33）
 - main 兜底完整测试不再挡票的门槛：之前兜底和票的门槛先来先得，兜底先排上时后到的票要等它跑完（一个完整测试约 50 分钟的项目上，两张票分别排了 41.9 分钟和 48.9 分钟，自己的按依赖选门槛只跑了 3.7 分钟和 2 秒）。现在门槛队列票优先，有票在等时兜底不开跑、终端打一行让位提示；已开跑的完整测试不中断，照常跑完。新模块 `src/gate-queue.ts`
 - 孤儿沙箱容器会自动清了：主进程被 SIGKILL、或运行中途 podman 挂掉后留下的 `sandcastle-<uuid>` 容器（只剩 `sleep infinity` 的 Up 容器或 Exited 容器），之前一直不清。现在开跑时删掉本仓库的全部 sandcastle 容器、每次调度再删本仓库已退出的，各打一行 `🧹` 提示。库没给容器打 label，按名字前缀和挂载来源（本仓库根、`.git`、`.sandcastle/worktrees/…`）认，别的仓库的容器不碰（e2e L1 / L4 发现）

@@ -65,6 +65,8 @@ export default defineProject({
 
 有网页界面的项目，PROJECT.md 写了「浏览器验收」一节，agent 才会在沙箱里起 dev server、用浏览器点一遍改过的页面；没有这一节（只有 HTML 注释也算没有），改页面的票只能留 PR 给人看，`sandpipe doctor` 会警告。
 
+onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-cli 和 Chromium。onboard 会先读项目已有的验收资料（README、测试说明、旧的 `.sandcastle` 提示词、`scripts/` 里建验收数据的脚本），能拼出下面四步就写这一节，拼不全就把缺的信息（dev server 启动命令与端口、验收数据怎么建、登录方式与账号、dev server 要的变量）列进缺口清单。项目后来加了前端，照下面的示例在 PROJECT.md 补这一节即可，沙箱已经装好浏览器。
+
 - **dev server 要的变量放进 `isolation.env`**：dev server 在沙箱里读的变量（数据库、会话密钥、对象存储等）都要出现在 `isolation.env` 的返回值里，少一个就起不来。用上一节的 `readHostEnv` 从宿主机 env 文件读出来，指向本机服务的值过一遍 `toContainerHost`。
 - **用独立的库**：和测试一样，库名用 `withDbSuffix` 加上 `` `_i${runId}` `` 后缀，验收数据不会碰到开发库，也不会和并行的票互相清表（写法见开头的示例）。
 - **验收数据**：在 PROJECT.md 这一节第一步写建数据的命令（种子脚本、建账号）；给人验收时的固定准备步骤写在 `acceptancePrep`（见「可选」）。
