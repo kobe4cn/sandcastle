@@ -230,7 +230,7 @@ const en: Messages = {
   reasonChecksFailed: (list) =>
     `The gate passed, but checks on the PR failed, so it was not merged. Merging requires both the gate and the forge checks to pass; if the CI itself is unreliable, set \`mergeRequires: { checks: "none" }\` in the config to rely on the gate alone. Failed checks:\n\n${list}`,
   reasonChecksTimeout: (list, minutes) =>
-    `The gate passed, but checks on the PR were still running after ${minutes} minutes, so it was not merged. Merging requires both the gate and the forge checks to pass; if the CI itself is unreliable, set \`mergeRequires: { checks: "none" }\` in the config to rely on the gate alone. Checks still running:\n\n${list}`,
+    `The gate passed, but checks on the PR were still running after ${minutes} minute${minutes === 1 ? "" : "s"}, so it was not merged. Merging requires both the gate and the forge checks to pass; if the CI itself is unreliable, set \`mergeRequires: { checks: "none" }\` in the config to rely on the gate alone. Checks still running:\n\n${list}`,
   rebasedForHuman: (base) => `\n\nThe branch conflicted with the latest ${base} and was rebased; only typecheck was rerun (passed), tests were not.`,
   rebaseForHumanFailed: (base, reason) => `\n\n⚠️ The branch conflicts with the latest ${base} and the automatic rebase failed: ${reason}`,
 

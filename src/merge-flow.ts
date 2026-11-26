@@ -70,7 +70,7 @@ export async function waitChecksOffSlot(issueId: string, pr: string, d: MergeFlo
   d.ciWaiting.add(issueId);
   d.signalSlotFreed();
   d.host.release();
-  logOf(d)(t(`  ⧗ #${issueId} 等 PR #${pr} 上的检查（最多 ${d.mergeRequires.timeoutMinutes} 分钟，不占空位）`, `  ⧗ #${issueId} waiting for checks on PR #${pr} (up to ${d.mergeRequires.timeoutMinutes} minutes, not holding a slot)`));
+  logOf(d)(t(`  ⧗ #${issueId} 等 PR #${pr} 上的检查（最多 ${d.mergeRequires.timeoutMinutes} 分钟，不占空位）`, `  ⧗ #${issueId} waiting for checks on PR #${pr} (up to ${d.mergeRequires.timeoutMinutes} minute${d.mergeRequires.timeoutMinutes === 1 ? "" : "s"}, not holding a slot)`));
   try {
     return await (d.waitForChecks ?? waitForChecks)(d.forge, pr, d.mergeRequires);
   } finally {

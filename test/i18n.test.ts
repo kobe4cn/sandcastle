@@ -98,3 +98,10 @@ describe("终端语言 / terminal language", () => {
     }
   });
 });
+
+describe("英文分钟数单复数 / minute pluralization", () => {
+  it("reasonChecksTimeout 写 1 minute、2 minutes", () => {
+    expect(en.reasonChecksTimeout("- x", 1)).toContain("after 1 minute,");
+    expect(en.reasonChecksTimeout("- x", 2)).toContain("after 2 minutes,");
+  });
+});

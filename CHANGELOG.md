@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 英文终端和 PR 评论里等检查的分钟数按单复数写：`up to 1 minute`、`after 1 minute`，不再写成 `1 minutes`（e2e I3 发现）
+
 - 门槛输出不再带 ANSI 颜色码：跑门槛（首次门槛、修复后、rebase 后、baseline、main 兜底完整测试，都走 `runGate`）时环境默认设 `NO_COLOR=1`、`FORCE_COLOR=0`，`isolation.env` 和 `gate.env` 里给了同名变量时以它们为准（新导出纯函数 `gateEnv`，`src/gate-progress.ts`）；宿主机一侧统一去掉转义码（`startGateProgress` 的 `onLine`，以及 provider 没回调 onLine 时兜底的 stdout），所以 `.sandcastle/logs/gate-*.log`、PR 正文的 Gate 一节、评论、flaky 的失败文件解析和票正文、fix 提示词都是纯文本。想要颜色就在 `gate.env` 里设 `NO_COLOR: ""`。config 文档（中英）的输出约定补上这一条（closes #21）。
 - 内部：合并收尾（等 PR 上的检查、合并、分支保护 / rebase 补救、留 PR，以及等检查时让出空位与宿主机锁）从 `src/main.ts` 抽到新模块 `src/merge-flow.ts`，依赖由参数注入，补单测 `test/merge-flow.test.ts`。行为、终端输出和 PR 评论不变（closes #31）。
 - `doctor` 新增「合并条件」一项：`autoMerge: true`、`mergeRequires.checks` 为 `"none"`、而仓库的 `.github/workflows` 里有 `.yml` / `.yaml` 时警告「合并只看门槛、不等 CI」，提示 CI 覆盖了门槛没覆盖的东西时加进 `gate.script` 或把 `checks` 改回 `"all"` / `"required"`；其余情况给通过并写明当前合并条件（如「门槛 + PR 上所有检查」）。只看本地 workflow 文件，不查分支保护；只警告，`--fix` 不处理（closes #30）。
