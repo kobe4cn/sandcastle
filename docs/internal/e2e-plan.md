@@ -89,7 +89,7 @@
 - [x] I4 `CI_MODE=fail`、`mergeRequires: { checks: "none" }`：不等 CI 直接合并；doctor「合并条件」给 ⚠，提示加进 gate.script 或改回 all / required
 - [x] I5 `maxParallel: 1`、`CI_MODE=slow`（默认超时）、两张不相关的票：第一张等 CI 时终端显示空位已让出，第二张开工；等 CI 的票没有被重复开工（✓；两张票不能都改同一个文件，否则会因文件重叠被跳过，e2e 是用 #26 + #35 测过的）
 - [x] I6 `CI_MODE=slow`：票进入等 CI 后，往 main 推一个和 PR 改动冲突的提交（只是落后不会让 `gh pr merge` 失败），合并失败后走 rebase、重跑门槛、force-push，沙箱随即关闭（`podman ps` 里看不到它的沙箱），重新等 CI 后合并（✓ #39 / PR #40：冲突后 rebase、重跑门槛、force-push，第二次等检查时 `podman ps` 为空，最后合并。中途 GitHub Actions 因账户计费停了，所以等 CI 那一段改在没有 workflow 的情况下跑，走的是宽限期；之前带 CI 的 I1–I5 已经覆盖了真的等 CI）
-- [-] I7（私有仓库免费账号开不了分支保护，API 返回 403；由 `isBranchProtectionError` 和 merge-flow 单测覆盖，gh 真实报错文本以后在开了保护的仓库核对）在 `main` 上开分支保护，要求 1 个审批：门槛和 CI 都过后合并被挡，直接留 PR，评论写明是分支保护挡住的并附 gh 报错，没有走 rebase。测完关掉分支保护
+- [x] I7（仓库公开后实测：票 #41 → PR #42，门槛与 CI（test: SUCCESS）都过后 `gh pr merge` 被挡（保护：1 个审批、enforce_admins=true、不要求 status checks），终端「#41 blocked by branch protection; PR #42 left open」，标签 sandcastle:pr-open，PR 评论「Not merged automatically: … branch protection won't let Sandcastle merge … gh's error: X Pull request kobe4cn/sandcastle-e2e#42 is not mergeable: the base branch policy prohibits the merge.」；gh 原文能被 `BRANCH_PROTECTION_RE` 的 `base branch policy prohibits the merge` 匹配；PR 只有 1 个提交，时间线无 force-push，日志无 rebase 重试。测完已关保护、关 PR 与票）在 `main` 上开分支保护，要求 1 个审批：门槛和 CI 都过后合并被挡，直接留 PR，评论写明是分支保护挡住的并附 gh 报错，没有走 rebase。测完关掉分支保护
 - [x] I8 删掉 workflow（PR 上没有检查）：宽限约 1 分钟后按没有 CI 合并（✓ PR #40 没有检查，宽限约 60 秒后合并；已补一行「没有检查，只按门槛合并」的提示）
 
 ## 不在本次范围
