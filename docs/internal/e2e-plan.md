@@ -103,13 +103,13 @@
 - [x] N1f 用量记录：usage.jsonl 每条带 issue / phase / profile / model / peak，usageTable 按会话汇总
 
 e2e 实跑（sandcastle-e2e）：
-- [ ] N2 phases 配成 prep/review=opus，implement/revise/fix/rebase=sonnet：启动行「模型：」照配置打印；usage.jsonl 里每个阶段的 profile/model 与配置一致；PR 用量表一致
-- [ ] N3 让 revise 真正触发（票里埋一个 reviewer 必然打回的要求），usage.jsonl 出现 phase=revise
-- [ ] N4 让 fix 真正触发（门槛失败，如票要求的行为与现有测试冲突或 lint 必然报错），出现 phase=fix，修好后合并
-- [ ] N5 让 rebase 走 agent（制造需要 agent 解的冲突），出现 phase=rebase
+- [x] N2 （✓ 990acaf：启动行与配置一致；usage.jsonl 22 条 prep/review=opus、其余=sonnet 全对；PR #95/#96/#100/#101 用量表一致。小问题：「Models:」每轮调度都打一遍；PR 用量表没有 prep 行）phases 配成 prep/review=opus，implement/revise/fix/rebase=sonnet：启动行「模型：」照配置打印；usage.jsonl 里每个阶段的 profile/model 与配置一致；PR 用量表一致
+- [x] N3 （✓ #97 实现开始后往票里加一条验收，reviewer 打回、revise（sonnet）补上后合并 PR #100；#99 漏 CHANGELOG 也自然触发一次。只在指引里写「不用改文档」骗不过 sonnet）让 revise 真正触发（票里埋一个 reviewer 必然打回的要求），usage.jsonl 出现 phase=revise
+- [x] N4 （✓ 本地门槛临时加「没有 CHANGELOG.md 就失败」，#92 门槛失败 → fix（sonnet）补上 → 合并 PR #95）让 fix 真正触发（门槛失败，如票要求的行为与现有测试冲突或 lint 必然报错），出现 phase=fix，修好后合并
+- [x] N5 （✓ #99 PR 开出后往 main 推可机械解决的冲突，rebase（sonnet）解开、门槛重跑、合并 PR #101；#94 推语义冲突，rebase 主动放弃并留评论让人定。小问题：有冲突的 PR GitHub 不跑 CI，工具等 60 秒后报「No checks … (no CI)」，文案不对，合并失败后才走 rebase）让 rebase 走 agent（制造需要 agent 解的冲突），出现 phase=rebase
 - [ ] N6 限额切换：implement 的第一个档案用一个必然命中 limitPattern 的档案（如 limitPattern 匹配一定会出现的输出，或指向返回限额报错的假接口），自动换到第二个并完成
 - [ ] N7 运行中改 models.json（换 review 的档案），下一轮调度生效，不用重启
-- [ ] N8 effort：sonnet 档案的 effort 传到容器里的 claude（日志或进程参数可见）
+- [x] N8 （✓ 容器里进程 `claude … --model claude-sonnet-5-5 --effort medium`，env 带 SANDCASTLE_PROFILE/PHASE）effort：sonnet 档案的 effort 传到容器里的 claude（日志或进程参数可见）
 - [ ] N9 别家接口（GLM）：有 GLM_API_KEY 才测，否则记为跳过
 
 ## L. 意外退出的兜底与长时间运行（sandcastle-e2e）
