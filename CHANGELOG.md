@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 合并前等 forge 检查的底层（还没接进 land，行为不变）：新配置项 `mergeRequires: { checks?: "none" | "required" | "all"; timeoutMinutes?: number }`，默认 `{ checks: "all", timeoutMinutes: 30 }`；Forge 新增**可选**方法 `prChecks(id, requiredOnly)`（新导出类型 `PrCheck`），GitHub 实现用 `gh pr checks --json name,bucket,link`（`skipping` 算通过、`cancel` 算失败，没有检查返回空数组），自己写的 forge 不实现时按没有检查处理；新模块 `src/merge-checks.ts` 提供 `checksVerdict` 与可注入时钟的 `waitForChecks`（每 30 秒轮询，有失败立刻返回，超时返回 `why: "timeout"`，空列表宽限 60 秒后当作没有 CI）（closes #27）。
 - 票正文写着「要先由人决定」的待决定项（「方案 A / B」「是否修订 ADR」之类）、但正文和人的评论里都没写明选了哪个时，prep 不再从 `ready-for-agent` 标签推断已经决定：打 `sandcastle:stuck` + `ready-for-human`，评论列出选项和建议；agent 写的 `<!-- sandcastle:decided -->` 评论不算人的决定。DECISIONS 规则补上：碰到「必须停下」（含项目红线，比如修订 ADR）的，不管票带什么标签都交给人，票正文列出但没写明选了哪个的待决定项也归这一类；只有票正文或人的评论明确要求时才算已经决定，标签和 agent 写的 decided 评论都不算。reviewer 看到 decided 评论选的正是票正文的待决定项、或内容碰了「必须停下」时，写进「需要人判断」，票留 PR、不自动合并。只改提示词，不新增标签（closes #18）。
 - 没配浏览器验收的项目，改了页面的 PR 不再在「准备」段写「本票没改页面，不用起 dev server」：review 提示词要求 reviewer 在摘要后单独输出机器可读的 `<browser-check>` 标签（`none` / `done` / `missing` 三选一）（配不配浏览器验收都输出，和摘要里「浏览器验收」那一行对应）；没有 `.browser-check/` 但标签是 `done` 或 `missing` 的票也算改了页面（新增 `pageChangedByReview`，`src/pr-body.ts`）。改了页面但项目没配 `acceptancePrep` 时，准备段写「本票改了页面，需要起 dev server（项目没配准备步骤）」（英文同步）。有 `.browser-check/` 或配了 `acceptancePrep` 的票行为不变（closes #17）。
 - 一张票都没开工就空转到上限退出时，不再打印「全部完成」，改为说明原因：列出最后一次调度里被 blocker 挡住的票（`#n 等 #m、#k`）；没有被挡的票时说明没有可开工的票（没有带 `Sandcastle` 标签、还没开工的票，或者都在等人审 PR / 带 `sandcastle:stuck`）。开工过票时照旧打印「全部完成」。原因文案由新增的 `idleSummary`（`src/guide.ts`）生成（closes #26）。

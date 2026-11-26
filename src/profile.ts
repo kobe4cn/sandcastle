@@ -114,6 +114,13 @@ export interface ProjectProfile {
    */
   autoMerge?: boolean;
   /**
+   * 合并条件是门槛 + forge 检查。checks："all" 等 PR 上所有检查（默认），"required" 只等分支保护要求的，
+   * "none" 只看门槛（CI 不可靠或门槛已覆盖 CI 时用）；PR 上没有检查时不阻塞。timeoutMinutes 是最多等多久，默认 30。
+   * Merging requires the gate plus forge checks. checks: "all" waits for every check on the PR (default), "required" only for those required by branch protection,
+   * "none" looks at the gate only (for unreliable CI or when the gate already covers CI); a PR without checks isn't blocked. timeoutMinutes is how long to wait at most, default 30.
+   */
+  mergeRequires?: { checks?: "none" | "required" | "all"; timeoutMinutes?: number };
+  /**
    * issue、PR、评论用什么语言写（agent 写的和脚本写的都算），以及终端输出的语言："zh" 或 "en"。默认 "zh"。
    * 提交信息的语言另由 PROJECT.md「提交」一节决定；SANDPIPE_LANG 可单独指定终端语言。
    * Language for issues, PRs and comments (both what the agent and the script write) and for terminal output: "zh" or "en". Default "zh".
@@ -247,6 +254,7 @@ export type Project = Required<
   >
 > & {
   labels: Labels;
+  mergeRequires: { checks: "none" | "required" | "all"; timeoutMinutes: number };
   gate: GateConfig & { rerunMax: number; selectedDescription: string };
   integrity?: IntegrityCheck;
   /**
@@ -266,6 +274,7 @@ export function resolveProject(p: ProjectProfile): Project {
     baseBranch: p.baseBranch ?? "main",
     mergeMethod: p.mergeMethod ?? "rebase",
     autoMerge: p.autoMerge ?? true,
+    mergeRequires: { checks: "all", timeoutMinutes: 30, ...p.mergeRequires },
     language: p.language ?? "zh",
     maxParallel: p.maxParallel ?? 2,
     agentIdleTimeoutS: p.agentIdleTimeoutS ?? 40 * 60,

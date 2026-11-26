@@ -4,7 +4,7 @@
 // Arguments match the original calls word for word; test/forge-github.test.ts pins every method's argv.
 
 import { basename } from "node:path";
-import type { Forge, ForgePr, ForgeIssue, MergeMethod } from "../forge.ts";
+import type { Forge, ForgePr, ForgeIssue, MergeMethod, PrCheck } from "../forge.ts";
 import { sh } from "../shell.ts";
 import { t } from "../term.ts";
 
@@ -195,6 +195,26 @@ export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefin
     },
     mergePr(id, method: MergeMethod) {
       gh(["pr", "merge", id, `--${method}`]);
+    },
+    prChecks(id, requiredOnly) {
+      let out: string;
+      try {
+        // 不用 --watch（会阻塞）；轮询由 merge-checks.ts 负责 / No --watch (it blocks); polling lives in merge-checks.ts
+        out = gh(["pr", "checks", id, "--json", "name,bucket,link", ...(requiredOnly ? ["--required"] : [])]);
+      } catch (e) {
+        const err = e as { stdout?: unknown; stderr?: unknown };
+        if (/no checks reported/i.test(String(err.stderr || (e as Error).message))) return [];
+        // 有检查还在跑时 gh 以 8 退出，stdout 里照样有 JSON / gh exits 8 while checks are pending, but stdout still has the JSON
+        const stdout = String(err.stdout ?? "").trim();
+        if (!stdout) throw e;
+        out = stdout;
+      }
+      const rows = JSON.parse(out || "[]") as { name: string; bucket: string; link?: string }[];
+      return rows.map((r): PrCheck => ({
+        name: r.name,
+        state: r.bucket === "pass" || r.bucket === "skipping" ? "pass" : r.bucket === "fail" || r.bucket === "cancel" ? "fail" : "pending",
+        ...(r.link ? { link: r.link } : {}),
+      }));
     },
 
     viewIssueCommand: (issueId) => `gh issue view ${issueId}`,

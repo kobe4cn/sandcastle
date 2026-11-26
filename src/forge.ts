@@ -40,6 +40,12 @@ export type ForgePr = {
 
 export type MergeMethod = "rebase" | "squash" | "merge";
 
+/**
+ * PR 上的一项检查（CI、状态检查）；state 已归一成通过 / 失败 / 还在跑。
+ * One check on a PR (CI, status check); state is normalized to pass / fail / still running.
+ */
+export type PrCheck = { name: string; state: "pass" | "fail" | "pending"; link?: string };
+
 /** 票的状态。 / A ticket's state. */
 export type IssueState = "open" | "closed" | "missing";
 
@@ -105,6 +111,11 @@ export interface Forge {
    */
   commentPr(id: string, body: string, attachments?: string[]): void;
   mergePr(id: string, method: MergeMethod): void;
+  /**
+   * PR 上的检查；requiredOnly 时只要分支保护要求的。返回空数组 = PR 上没有检查。可选：不实现这个方法的 forge 按没有检查处理。
+   * Checks on a PR; with requiredOnly, only those required by branch protection. An empty array means the PR has no checks. Optional: a forge without this method is treated as having no checks.
+   */
+  prChecks?(id: string, requiredOnly: boolean): PrCheck[];
 
   // ---- 给 agent 的提示词用 ---- / For the agent's prompts
   /** agent 在沙箱里看 issue 的命令，比如 `gh issue view 12`。 / Command the agent uses in the sandbox to view an issue, e.g. `gh issue view 12`. */

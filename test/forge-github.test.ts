@@ -51,6 +51,41 @@ describe("githubForge 发给 gh 的参数", () => {
     expect(() => failing("error connecting to api.github.com").issueState("99")).toThrow();
   });
 
+  it("prChecks 发 gh pr checks --json，bucket 归一成 pass / fail / pending", () => {
+    const rows = [
+      { name: "a", bucket: "pass", link: "https://x/a" },
+      { name: "b", bucket: "skipping", link: "" },
+      { name: "c", bucket: "fail", link: "https://x/c" },
+      { name: "d", bucket: "cancel" },
+      { name: "e", bucket: "pending", link: "https://x/e" },
+    ];
+    const { forge, calls } = fakeGh(JSON.stringify(rows), "[]");
+    expect(forge.prChecks!("13", false)).toEqual([
+      { name: "a", state: "pass", link: "https://x/a" },
+      { name: "b", state: "pass" },
+      { name: "c", state: "fail", link: "https://x/c" },
+      { name: "d", state: "fail" },
+      { name: "e", state: "pending", link: "https://x/e" },
+    ]);
+    expect(forge.prChecks!("13", true)).toEqual([]);
+    expect(calls).toEqual([
+      ["pr", "checks", "13", "--json", "name,bucket,link"],
+      ["pr", "checks", "13", "--json", "name,bucket,link", "--required"],
+    ]);
+  });
+
+  it("prChecks：没有检查返回 []，退出码 8 带 stdout 照常解析，其他错误照旧抛出", () => {
+    const failing = (stdout: string, stderr: string) =>
+      githubForge(() => {
+        throw Object.assign(new Error("gh"), { stdout, stderr });
+      });
+    expect(failing("", "no checks reported on the 'b' branch").prChecks!("13", false)).toEqual([]);
+    expect(failing(JSON.stringify([{ name: "ci", bucket: "pending", link: "l" }]), "").prChecks!("13", false)).toEqual([
+      { name: "ci", state: "pending", link: "l" },
+    ]);
+    expect(() => failing("", "error connecting to api.github.com").prChecks!("13", false)).toThrow();
+  });
+
   it("issueComments 每条评论一行 JSON，多行评论不被拆开", () => {
     const { forge, calls } = fakeGh(`${JSON.stringify("第一行\n第二行")}\n${JSON.stringify("b")}`);
     expect(forge.issueComments("4")).toEqual(["第一行\n第二行", "b"]);

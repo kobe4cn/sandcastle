@@ -24,6 +24,7 @@
 | `src/claude-conflict.ts` | onboard / update 遇到 `.claude/` 下本工具的文件和模板不同时：显示差异，问保留 / 覆盖 / 另存 `.new` |
 | `src/forge.ts` | **Forge** 接口：托管平台上的 issue / 标签 / PR / 合并 |
 | `src/forges/github.ts` | GitHub 实现（gh CLI） |
+| `src/merge-checks.ts` | 合并前等 forge 检查（CI）：检查结果归类、带超时的轮询 |
 | `src/profile.ts` | **ProjectProfile**：项目配置（测试隔离、门槛、安装、一致性检查、文案）与默认值 |
 | `src/isolation.ts` | 给 config 的 `isolation.env` / `cleanup` 用的辅助函数（从包入口导出）：读宿主机 env 文件、换宿主机地址、加库名后缀、跑回收脚本 |
 | `src/project-doc.ts` | 解析 `.sandcastle/PROJECT.md`、渲染提示词 |
