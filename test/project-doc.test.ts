@@ -14,12 +14,13 @@ const emptyCwd = mkdtempSync(join(tmpdir(), "sc-test-"));
 const minimal = (extra = "") =>
   ["## 概况", "一个服务", "## 开发命令", "`make check`", "## 测试", "`make test`", "## 提交", "英文提交信息", extra].join("\n");
 
-const render = (md: string) => {
+const render = (md: string, language?: "zh" | "en") => {
   const files = renderPrompts({
     doc: parseProjectDoc(md),
     forgeGuide: githubForge(() => "").agentGuide(),
     labels: DEFAULT_LABELS,
     dir: emptyCwd,
+    ...(language ? { language } : {}),
   });
   return Object.fromEntries(PROMPT_NAMES.map((n) => [n, readFileSync(files[n], "utf8")])) as Record<(typeof PROMPT_NAMES)[number], string>;
 };
@@ -126,5 +127,14 @@ describe("没有浏览器验收的项目", () => {
     expect(out.review).toContain("没有改页面");
     expect(out.review).not.toContain("RESULT.md` 存在");
     expect(out.review).toContain("<browser-check>missing</browser-check>");
+  });
+});
+
+describe("进度评论第一行跟随项目语言", () => {
+  it("中文项目写「模型档案：」，英文项目写「Model profile: 」", () => {
+    expect(render(minimal()).implement).toContain("第一行写 `模型档案：<档案名>`");
+    const en = render(minimal(), "en").implement;
+    expect(en).toContain("第一行写 `Model profile: <档案名>`");
+    expect(en).not.toContain("模型档案：");
   });
 });

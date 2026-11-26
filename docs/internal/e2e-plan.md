@@ -92,6 +92,55 @@
 - [x] I7（仓库公开后实测：票 #41 → PR #42，门槛与 CI（test: SUCCESS）都过后 `gh pr merge` 被挡（保护：1 个审批、enforce_admins=true、不要求 status checks），终端「#41 blocked by branch protection; PR #42 left open」，标签 sandcastle:pr-open，PR 评论「Not merged automatically: … branch protection won't let Sandcastle merge … gh's error: X Pull request kobe4cn/sandcastle-e2e#42 is not mergeable: the base branch policy prohibits the merge.」；gh 原文能被 `BRANCH_PROTECTION_RE` 的 `base branch policy prohibits the merge` 匹配；PR 只有 1 个提交，时间线无 force-push，日志无 rebase 重试。测完已关保护、关 PR 与票）在 `main` 上开分支保护，要求 1 个审批：门槛和 CI 都过后合并被挡，直接留 PR，评论写明是分支保护挡住的并附 gh 报错，没有走 rebase。测完关掉分支保护
 - [x] I8 删掉 workflow（PR 上没有检查）：宽限约 1 分钟后按没有 CI 合并（✓ PR #40 没有检查，宽限约 60 秒后合并；已补一行「没有检查，只按门槛合并」的提示）
 
+## N. 各阶段的模型配置（`.sandcastle/models.json`）
+
+单元测试（N1，补 `test/models.test.ts`，不跑 agent）：
+- [x] N1a 按阶段挑档案：phases 里每个阶段取第一个档案；未知阶段、未知档案、空列表、缺字段报错并指明位置
+- [x] N1b 撞限额换档案：第一个档案输出命中 limitPattern 后换下一个；全部撞限额抛 AllProfilesLimited，带最早恢复时间
+- [x] N1c 重置时间解析：Claude 的写法、别家不带时区按 resetTimeZone 解析
+- [x] N1d 别家档案（设了 ANTHROPIC_BASE_URL）清掉 CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY；`${VAR}` 从 .sandcastle/.env 取；档案不能覆盖 CLAUDE_CODE_AUTO_COMPACT_WINDOW；没设 ANTHROPIC_DEFAULT_HAIKU_MODEL 有警告
+- [x] N1e 热重载：改 models.json 后 reloadModels() 生效；改坏了保留旧配置并提示
+- [x] N1f 用量记录：usage.jsonl 每条带 issue / phase / profile / model / peak，usageTable 按会话汇总
+
+e2e 实跑（sandcastle-e2e）：
+- [ ] N2 phases 配成 prep/review=opus，implement/revise/fix/rebase=sonnet：启动行「模型：」照配置打印；usage.jsonl 里每个阶段的 profile/model 与配置一致；PR 用量表一致
+- [ ] N3 让 revise 真正触发（票里埋一个 reviewer 必然打回的要求），usage.jsonl 出现 phase=revise
+- [ ] N4 让 fix 真正触发（门槛失败，如票要求的行为与现有测试冲突或 lint 必然报错），出现 phase=fix，修好后合并
+- [ ] N5 让 rebase 走 agent（制造需要 agent 解的冲突），出现 phase=rebase
+- [ ] N6 限额切换：implement 的第一个档案用一个必然命中 limitPattern 的档案（如 limitPattern 匹配一定会出现的输出，或指向返回限额报错的假接口），自动换到第二个并完成
+- [ ] N7 运行中改 models.json（换 review 的档案），下一轮调度生效，不用重启
+- [ ] N8 effort：sonnet 档案的 effort 传到容器里的 claude（日志或进程参数可见）
+- [ ] N9 别家接口（GLM）：有 GLM_API_KEY 才测，否则记为跳过
+
+## L. 意外退出的兜底与长时间运行（sandcastle-e2e）
+
+- [x] L1 （⚠ SIGINT：静默退出 130、复用 worktree 续做、不重复开工；SIGKILL：续做正常，但孤儿容器一直不清（B1））implement 中途 kill 主进程（SIGINT 一次、另测 SIGKILL）：重启后这张票能接着做或干净重来；没有重复开工、没有残留容器 / worktree / 分支卡住调度
+- [x] L2 （✓ 门槛中 SIGINT，重启后整套重跑通过才开 PR #49）门槛运行中 kill：重启后重新跑门槛，不会把没过门槛的改动合并
+- [x] L3 （⚠ 不重开 PR、接着等原 CI 后合并，但先重跑了 implement/review/门槛三个会话（B3），等 CI 时票上没有 pr-open）等 CI 中 kill（CI_MODE=slow）：重启后接着等这个 PR，不重新实现
+- [x] L4 （⚠ 启动前无 podman 检查，报堆栈、退出码 0、结尾提示错误；运行中停 podman：重试一次后打 stuck，评论带堆栈，容器 Exited 残留；去 stuck 后可恢复，PR #50）podman 不可用（停 podman machine）时启动与运行中：给出明确提示，不把票打坏（标签、PR 状态可恢复）
+- [x] L5 （✓ 用 PATH 前置的 gh/git 包装模拟：fetch 30/60/120 秒退避；运行中断 3 分钟，push 重试后恢复，PR #55）断网 / GitHub 临时错误（如 gh 调用失败）：重试或跳过本轮，恢复后继续
+- [x] L6 （⚠ 超时后打 stuck 留言、无残留容器；但留言建议 --idle-timeout（应为 agentIdleTimeoutS）且带堆栈；超时后进程「All done」却不退出（B2））agentIdleTimeoutS 调小：agent 卡住被判超时后的处理（重试 / 留给人），票的状态正确
+- [x] L7 （✓ #60 会话用完后 reprep 再做完；#63 reprep 后仍不完打 stuck 并建议拆票；#54 打回 1 次仍不过，PR #62 留给人）implementMaxSessions 用完、reviseMax 用完：票交给人，标签和评论说明原因
+- [ ] L8 连续运行：一次排 10 张以上互相独立 / 有依赖的小票，autoMerge、maxParallel 2，不人工干预跑完；统计成功率、每张耗时、失败 / stuck 原因、上下文峰值
+- [ ] L9 跑完后环境干净：无容器、无多余 worktree、远端只剩 main、标签都对
+
+## M. 复杂票、代码准确性与上下文
+
+- [ ] M1 中等复杂度、改 3–4 个文件的票（带实现指引）：合并后的代码人工核对正确，按指引补了测试，测试真的覆盖验收条件
+- [ ] M2 有隐含边界条件的票：核对 agent 是否处理并测了边界
+- [ ] M3 逼近上下文预算：把 contextBudget 调小（如 60K）跑一张中等票，观察自动压缩 / 换新会话、交接后信息是否完整、最终结果是否正确
+- [ ] M4 很大的需求票：prep 拆分合理（每张子票 ≤3 条验收、依赖正确、子票带实现指引），全部做完父票关闭
+- [ ] M5 子票语言跟原票一致（E3 发现英文原票拆出中文子票）
+
+## K. 带网页、文档较全的项目，以及没有文档的项目
+
+- [ ] K1 在 duckdb_crm-trial（ducked_init-trial，Web 项目，文档较全）上跑一张页面相关的票：implementer 做浏览器验收，截图作为附件挂到 PR，RESULT.md 进 PR 正文
+- [ ] K2 门槛按依赖只跑相关测试（GATE_TIER: selected），PR 里写明；main 上的兜底完整测试按计划跑
+- [ ] K3 GATE_FLAKY：放一个偶发失败的测试，重跑通过后 PR 标出 flaky 文件；测完删掉
+- [ ] K4 文档较全时，实现遵守 DECISIONS / CODING_STANDARDS（抽查）
+- [ ] K5 没有任何文档的项目（本地临时仓库）：onboard 开 agent 生成的 PROJECT.md 不编造不存在的命令 / 文档，缺口进项目知识缺口清单
+- [ ] K6 没有网页的项目（sandcastle-e2e）不该生成 screenshot-checker 和浏览器相关 .gitignore（之前发现的问题，确认现状）
+
 ## 不在本次范围
 
 - `GATE_TIER` / main 兜底完整测试 / `GATE_FLAKY`：门槛需要按依赖选测试，或者自己实现重跑。本项目的门槛是完整测试，用不到。留到 duckdb_crm 验收时测。

@@ -112,6 +112,7 @@ Example (replace the commands, port and accounts with the project's own):
 | `Sandcastle` | Picked by a human; the pipeline only handles tickets with this label |
 | `sandcastle:prepped` | prep confirmed the ticket can be implemented |
 | `sandcastle:pr-open` | PR opened, waiting for human review |
+| `sandcastle:merging` | PR opened and the gate passed; waiting for checks / merging. If the run is interrupted, the next run resumes waiting instead of reimplementing. Created by the pipeline on first use |
 | `sandcastle:stuck` | Needs a human; the reason is in an issue comment |
 | `sandcastle:decided` | The agent made a design decision on a human's behalf; remove it after you've reviewed it |
 | `flaky` | Tests that only passed on a rerun in the gate; the pipeline opens these tickets automatically |

@@ -142,6 +142,22 @@ describe("mergeWhenReady", () => {
     expect(b.warns).toEqual([]);
   });
 
+  it("整个过程票上带 merging 标记：等检查前打上，合并后去掉（中断时标记留着，重启后接着等，不重新实现）", async () => {
+    const f = fakeDeps();
+    f.d.markMerging = (on) => void f.events.push(`markMerging ${on}`);
+    await mergeWhenReady({ issueId: "7", pr: "42", chainOk: true, brokenOut: "", rebase: async () => ok }, f.d);
+    expect(f.events[0]).toBe("markMerging true");
+    expect(f.events.indexOf("markMerging true")).toBeLessThan(f.events.indexOf("wait"));
+    expect(f.events.at(-1)).toBe("markMerging false");
+  });
+
+  it("出错时也去掉 merging 标记", async () => {
+    const f = fakeDeps({ wait: new Error("gh 挂了") });
+    f.d.markMerging = (on) => void f.events.push(`markMerging ${on}`);
+    await expect(mergeWhenReady({ issueId: "7", pr: "42", chainOk: true, brokenOut: "", rebase: async () => ok }, f.d)).rejects.toThrow("gh 挂了");
+    expect(f.events.filter((e) => e.startsWith("markMerging"))).toEqual(["markMerging true", "markMerging false"]);
+  });
+
   it("checks: none 时不警告", async () => {
     const f = fakeDeps({ noPrChecks: true, checks: "none" });
     await mergeWhenReady({ issueId: "7", pr: "42", chainOk: true, brokenOut: "", rebase: async () => ok }, f.d);

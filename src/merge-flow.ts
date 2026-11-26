@@ -25,6 +25,13 @@ export type MergeFlowDeps = {
   ciWaiting: Set<string>;
   signalSlotFreed(): void;
   leaveForHuman(reason: string): void;
+  /**
+   * 给票打上 / 去掉「在等检查 / 合并」的标记（main.ts 里是 sandcastle:merging 标签）。进程在等的时候被杀掉，标签留着，
+   * 重启后按它直接回到等检查 / 合并，不重新实现。出错只警告，由实现方兜住。
+   * Put / remove the "waiting for checks / merging" mark on the ticket (the sandcastle:merging label in main.ts). If the process is killed while waiting the label stays,
+   * and a restart goes straight back to waiting / merging instead of reimplementing. Errors only warn; the implementation handles them.
+   */
+  markMerging?(on: boolean): void;
   waitForChecks?: typeof waitForChecks;
   sleep?: (ms: number) => Promise<void>;
   log?: (msg: string) => void;
@@ -87,8 +94,22 @@ export async function waitChecksOffSlot(issueId: string, pr: string, d: MergeFlo
  * 返回 "merged"（直接合并或 rebase 后合并）或 "left"（已留 PR 给人）。
  * The auto-merge finish of land: when the integrity check passed, wait for checks then merge; on merge failure, branch protection leaves the PR at once, anything else goes to rebase recovery.
  * Returns "merged" (merged directly or after a rebase) or "left" (PR left for a human).
+ * 整个过程票上带着 markMerging 的标记，结束（含出错）时去掉。 / The ticket carries the markMerging mark throughout; it's removed at the end (including on errors).
  */
 export async function mergeWhenReady(
+  args: { issueId: string; pr: string; chainOk: boolean; brokenOut: string; rebase: () => Promise<MergeResult> },
+  d: MergeFlowDeps,
+): Promise<"merged" | "left"> {
+  d.markMerging?.(true);
+  try {
+    return await mergeWhenReadyMarked(args, d);
+  } finally {
+    d.markMerging?.(false);
+  }
+}
+
+/** mergeWhenReady 的主体，调用期间票上带着 markMerging 的标记。 / The body of mergeWhenReady, run while the ticket carries the markMerging mark. */
+async function mergeWhenReadyMarked(
   args: { issueId: string; pr: string; chainOk: boolean; brokenOut: string; rebase: () => Promise<MergeResult> },
   d: MergeFlowDeps,
 ): Promise<"merged" | "left"> {

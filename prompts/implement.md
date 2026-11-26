@@ -6,7 +6,7 @@
 2. 如果这个分支已经有 PR，先逐条处理里面的 review 意见，包括行内意见。
 3. `git log --oneline {{BRANCH}} -n 10` 看这个分支已经提交了什么。
 
-在 issue 上留进度评论时，第一行写 `模型档案：<档案名>`，档案名用 `echo "$SANDCASTLE_PROFILE"` 取（为空就不写这一行）。
+在 issue 上留进度评论时，第一行写 `{{LANG_PROFILE_LINE}}<档案名>`，档案名用 `echo "$SANDCASTLE_PROFILE"` 取（为空就不写这一行）。
 
 # 平台命令
 

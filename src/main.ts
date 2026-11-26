@@ -75,7 +75,7 @@
 //        SANDCASTLE_ONLY=328,329 npx tsx <this repo>/src/main.ts   only these tickets (trial runs, reruns)
 //        SANDCASTLE_BASELINE=1 … (i.e. sandpipe baseline)   run the full gate once against origin/main and exit
 
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, loadavg, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -90,6 +90,9 @@ import { acceptanceSection, checkAcceptanceNotes, pageChangedByReview, replaceSe
 import type { ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { type MergeFlowDeps, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
 import { loadProject } from "./profile.ts";
+import {
+  acquireRunLock, errorLine, exitWhenDone, isAgentIdleTimeout, logErrorDetail, onInterrupt, podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath,
+} from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
 import { duration, gateEnv, startGateProgress } from "./gate-progress.ts";
 import { setTermLanguage, t } from "./term.ts";
@@ -239,6 +242,8 @@ let gateQueue: Promise<unknown> = Promise.resolve();
 type ExecResult = { stdout: string; exitCode: number };
 
 const GATE_LOG_DIR = ".sandcastle/logs";
+/** 报错的完整内容（含堆栈）：终端和 issue 评论只写一行，全文追加到这里。 / Full errors (with stacks): the terminal and issue comments get one line, the full text is appended here. */
+const ERROR_LOG = ".sandcastle/logs/errors.log";
 
 /**
  * 跑一次门槛：所有门槛排同一个队；用时（和排队时间）打进日志，并追加在输出末尾一行 GATE_TIME（进 PR 的 Gate 一节）。
@@ -450,7 +455,7 @@ function closeFinishedParents() {
  * 出错只打警告。
  */
 async function cleanupClosedIssues() {
-  for (const label of [LABEL.prepped, LABEL.prOpen, LABEL.stuck]) {
+  for (const label of [LABEL.prepped, LABEL.prOpen, LABEL.merging, LABEL.stuck]) {
     const closed = attempt(() => forge.listClosedIssueNumbers(label));
     if (!closed.ok) {
       console.warn(t(`  ⚠ 查带 ${label} 的已关闭票失败：`, `  ⚠ Listing closed tickets labelled ${label} failed: `) + closed.out.slice(0, 200));
@@ -532,11 +537,14 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
     awaitingReview.add(w.number);
     for (const f of changedFiles(w.body, APPEND_ONLY).files) if (!taken.has(f)) taken.set(f, w.number);
   }
-  for (const r of candidates.filter((c) => running.has(String(c.number)))) {
+  // 带 merging 的票（上次运行在等检查 / 合并时被中断，由 resumeMerging 接着做）和正在做的票一样占着文件、不重新开工。
+  // Tickets labelled merging (interrupted last run while waiting for checks / merging; resumeMerging picks them up) claim files like running ones and aren't started again.
+  const merging = (c: ListedIssue) => c.labels.includes(LABEL.merging);
+  for (const r of candidates.filter((c) => running.has(String(c.number)) || merging(c))) {
     for (const f of changedFiles(r.body, APPEND_ONLY).files) if (!taken.has(f)) taken.set(f, r.number);
   }
   const picked: Issue[] = [];
-  for (const issue of candidates.filter((c) => allowed(c.number) && !running.has(String(c.number))).sort(byUrgency)) {
+  for (const issue of candidates.filter((c) => allowed(c.number) && !running.has(String(c.number)) && !merging(c)).sort(byUrgency)) {
     const missing = missingBlockers(issue.body);
     if (missing.length > 0) {
       if (!quiet) stuckOnMissing(issue, missing); // quiet 时只跳过，不打 stuck / when quiet, only skip, don't label stuck
@@ -1158,7 +1166,27 @@ const mergeDeps = (issue: Issue, pr: string, host: HostGap): MergeFlowDeps => ({
   ciWaiting,
   signalSlotFreed,
   leaveForHuman: (reason) => leaveForHuman(issue, pr, reason),
+  markMerging: (on) => markMerging(issue.id, on),
 });
+
+let mergingLabelEnsured = false;
+/**
+ * 打 / 去 sandcastle:merging：第一次用时先建标签（老项目没有，和 flaky、main-broken 一样由脚本自己建）。出错只警告。
+ * Add / remove sandcastle:merging: create the label on first use (older projects lack it; like flaky and main-broken the script creates it). Errors only warn.
+ */
+function markMerging(issueId: string, on: boolean) {
+  if (on && !mergingLabelEnsured) {
+    mergingLabelEnsured = true;
+    attempt(() => forge.ensureLabel(LABEL.merging, "bfdadc", M.mergingLabelDesc));
+  }
+  const r = attempt(() => (on ? forge.addLabel(issueId, LABEL.merging) : forge.removeLabel(issueId, LABEL.merging)));
+  if (!r.ok && !issueClosed(issueId))
+    console.warn(
+      on
+        ? t(`  ⚠ 给 #${issueId} 打 ${LABEL.merging} 失败（中断后重启会重新实现）：`, `  ⚠ Labelling #${issueId} ${LABEL.merging} failed (a restart after an interrupt would reimplement it): `) + r.out.slice(0, 200)
+        : t(`  ⚠ 去掉 #${issueId} 的 ${LABEL.merging} 失败：`, `  ⚠ Removing ${LABEL.merging} from #${issueId} failed: `) + r.out.slice(0, 200),
+    );
+}
 
 async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnType<typeof build>>>, host: HostGap) {
   // 运行期间人已经合并了这张票的 PR 或关了票：不再 push、开 PR、打标签，本地分支留着备查。
@@ -1168,8 +1196,14 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     return;
   }
   if (outcome.status === "rejected") {
-    console.error(`  ✗ #${issue.id} ${t("失败：", "failed: ")}${outcome.reason}`);
-    markStuck(issue.id, M.sandboxError(String(outcome.reason).slice(0, 500)));
+    // 终端和评论只要一行，堆栈写进本地日志（评论里的 node_modules 堆栈对人没用）。
+    // One line for the terminal and the comment; the stack goes to a local log (a node_modules stack in a comment helps nobody).
+    logErrorDetail(ERROR_LOG, `#${issue.id}`, outcome.reason, appendFileSync);
+    console.error(`  ✗ #${issue.id} ${t("失败：", "failed: ")}${errorLine(outcome.reason)}${t(`（详情见 ${ERROR_LOG}）`, ` (details in ${ERROR_LOG})`)}`);
+    markStuck(
+      issue.id,
+      isAgentIdleTimeout(outcome.reason) ? M.agentIdleTimeout(AGENT_IDLE_TIMEOUT_S, LABEL.stuck) : M.sandboxError(errorLine(outcome.reason)),
+    );
     return;
   }
   const result = outcome.value;
@@ -1317,6 +1351,14 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     console.log(t(`  ◐ #${issue.id} 全部通过，autoMerge 关着，留 PR #${pr} 等人合并`, `  ◐ #${issue.id} passed everything; autoMerge is off, PR #${pr} left for a human to merge`));
     return;
   }
+  await finishMerge(issue, pr, host, result.gate.tier);
+}
+
+/**
+ * 自动合并收尾（land 的最后一步，也是 resumeMerging 接着做的那一步）：等检查 → 合并 → 删分支。整个过程票上带 sandcastle:merging。
+ * The auto-merge finish (the last step of land, and the step resumeMerging continues): wait for checks → merge → delete the branch. The ticket carries sandcastle:merging throughout.
+ */
+async function finishMerge(issue: Issue, pr: string, host: HostGap, tier: GateTier) {
   // 先合并的票可能让这张冲突：rebase 到最新的 origin/main（冲突交给 agent）、重跑门槛，再合并一次。
   // 一致性检查要先在宿主机上查：没有文本冲突时平台会照样合并，坏掉的状态就进了 main。
   // An earlier merge may make this one conflict: rebase onto the latest origin/main (conflicts go to the agent), rerun the gate, and merge again.
@@ -1333,7 +1375,37 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   await gitRemote(["push", REMOTE, "--delete", issue.branch]);
   trySh("git", ["branch", "-D", issue.branch]);
   console.log(t(`  ✓ #${issue.id} 已合并（PR #${pr}）`, `  ✓ #${issue.id} merged (PR #${pr})`));
-  noteMerged(result.gate.tier);
+  noteMerged(tier);
+}
+
+/**
+ * 上次运行在等检查 / 合并时被中断的票（带 sandcastle:merging）：PR 已开、门槛已过，不重新实现，直接回到 finishMerge。
+ * 找不到这张票自己分支上开着的 PR（人关了 PR、删了分支）就去掉标签，交回 plan 照常调度。
+ * 门槛档位已经查不到了，按「按依赖选」记（多算一次，兜底完整测试只会提前、不会漏）。
+ * Tickets interrupted last run while waiting for checks / merging (labelled sandcastle:merging): the PR is open and the gate passed, so don't reimplement; go straight back to finishMerge.
+ * If there's no open PR on the ticket's own branch (a human closed the PR or deleted the branch), remove the label and hand it back to plan.
+ * The gate tier is no longer known, so it's counted as dependency-selected (one extra count only brings the fallback full run forward, never skips it).
+ */
+async function resumeMerging(issue: Issue, host: HostGap) {
+  const pr = prFor(issue.id);
+  if (!pr || pr.branch !== issue.branch) {
+    attempt(() => forge.removeLabel(issue.id, LABEL.merging));
+    console.log(t(`  ↺ #${issue.id} 带 ${LABEL.merging} 但没有开着的 PR，交回调度`, `  ↺ #${issue.id} is labelled ${LABEL.merging} but has no open PR; handing it back to scheduling`));
+    return;
+  }
+  // 本地分支被删了（或在别的机器上中断的）就从远端取回：rebase 补救和一致性检查都看本地分支。
+  // If the local branch is gone (or the run was interrupted on another machine), fetch it from the remote: rebase recovery and the integrity check read the local branch.
+  if (!trySh("git", ["rev-parse", "--verify", "--quiet", `refs/heads/${issue.branch}`]).ok) {
+    await gitRemoteOrThrow(["fetch", REMOTE, `${issue.branch}:${issue.branch}`]);
+  }
+  console.log(t(`  ↻ #${issue.id} 上次运行在等 PR #${pr.id} 的检查 / 合并时中断，接着等，不重新实现`, `  ↻ #${issue.id} was interrupted while waiting for checks / merging PR #${pr.id}; resuming that without reimplementing`));
+  if (!project.autoMerge) {
+    leaveForHuman(issue, pr.id, M.reasonAutoMergeOff);
+    attempt(() => forge.removeLabel(issue.id, LABEL.merging));
+    console.log(t(`  ◐ #${issue.id} autoMerge 关着，留 PR #${pr.id} 等人合并`, `  ◐ #${issue.id} autoMerge is off; PR #${pr.id} left for a human to merge`));
+    return;
+  }
+  await finishMerge(issue, pr.id, host, "selected");
 }
 
 // ---------------------------------------------------------------------------
@@ -1570,23 +1642,26 @@ const busy = () => running.size - ciWaiting.size;
  * 一张票独立跑完 build → 落地，做完就让出空位，不等同批的其他票。
  * One ticket runs build → land on its own and frees its slot when done, without waiting for others in the same batch.
  */
-function start(issue: Issue) {
+function start(issue: Issue, resume = false) {
   running.set(issue.id, issue);
   void (async () => {
-    // 撞上限额的票等重置后在原分支上重跑，不打 stuck。
-    // Tickets that hit a usage limit rerun on the same branch after the reset, without being marked stuck.
-    const [outcome] = await Promise.allSettled([
-      untilAfterLimit(`#${issue.id}`, () => retryTransient(`#${issue.id}`, () => build(issue)), () => pushIfAhead(issue)),
-    ]);
+    // 撞上限额的票等重置后在原分支上重跑，不打 stuck。接着等合并的票（resume）不 build。
+    // Tickets that hit a usage limit rerun on the same branch after the reset, without being marked stuck. Tickets resuming a merge (resume) skip build.
+    const [outcome] = resume
+      ? [undefined]
+      : await Promise.allSettled([
+          untilAfterLimit(`#${issue.id}`, () => retryTransient(`#${issue.id}`, () => build(issue)), () => pushIfAhead(issue)),
+        ]);
     // 落地在宿主机上做：用宿主机的 git / 平台凭据，沙箱没有写仓库的权限。
     // 每张票单独兜底：一张票落地出错（网络、人在运行中途合并或删了分支等）不让整个运行崩掉。
     // Landing happens on the host with the host's git / forge credentials; the sandbox has no write access to the repo.
     // Each ticket is guarded separately: one ticket's landing error (network, a human merging or deleting the branch mid-run, etc.) doesn't crash the whole run.
     await withHost(async (host) => {
       try {
-        await retryTransient(t(`落地 #${issue.id}`, `landing #${issue.id}`), () => land(issue, outcome!, host));
+        await retryTransient(t(`落地 #${issue.id}`, `landing #${issue.id}`), () => (outcome ? land(issue, outcome, host) : resumeMerging(issue, host)));
       } catch (e) {
-        const reason = String((e as { stderr?: unknown }).stderr || e).trim().slice(0, 500);
+        logErrorDetail(ERROR_LOG, t(`#${issue.id} 落地`, `#${issue.id} landing`), e, appendFileSync);
+        const reason = errorLine(e);
         console.error(t(`  ✗ #${issue.id} 落地出错：`, `  ✗ #${issue.id} landing failed: `) + reason);
         // 打 stuck 不让下次再做；本地分支保留，人看过后去掉 stuck 即可接着跑。
         // Marking stuck keeps it from being retried; the local branch is kept, and removing stuck after a human looks lets it continue.
@@ -1595,7 +1670,10 @@ function start(issue: Issue) {
       }
     });
   })()
-    .catch((e) => console.error(t(`  ✗ #${issue.id} 出错：`, `  ✗ #${issue.id} error: `) + String(e).slice(0, 500)))
+    .catch((e) => {
+      logErrorDetail(ERROR_LOG, `#${issue.id}`, e, appendFileSync);
+      console.error(t(`  ✗ #${issue.id} 出错：`, `  ✗ #${issue.id} error: `) + errorLine(e));
+    })
     .finally(() => {
       running.delete(issue.id);
       console.log(t(`  ⇢ #${issue.id} 让出空位（还有 ${running.size} 张在做）`, `  ⇢ #${issue.id} freed its slot (${running.size} still running)`));
@@ -1614,6 +1692,9 @@ type ScheduleResult = { started: number; split: boolean; prepLimitedUntil?: numb
 /** 一次调度：整理 → prep → plan，把空位补满。在 withHost 里跑。 / One pass: tidy → prep → plan, filling the slots. Runs inside withHost. */
 async function schedule(): Promise<ScheduleResult> {
   reloadModels(); // 每次调度读一次 .sandcastle/models.json：改了配置不用重启，下次生效 / read .sandcastle/models.json every pass: config changes apply next pass without a restart
+  // 运行中途 podman 挂掉又恢复后，留下的 Exited 容器库不会再删：每次调度清一次本仓库已退出的容器（在跑的可能是正在用的沙箱，不碰）。
+  // After podman dies mid-run and comes back, the library won't remove the Exited containers it left: clear this repo's exited containers every pass (running ones may be live sandboxes and are left alone).
+  if (!project.customSandbox) reportOrphans(removeOrphanContainers(process.cwd(), true));
   await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]); // 刚合并进远端 main 的代码 / code just merged into the remote main
   issueStates.clear();
   waitingOn.clear();
@@ -1685,10 +1766,18 @@ async function schedule(): Promise<ScheduleResult> {
         prepLimitedUntil = limit.until;
         break;
       }
-      console.error(t(`  ✗ prep #${issue.number} 出错：`, `  ✗ prep #${issue.number} error: `) + String(e).slice(0, 500));
+      logErrorDetail(ERROR_LOG, `prep #${issue.number}`, e, appendFileSync);
+      console.error(t(`  ✗ prep #${issue.number} 出错：`, `  ✗ prep #${issue.number} error: `) + errorLine(e) + t(`（详情见 ${ERROR_LOG}）`, ` (details in ${ERROR_LOG})`));
     }
     const after = attempt(() => forge.issueUpdatedAt(String(issue.number)));
     if (after.ok) prepTried.set(issue.number, after.value);
+  }
+
+  // 上次运行在等检查 / 合并时中断的票：接着等，不重新实现（见 resumeMerging）。
+  // Tickets interrupted last run while waiting for checks / merging: resume that, without reimplementing (see resumeMerging).
+  for (const issue of listIssues([LABEL.picked, LABEL.merging], [LABEL.prOpen, LABEL.stuck]).sort(byUrgency)) {
+    if (!allowed(issue.number) || running.has(String(issue.number))) continue;
+    start({ id: String(issue.number), title: issue.title, branch: ownBranch(issue.number) }, true);
   }
 
   // Plan
@@ -1718,6 +1807,53 @@ async function schedule(): Promise<ScheduleResult> {
 // Schedule once when a slot is free; then wait for "a ticket finished" or "POLL_INTERVAL_MS passed", whichever comes first.
 // Once a PR under review is merged, a blocker closes or a human removes stuck, the next poll can start work without waiting for running tickets.
 // Nothing running and nothing startable counts as an idle poll; MAX_ITERATIONS idle polls in a row end the run.
+// ---------------------------------------------------------------------------
+// 开跑前：运行锁 → podman 检查 → 清孤儿容器；Ctrl-C 的提示（baseline 也一样，它也建沙箱）
+// Before starting: run lock → podman check → orphan container cleanup; the Ctrl-C notice (baseline too, since it also creates sandboxes)
+// ---------------------------------------------------------------------------
+// 同一仓库同时只跑一个 sandpipe：两个进程会抢同一张票、同一个 worktree，清孤儿容器也会删掉对方正在用的。
+// 锁文件里是 pid；上次被 SIGKILL 留下的锁，pid 已经不在了，直接接管。
+// Only one sandpipe per repository at a time: two processes would fight over the same tickets and worktrees, and orphan cleanup would remove the other's live containers.
+// The lock file holds the pid; a lock left by a SIGKILLed run has a dead pid and is taken over.
+const runLock = acquireRunLock(runLockPath(process.cwd()));
+if (!runLock.ok)
+  throw new Error(
+    t(
+      `这个仓库里已经有一个 sandpipe 在跑（pid ${runLock.pid}）。等它结束或停掉它再运行；确认没有在跑的话删掉 ${RUN_LOCK_FILE}`,
+      `Another sandpipe is already running in this repository (pid ${runLock.pid}). Wait for it to finish or stop it; if you're sure none is running, delete ${RUN_LOCK_FILE}`,
+    ),
+  );
+process.on("exit", runLock.release);
+onInterrupt(() => ({
+  inProgress: [...running.keys()].filter((id) => !ciWaiting.has(id)),
+  waitingChecks: [...ciWaiting],
+}));
+// 默认的 podman 沙箱：先确认 podman 能用（macOS 上 podman machine 没起时，之前会在 prep 里报一长串堆栈、最后提示「没有可开工的票」），
+// 再删掉本仓库上次运行留下的容器（主进程被 SIGKILL、运行中途 podman 挂掉时库来不及删）。持有运行锁，这时本仓库的容器全是孤儿；别的仓库的不碰。
+// With the default podman sandbox: first make sure podman works (on macOS with the podman machine stopped, prep used to print a long stack and end with "no tickets can start"),
+// then remove this repository's containers left by the last run (the library can't remove them when the main process is SIGKILLed or podman dies mid-run). We hold the run lock, so all of this repo's containers are orphans now; other repositories' are never touched.
+if (!project.customSandbox) {
+  const problem = podmanProblem();
+  if (problem)
+    throw new Error(
+      t(
+        `podman 用不了：${problem}。macOS 上先运行 podman machine start，然后重试（sandpipe doctor 可以检查）`,
+        `podman isn't usable: ${problem}. On macOS run podman machine start first, then retry (sandpipe doctor can check)`,
+      ),
+    );
+  reportOrphans(removeOrphanContainers(process.cwd(), false));
+}
+/** 打一行删掉了哪些孤儿容器。 / Print one line naming the orphan containers removed. */
+function reportOrphans(removed: string[]) {
+  if (removed.length === 0) return;
+  console.log(
+    t(
+      `  🧹 删掉了本仓库上次运行留下的 ${removed.length} 个沙箱容器：${removed.join("、")}`,
+      `  🧹 Removed ${removed.length} sandbox container(s) left by an earlier run of this repository: ${removed.join(", ")}`,
+    ),
+  );
+}
+
 if (process.env.SANDCASTLE_BASELINE === "1") {
   process.exitCode = (await runBaseline()) ? 0 : 1;
 } else {
@@ -1782,3 +1918,7 @@ console.log(
     : `\n${idleSummary(waitingOn, LABEL)}`,
 );
 }
+
+// 运行结束：事件循环空了就照常退出；依赖里漏掉的定时器还挂着时，过一会儿按退出码强制退出（原因见 lifecycle.ts 的 exitWhenDone）。
+// Run finished: exit normally once the event loop is empty; if a timer leaked by the dependency is still pending, force the exit with the exit code shortly after (see exitWhenDone in lifecycle.ts).
+exitWhenDone();

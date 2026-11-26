@@ -1,5 +1,16 @@
 # 更新记录
 
+## Unreleased
+
+- 孤儿沙箱容器会自动清了：主进程被 SIGKILL、或运行中途 podman 挂掉后留下的 `sandcastle-<uuid>` 容器（只剩 `sleep infinity` 的 Up 容器或 Exited 容器），之前一直不清。现在开跑时删掉本仓库的全部 sandcastle 容器、每次调度再删本仓库已退出的，各打一行 `🧹` 提示。库没给容器打 label，按名字前缀和挂载来源（本仓库根、`.git`、`.sandcastle/worktrees/…`）认，别的仓库的容器不碰（e2e L1 / L4 发现）
+- 同一仓库同时只能跑一个 sandpipe：`run` / `baseline` 开跑时拿运行锁 `.sandcastle/logs/run.lock`（写 pid），已有活着的 sandpipe 在跑就一行报错、退出码 1；上次被 SIGKILL 留下的锁（pid 已不在）直接接管。新模块 `src/lifecycle.ts`
+- agent 空闲超时（`AgentIdleTimeoutError`）后，进程打完「全部完成」不再挂着不退：原因在依赖 `@ai-hero/sandcastle` 0.12，超时后被放弃的 `podman exec` 还会送来输出，又起一个没人停的「Agent idle for N minutes」提醒定时器，事件循环一直不空。改不了依赖，运行结束时兜底：事件循环空了照常退出，否则 2 秒后按退出码退出（e2e L6 发现）
+- 等 CI 时被中断，重启后不再把票重新实现一遍：自动合并收尾（等 PR 上的检查 → 合并 → rebase 补救）期间票上带新标签 `sandcastle:merging`，结束时去掉；重启后带这个标签的票直接回到等检查 / 合并，不跑 implement / review / 门槛，它改的文件照样占着；PR 已经没了就去掉标签交回调度。标签第一次用到时自动建，`doctor` 缺它不报（e2e L3 发现）
+- Ctrl-C 退出不再静默：打一行说明哪些票做到一半 / 在等检查、worktree 和分支都保留、重新运行会接着做、不用照库打印的 `To clean up: git worktree remove …` 去清理，退出码 130（e2e L1 发现）
+- podman 用不了（macOS 上 podman machine 没起）时开跑前就一行报错、退出码 1，不再在 prep 里打一长串堆栈、最后说「没有可开工的票」（e2e L4 发现）
+- 票被打 `sandcastle:stuck` 的评论和终端里只写报错的第一行，不再带 node_modules 堆栈；完整报错追加到 `.sandcastle/logs/errors.log`。agent 空闲超时的评论改成建议在 config 里调大 `agentIdleTimeoutS`，不再照搬库的 `--idle-timeout`（e2e L4 / L6 发现）
+- implementer 进度评论的第一行跟随项目语言：英文项目写 `Model profile: <档案名>`，不再固定写中文 `模型档案：`（新增提示词占位符 `{{LANG_PROFILE_LINE}}`）
+
 ## 0.2.1
 
 - 在项目外运行不再像崩溃：`sandpipe` / `run` / `baseline` 找不到 `.sandcastle/sandcastle.config.ts`（或其他没接住的错误）时只打一行 `✗ 提示`、退出码 1，不再先打一整行压缩后的源码和堆栈；要完整堆栈设 `SANDPIPE_DEBUG=1`（e2e A3 发现）

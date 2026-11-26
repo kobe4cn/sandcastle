@@ -223,6 +223,7 @@ export type Labels = {
   picked: string;
   prepped: string;
   prOpen: string;
+  merging: string;
   stuck: string;
   decided: string;
   flaky: string;
@@ -235,6 +236,7 @@ export const DEFAULT_LABELS: Labels = {
   picked: "Sandcastle", // 人工选中
   prepped: "sandcastle:prepped", // prep 已确认可实现
   prOpen: "sandcastle:pr-open", // 已开 PR，等人审
+  merging: "sandcastle:merging", // 已开 PR、门槛已过，在等检查 / 合并；中断重启后接着等，不重新实现（脚本自动建标签）
   stuck: "sandcastle:stuck", // 需要人介入（见 issue 评论）
   decided: "sandcastle:decided", // agent 代拍板过设计决定，等人事后确认（人看过后去掉）
   flaky: "flaky", // 门槛里重跑才通过的测试文件，脚本自动开票

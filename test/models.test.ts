@@ -1,0 +1,465 @@
+// src/models.ts 的纯逻辑：按阶段挑档案、撞限额换档案、重置时间解析、别家档案的环境变量、热重载、用量记录（e2e 计划 N1a–N1f）。
+// 不起容器、不调真实 claude：runWithProfile 传假的 fn，agentFor 只看拼出的命令行。
+// models.ts 的配置和「跳过到何时」是模块级状态，每个用例重新 import 一份；路径是相对当前目录的，用例在临时目录里 chdir。
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { messages } from "../src/i18n.ts";
+import type { AgentRun, Profile } from "../src/models.ts";
+
+type Models = typeof import("../src/models.ts");
+
+const PHASES = ["prep", "implement", "review", "revise", "fix", "rebase"] as const;
+const startCwd = process.cwd();
+let m: Models;
+let log: ReturnType<typeof vi.spyOn>;
+let warn: ReturnType<typeof vi.spyOn>;
+
+/** 每个阶段都用 list，再按 overrides 改个别阶段。 */
+const phasesAll = (list: string[], overrides: Record<string, unknown> = {}) => ({ ...Object.fromEntries(PHASES.map((p) => [p, list])), ...overrides });
+
+/** 在临时目录里写 .sandcastle/models.json（字符串原样写，对象转 JSON）和可选的 .sandcastle/.env，并 chdir 过去。 */
+function project(models: unknown, env?: string) {
+  const root = mkdtempSync(join(tmpdir(), "sc-models-"));
+  mkdirSync(join(root, ".sandcastle"), { recursive: true });
+  writeModels(models, root);
+  if (env !== undefined) writeFileSync(join(root, ".sandcastle/.env"), env);
+  process.chdir(root);
+  return root;
+}
+function writeModels(models: unknown, root = process.cwd()) {
+  writeFileSync(join(root, ".sandcastle/models.json"), typeof models === "string" ? models : JSON.stringify(models));
+}
+
+const claude = (model = "claude-opus-4-5", extra: Record<string, unknown> = {}) => ({ model, ...extra });
+const done = (stdout = "ok"): AgentRun => ({ iterations: [], stdout, completionSignal: "<promise>COMPLETE</promise>" });
+const LIMIT = "You've hit your 5-hour limit · resets 6:20am (UTC)";
+
+beforeEach(async () => {
+  vi.resetModules();
+  m = await import("../src/models.ts");
+  log = vi.spyOn(console, "log").mockImplementation(() => {});
+  warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+});
+afterEach(() => {
+  process.chdir(startCwd);
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
+
+// ---------------------------------------------------------------------------
+describe("N1a 按阶段挑档案", () => {
+  it("每个阶段取列表里第一个档案", async () => {
+    project({
+      profiles: { opus: claude("claude-opus-4-5", { effort: "high" }), sonnet: claude("claude-sonnet-4-5") },
+      phases: phasesAll(["opus", "sonnet"], { review: ["sonnet", "opus"] }),
+    });
+    m.reloadModels();
+    const used: string[] = [];
+    for (const phase of PHASES) {
+      const { profile } = await m.runWithProfile(phase, "#1", async (p) => (used.push(p.name), done()));
+      expect(profile.name).toBe(phase === "review" ? "sonnet" : "opus");
+    }
+    expect(used).toEqual(["opus", "opus", "sonnet", "opus", "opus", "opus"]);
+    const { phases, used: profiles } = m.inspectModels();
+    expect(phases.review).toEqual(["sonnet", "opus"]);
+    expect(profiles.map((p) => p.name).sort()).toEqual(["opus", "sonnet"]);
+    expect(profiles.find((p) => p.name === "opus")).toMatchObject({ model: "claude-opus-4-5", effort: "high", thirdParty: false, limitPattern: m.CLAUDE_LIMIT_PATTERN });
+  });
+
+  it("没调 reloadModels 就 runWithProfile：报错", async () => {
+    await expect(m.runWithProfile("implement", "#1", async () => done())).rejects.toThrow("reloadModels");
+  });
+
+  const bad: [string, unknown, string][] = [
+    ["未知阶段", { profiles: { a: claude() }, phases: phasesAll(["a"], { deploy: ["a"] }) }, "phases 里的 deploy 不是阶段"],
+    ["未知档案", { profiles: { a: claude() }, phases: phasesAll(["a"], { implement: ["a", "ghost"] }) }, "phases.implement 里的档案 ghost 不在 profiles 里"],
+    ["空列表", { profiles: { a: claude() }, phases: phasesAll(["a"], { review: [] }) }, "phases.review 要是非空的档案名列表"],
+    ["列表里不是字符串", { profiles: { a: claude() }, phases: phasesAll(["a"], { fix: [1] }) }, "phases.fix 要是非空的档案名列表"],
+    ["缺阶段", { profiles: { a: claude() }, phases: Object.fromEntries(PHASES.filter((p) => p !== "rebase").map((p) => [p, ["a"]])) }, "phases.rebase 要是非空的档案名列表"],
+    ["缺 phases", { profiles: { a: claude() } }, "要有 profiles 和 phases 两个对象"],
+    ["缺 profiles", { phases: phasesAll(["a"]) }, "要有 profiles 和 phases 两个对象"],
+    ["档案缺 model", { profiles: { a: { effort: "high" } }, phases: phasesAll(["a"]) }, "profiles.a.model 要是非空字符串"],
+    ["档案不是对象", { profiles: { a: "opus" }, phases: phasesAll(["a"]) }, "profiles.a 要是对象"],
+    ["effort 不认识", { profiles: { a: claude("x", { effort: "turbo" }) }, phases: phasesAll(["a"]) }, "profiles.a.effort 只能是"],
+    ["harness 是 codex", { profiles: { a: claude("x", { harness: "codex" }) }, phases: phasesAll(["a"]) }, "profiles.a.harness 是 codex"],
+    ["limitPattern 不是合法正则", { profiles: { a: claude("x", { limitPattern: "(" }) }, phases: phasesAll(["a"]) }, "profiles.a.limitPattern 不是合法的正则"],
+    ["resetTimeZone 不合法", { profiles: { a: claude("x", { resetTimeZone: "Mars/Base" }) }, phases: phasesAll(["a"]) }, "profiles.a.resetTimeZone 不是合法的时区"],
+    ["不是 JSON", "{ profiles: ", "不是合法的 JSON"],
+  ];
+  it.each(bad)("%s：报错并指明位置", (_name, models, message) => {
+    project(models);
+    expect(() => m.inspectModels()).toThrow(`.sandcastle/models.json：`);
+    expect(() => m.inspectModels()).toThrow(message);
+    expect(() => m.reloadModels()).toThrow(message);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("N1b 撞限额换档案", () => {
+  const NOW = Date.UTC(2026, 10, 26, 0, 0); // 2026-11-26 00:00Z
+  const SLACK = 2 * 60_000;
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    project({
+      profiles: {
+        opus: claude(),
+        glm: { model: "glm-4.6", env: { ANTHROPIC_BASE_URL: "https://glm.example", ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.5-air" }, limitPattern: "quota exceeded", resetTimeZone: "UTC" },
+        sonnet: claude("claude-sonnet-4-5"),
+      },
+      phases: phasesAll(["opus", "glm"], { review: ["sonnet", "opus"] }),
+    });
+    m.reloadModels();
+  });
+
+  it("第一个档案抛出的报错命中 limitPattern：换下一个，并记下重置时间", async () => {
+    const tried: string[] = [];
+    const { profile, run } = await m.runWithProfile("implement", "#7", async (p) => {
+      tried.push(p.name);
+      if (p.name === "opus") throw new Error(LIMIT);
+      return done("glm 干完了");
+    });
+    expect(tried).toEqual(["opus", "glm"]);
+    expect(profile.name).toBe("glm");
+    expect(run.stdout).toBe("glm 干完了");
+    expect(log.mock.calls.flat().join("\n")).toContain("档案 opus 撞上用量限额");
+    // opus 在别的阶段（所有票共用）也被跳过，直到 06:22Z
+    const again: string[] = [];
+    await m.runWithProfile("review", "#8", async (p) => (again.push(p.name), done()));
+    expect(again).toEqual(["sonnet"]);
+    vi.setSystemTime(Date.UTC(2026, 10, 26, 6, 21));
+    const later: string[] = [];
+    await m.runWithProfile("implement", "#7", async (p) => (later.push(p.name), done()));
+    expect(later).toEqual(["glm"]);
+    vi.setSystemTime(Date.UTC(2026, 10, 26, 6, 22));
+    const after: string[] = [];
+    await m.runWithProfile("implement", "#7", async (p) => (after.push(p.name), done()));
+    expect(after).toEqual(["opus"]);
+  });
+
+  it("限额文本作为最后的输出、不带完成信号返回：也换档案；带完成信号的不算", async () => {
+    const tried: string[] = [];
+    const { profile } = await m.runWithProfile("implement", "#7", async (p) => {
+      tried.push(p.name);
+      return p.name === "opus" ? { iterations: [], stdout: `...\n${LIMIT}\n` } : done();
+    });
+    expect(tried).toEqual(["opus", "glm"]);
+    expect(profile.name).toBe("glm");
+
+    // 完成了但输出里恰好提到限额文本：照常返回
+    const r = await m.runWithProfile("review", "#9", async () => done(`讨论 "${LIMIT}" 这句报错`));
+    expect(r.profile.name).toBe("sonnet");
+  });
+
+  it("不是限额的报错照抛，不换档案", async () => {
+    const tried: string[] = [];
+    await expect(
+      m.runWithProfile("implement", "#7", async (p) => {
+        tried.push(p.name);
+        throw new Error("container exited 137");
+      }),
+    ).rejects.toThrow("container exited 137");
+    expect(tried).toEqual(["opus"]);
+  });
+
+  it("全部撞限额：抛 AllProfilesLimited，until 是最早的恢复时间（含 2 分钟余量）", async () => {
+    const tried: string[] = [];
+    const err = await m
+      .runWithProfile("implement", "#7", async (p) => {
+        tried.push(p.name);
+        throw new Error(p.name === "opus" ? LIMIT : "429 quota exceeded, resets at 2026-11-26 03:00:00");
+      })
+      .catch((e: unknown) => e);
+    expect(tried).toEqual(["opus", "glm"]);
+    expect(err).toBeInstanceOf(m.AllProfilesLimited);
+    const limited = err as InstanceType<Models["AllProfilesLimited"]>;
+    expect(limited.phase).toBe("implement");
+    expect(limited.until).toBe(Date.UTC(2026, 10, 26, 3, 0) + SLACK);
+    expect(limited.message).toContain("阶段 implement 的档案都撞上了用量限额");
+
+    // 再跑：不调用 fn，直接抛
+    const fn = vi.fn(async () => done());
+    await expect(m.runWithProfile("implement", "#7", fn)).rejects.toBeInstanceOf(m.AllProfilesLimited);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("认不出重置时间：跳过 1 小时", async () => {
+    const err = await m
+      .runWithProfile("implement", "#7", async () => {
+        throw new Error("You've hit your limit, try later");
+      })
+      .catch((e: unknown) => e);
+    // opus 认不出 → now+1h；glm 抛的也是这句，但 glm 的 limitPattern 是 quota exceeded，不认 → 照抛原错误
+    expect(err).not.toBeInstanceOf(m.AllProfilesLimited);
+    expect(String(err)).toContain("try later");
+    const tried: string[] = [];
+    const err2 = await m
+      .runWithProfile("implement", "#7", async (p) => {
+        tried.push(p.name);
+        throw new Error("quota exceeded");
+      })
+      .catch((e: unknown) => e);
+    expect(tried).toEqual(["glm"]);
+    expect((err2 as InstanceType<Models["AllProfilesLimited"]>).until).toBe(NOW + 60 * 60_000);
+    expect(log.mock.calls.flat().join("\n")).toContain("认不出重置时间");
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("N1c 重置时间解析 limitResetAt", () => {
+  const at = (iso: string) => Date.parse(iso);
+
+  it("Claude 的写法：resets 6:20am (UTC)，取下一次到这个钟点的时刻", () => {
+    expect(m.limitResetAt(LIMIT, undefined, at("2026-11-26T05:00:00Z"))).toBe(at("2026-11-26T06:20:00Z"));
+    expect(m.limitResetAt(LIMIT, undefined, at("2026-11-26T07:00:00Z"))).toBe(at("2026-11-27T06:20:00Z"));
+  });
+
+  it("Claude 的写法带别的时区、不带分钟、12am / 12pm", () => {
+    const now = at("2026-11-26T00:00:00Z");
+    expect(m.limitResetAt("You've hit your limit · resets 7pm (Asia/Shanghai)", undefined, now)).toBe(at("2026-11-26T11:00:00Z"));
+    expect(m.limitResetAt("hit your weekly limit · resets 12am (UTC)", undefined, at("2026-11-26T08:00:00Z"))).toBe(at("2026-11-27T00:00:00Z"));
+    expect(m.limitResetAt("hit your limit · resets 12pm (UTC)", undefined, now)).toBe(at("2026-11-26T12:00:00Z"));
+    // 冬令时的纽约 UTC-5
+    expect(m.limitResetAt("hit your limit · resets 9:30am (America/New_York)", undefined, now)).toBe(at("2026-11-26T14:30:00Z"));
+    // 消息里的时区优先于 resetTimeZone
+    expect(m.limitResetAt(LIMIT, "Asia/Shanghai", at("2026-11-26T05:00:00Z"))).toBe(at("2026-11-26T06:20:00Z"));
+  });
+
+  it("Claude 的写法带不认识的时区：null", () => {
+    expect(m.limitResetAt("hit your limit · resets 6am (Mars/Base)", undefined, at("2026-11-26T00:00:00Z"))).toBeNull();
+  });
+
+  it("别家不带时区的时间戳按 resetTimeZone 解析", () => {
+    const now = at("2026-11-26T00:00:00Z");
+    expect(m.limitResetAt("quota exceeded, reset at 2026-11-26 15:30:00", "Asia/Shanghai", now)).toBe(at("2026-11-26T07:30:00Z"));
+    expect(m.limitResetAt("quota exceeded, reset at 2026-11-26 15:30:00", "UTC", now)).toBe(at("2026-11-26T15:30:00Z"));
+    expect(m.limitResetAt("reset 2026-11-26T15:30", "America/New_York", now)).toBe(at("2026-11-26T20:30:00Z"));
+  });
+
+  it("别家时间戳不给 resetTimeZone：按宿主机时区", () => {
+    expect(m.limitResetAt("reset at 2026-12-01 08:15:00", undefined, at("2026-11-26T00:00:00Z"))).toBe(new Date(2026, 11, 1, 8, 15, 0).getTime());
+  });
+
+  it("时间已过或认不出：null", () => {
+    expect(m.limitResetAt("reset at 2026-11-25 15:30:00", "UTC", at("2026-11-26T00:00:00Z"))).toBeNull();
+    expect(m.limitResetAt("rate limited, try again later", "UTC", at("2026-11-26T00:00:00Z"))).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("N1d 别家档案的环境变量", () => {
+  const VAR = "SC_MODELS_TEST_GLM_KEY";
+  const glm = (env: Record<string, unknown> = {}) => ({
+    model: "glm-4.6",
+    limitPattern: "quota",
+    env: { ANTHROPIC_BASE_URL: "https://glm.example/api", ANTHROPIC_AUTH_TOKEN: `\${${VAR}}`, ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.5-air", ...env },
+  });
+  const command = (p: Profile, phase?: (typeof PHASES)[number]) =>
+    m.agentFor(p, { GH_TOKEN: "x" }, phase).buildPrintCommand({ prompt: "hi", dangerouslySkipPermissions: true }).command;
+  beforeEach(() => {
+    delete process.env[VAR];
+  });
+
+  it("设了 ANTHROPIC_BASE_URL：命令前清掉 Claude 凭据，${VAR} 写成容器里的 \"$VAR\"", () => {
+    project({ profiles: { glm: glm(), opus: claude() }, phases: phasesAll(["glm", "opus"]) }, `${VAR}=secret-value\nGH_TOKEN=x\n`);
+    const { used, warnings } = m.inspectModels();
+    expect(warnings).toEqual([]);
+    const p = used.find((x) => x.name === "glm")!;
+    expect(p.thirdParty).toBe(true);
+    const cmd = command(p, "implement");
+    expect(cmd.startsWith("env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY ")).toBe(true);
+    expect(cmd).toContain(`ANTHROPIC_AUTH_TOKEN="$${VAR}"`);
+    expect(cmd).toContain("ANTHROPIC_BASE_URL='https://glm.example/api'");
+    expect(cmd).toContain("SANDCASTLE_PROFILE='glm'");
+    expect(cmd).toContain("SANDCASTLE_PHASE='implement'");
+    expect(cmd).not.toContain("secret-value");
+    expect(cmd).toContain("glm-4.6");
+
+    const opus = used.find((x) => x.name === "opus")!;
+    expect(opus.thirdParty).toBe(false);
+    const c2 = command(opus);
+    expect(c2).not.toContain("-u CLAUDE_CODE_OAUTH_TOKEN");
+    expect(c2).not.toContain("SANDCASTLE_PHASE");
+    expect(c2.startsWith("env SANDCASTLE_PROFILE='opus' ")).toBe(true);
+  });
+
+  it("值里的单引号被转义", () => {
+    project({ profiles: { a: claude("x", { env: { NOTE: "it's" } }) }, phases: phasesAll(["a"]) });
+    expect(command(m.inspectModels().used[0]!)).toContain(`NOTE='it'\\''s'`);
+  });
+
+  it("${VAR} 不在 .sandcastle/.env 里、或值为空且宿主机也没有：报错", () => {
+    project({ profiles: { glm: glm() }, phases: phasesAll(["glm"]) }, "GH_TOKEN=x\n");
+    expect(() => m.inspectModels()).toThrow(`profiles.glm.env.ANTHROPIC_AUTH_TOKEN 引用的 ${VAR} 不在 .sandcastle/.env 里`);
+    writeFileSync(".sandcastle/.env", `${VAR}=\n`);
+    expect(() => m.inspectModels()).toThrow(`引用的 ${VAR} 不在`);
+    // 值为空但宿主机有：sandcastle 会从宿主机取
+    process.env[VAR] = "from-host";
+    try {
+      expect(() => m.inspectModels()).not.toThrow();
+    } finally {
+      delete process.env[VAR];
+    }
+  });
+
+  it("没有 .sandcastle/.env：引用变量报错；没被阶段用到的档案不查", () => {
+    project({ profiles: { glm: glm(), opus: claude() }, phases: phasesAll(["glm"]) });
+    expect(() => m.inspectModels()).toThrow(`引用的 ${VAR} 不在`);
+    writeModels({ profiles: { glm: glm(), opus: claude() }, phases: phasesAll(["opus"]) });
+    expect(() => m.inspectModels()).not.toThrow();
+  });
+
+  it("${VAR} 不是整个值：报错", () => {
+    project({ profiles: { a: claude("x", { env: { URL: "https://${HOST}/v1" } }) }, phases: phasesAll(["a"]) });
+    expect(() => m.inspectModels()).toThrow("profiles.a.env.URL：${VAR} 只能单独作为整个值");
+  });
+
+  it("档案不能覆盖 CLAUDE_CODE_AUTO_COMPACT_WINDOW：忽略并警告", () => {
+    project({ profiles: { a: claude("x", { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: "500000", FOO: 1 } }) }, phases: phasesAll(["a"]) });
+    const { used, warnings } = m.inspectModels();
+    expect(used[0]!.env).toEqual({ FOO: "1" });
+    expect(warnings.join("\n")).toContain("profiles.a.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW 忽略");
+    expect(command(used[0]!)).not.toContain("CLAUDE_CODE_AUTO_COMPACT_WINDOW");
+  });
+
+  it.each(["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"])("档案 env 不能设 %s", (key) => {
+    project({ profiles: { a: claude("x", { env: { [key]: "x" } }) }, phases: phasesAll(["a"]) });
+    expect(() => m.inspectModels()).toThrow(`profiles.a.env 不能设 ${key}`);
+  });
+
+  it("别家档案没设 ANTHROPIC_DEFAULT_HAIKU_MODEL / limitPattern：警告", () => {
+    project({ profiles: { other: { model: "x", env: { ANTHROPIC_BASE_URL: "https://example.com" } } }, phases: phasesAll(["other"]) });
+    const { warnings } = m.inspectModels();
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toContain("profiles.other 发到别家但没设 ANTHROPIC_DEFAULT_HAIKU_MODEL");
+    expect(warnings[1]).toContain("没设 limitPattern");
+    // reloadModels 把警告打到 stderr
+    m.reloadModels();
+    expect(warn.mock.calls.flat().join("\n")).toContain("ANTHROPIC_DEFAULT_HAIKU_MODEL");
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("N1e 热重载 reloadModels", () => {
+  it("改 models.json 后再 reloadModels 生效", async () => {
+    project({ profiles: { opus: claude(), sonnet: claude("claude-sonnet-4-5") }, phases: phasesAll(["opus"]) });
+    m.reloadModels();
+    expect(log.mock.calls.flat().join("\n")).toContain("implement=opus");
+    expect((await m.runWithProfile("implement", "#1", async () => done())).profile.name).toBe("opus");
+
+    writeModels({ profiles: { opus: claude(), sonnet: claude("claude-sonnet-4-5") }, phases: phasesAll(["sonnet", "opus"]) });
+    // 没 reload 之前还是旧配置
+    expect((await m.runWithProfile("implement", "#1", async () => done())).profile.name).toBe("opus");
+    m.reloadModels();
+    expect(log.mock.calls.flat().join("\n")).toContain("implement=sonnet→opus");
+    expect((await m.runWithProfile("implement", "#1", async () => done())).profile.name).toBe("sonnet");
+  });
+
+  it("之后改坏了：不抛，提示并沿用上一份", async () => {
+    project({ profiles: { sonnet: claude("claude-sonnet-4-5") }, phases: phasesAll(["sonnet"]) });
+    m.reloadModels();
+    writeModels("{ not json");
+    expect(() => m.reloadModels()).not.toThrow();
+    expect(warn.mock.calls.flat().join("\n")).toMatch(/不是合法的 JSON.*沿用上一次读到的配置/);
+    writeModels({ profiles: { sonnet: claude() }, phases: phasesAll(["ghost"]) });
+    expect(() => m.reloadModels()).not.toThrow();
+    expect(warn.mock.calls.flat().join("\n")).toContain("档案 ghost 不在 profiles 里");
+    expect((await m.runWithProfile("implement", "#1", async () => done())).profile).toMatchObject({ name: "sonnet", model: "claude-sonnet-4-5" });
+  });
+
+  it("第一次就读不成：直接抛", () => {
+    project("{ not json");
+    expect(() => m.reloadModels()).toThrow("不是合法的 JSON");
+  });
+
+  it("models.json 不存在：第一次抛", () => {
+    process.chdir(mkdtempSync(join(tmpdir(), "sc-models-empty-")));
+    expect(() => m.reloadModels()).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("N1f 用量记录", () => {
+  const profile = (): Profile => {
+    project({ profiles: { p1: claude("claude-opus-4-5") }, phases: phasesAll(["p1"]) });
+    return m.inspectModels().used[0]!;
+  };
+  const sessionFile = () => {
+    const file = join(mkdtempSync(join(tmpdir(), "sc-session-")), "s.jsonl");
+    const a = (id: string, u: [number, number, number, number]) =>
+      JSON.stringify({ type: "assistant", message: { id, usage: { input_tokens: u[0], cache_creation_input_tokens: u[1], cache_read_input_tokens: u[2], output_tokens: u[3] } } });
+    writeFileSync(
+      file,
+      [
+        a("m1", [10, 100, 0, 5]),
+        a("m1", [10, 100, 0, 20]), // 同一条消息分多行写：按 id 去重取最后一行
+        JSON.stringify({ type: "user", message: { content: "x" } }),
+        a("m2", [4, 50, 3000, 40]),
+        "{broken",
+        "",
+      ].join("\n"),
+    );
+    return file;
+  };
+
+  it("recordUsage 按会话汇总并追加到 usage.jsonl，每条带 issue / phase / profile / model / peak", () => {
+    const p = profile();
+    const run: AgentRun = {
+      stdout: "",
+      iterations: [
+        { sessionFilePath: sessionFile() },
+        { usage: { inputTokens: 1, cacheCreationInputTokens: 2, cacheReadInputTokens: 1000, outputTokens: 7 } },
+        {},
+      ],
+    };
+    const rec = m.recordUsage("#12", "implement", run, "implement", p);
+    expect(rec).toMatchObject({
+      issue: "#12", phase: "implement", run: "implement", profile: "p1", model: "claude-opus-4-5",
+      sessions: 3, input: 15, cacheCreation: 152, cacheRead: 4000, output: 67, peak: 3054,
+    });
+    expect(Number.isNaN(Date.parse(rec.at))).toBe(false);
+    m.recordUsage("#12", "review", { stdout: "", iterations: [{ sessionFilePath: "/nonexistent/x.jsonl" }] }, "review", p);
+
+    const lines = readFileSync(".sandcastle/logs/usage.jsonl", "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toEqual(rec);
+    expect(lines[1]).toMatchObject({ issue: "#12", phase: "review", profile: "p1", model: "claude-opus-4-5", sessions: 1, peak: 0 });
+    for (const l of lines) expect(Object.keys(l)).toEqual(expect.arrayContaining(["issue", "phase", "profile", "model", "peak"]));
+  });
+
+  it("sessionPeak：会话文件里单条消息的最大上下文；没有文件退回最后一条的快照", () => {
+    expect(m.sessionPeak({ sessionFilePath: sessionFile() })).toBe(3054);
+    expect(m.sessionPeak({ usage: { inputTokens: 1, cacheCreationInputTokens: 2, cacheReadInputTokens: 3, outputTokens: 99 } })).toBe(6);
+    expect(m.sessionPeak({})).toBe(0);
+  });
+
+  it("usage.jsonl 写不进去：只警告，照样返回记录", () => {
+    const p = profile();
+    writeFileSync(".sandcastle/logs", "不是目录");
+    const rec = m.recordUsage("#1", "prep", { stdout: "", iterations: [] }, "prep", p);
+    expect(rec).toMatchObject({ issue: "#1", sessions: 0, peak: 0 });
+    expect(warn.mock.calls.flat().join("\n")).toContain("用量没写进 .sandcastle/logs/usage.jsonl");
+  });
+
+  it("usageTable：每次 run 一行，token 以 k 计；没有记录时给提示；英文表头", () => {
+    const rec = (run: string, peak: number) => ({
+      at: "", issue: "#1", phase: "implement" as const, run, profile: "p1", model: "claude-opus-4-5",
+      sessions: 3, input: 15, cacheCreation: 152, cacheRead: 4000, output: 67, peak,
+    });
+    const zh = m.usageTable([rec("implement", 3054), rec("review", 120_000)]);
+    const lines = zh.split("\n");
+    expect(lines[0]).toBe(messages("zh").usageHeader);
+    expect(lines[1]).toBe("|---|---|---|---|---|---|---|---|");
+    expect(lines[2]).toBe("| implement | p1（claude-opus-4-5） | 3 | 0.0k | 0.2k | 4.0k | 0.1k | 3.1k |");
+    expect(lines[3]).toContain("| review |");
+    expect(lines[3]).toContain("| 120.0k |");
+    expect(lines).toHaveLength(4);
+    expect(m.usageTable([])).toBe(messages("zh").usageNone);
+    const en = m.usageTable([rec("implement", 3054)], messages("en"));
+    expect(en).toContain("| Session | Profile |");
+    expect(en).toContain("p1 (claude-opus-4-5)");
+    expect(m.usageTable([], messages("en"))).toBe("(no usage recorded)");
+  });
+});

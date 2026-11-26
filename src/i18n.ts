@@ -18,6 +18,8 @@ const zh = {
    * The three headings acceptance notes must have (the implementer writes them per the prompt; pr-body.ts checks them).
    */
   noteHeadings: ["### 做了什么", "### 怎么验证", "### 最终效果"] as readonly [string, string, string],
+  /** implementer 进度评论第一行的前缀（后面跟档案名）。 / Prefix of the first line of the implementer's progress comment (followed by the profile name). */
+  profileLine: "模型档案：",
   notesMissingFile: "文件不存在",
   notesMissingHeading: (h: string) => `缺 \`${h}\` 小标题`,
   notesNoSteps: "「怎么验证」下面没有编号步骤",
@@ -100,6 +102,8 @@ const zh = {
   missingBlocker: (blockers: string, stuckLabel: string) =>
     `\`## Blocked by\` 里的 ${blockers} 在本仓库查不到（票号写错，或者是从别的仓库复制来的）。改正 Blocked by 或者删掉这一行，然后去掉 ${stuckLabel} 就能继续。`,
   sandboxError: (err: string) => `沙箱出错：${err}`,
+  agentIdleTimeout: (seconds: number, stuckLabel: string) =>
+    `agent 连续 ${seconds} 秒没有输出，按卡住处理（AgentIdleTimeoutError）。如果测试或构建本来就要跑这么久，在 \`.sandcastle/sandcastle.config.ts\` 里调大 \`agentIdleTimeoutS\`（现在是 ${seconds}），然后去掉 ${stuckLabel} 再运行。`,
   pushedTo: (branch: string) => `已有的提交推到了分支 \`${branch}\`。`,
   pushedHere: "已有的提交推到了这个分支。",
   notPushed: "提交没能推上去，留在宿主机的本地分支上。",
@@ -119,6 +123,7 @@ const zh = {
 
   // —— 偶发失败与 main 兜底 —— / Flaky failures and the fallback run on main
   flakyLabelDesc: "偶发失败的测试（Sandcastle 门槛自动开票）",
+  mergingLabelDesc: "Sandcastle 已开 PR、门槛已过，在等检查 / 合并（中断重启后接着等，不重新实现）",
   flakySeen: (issueId: string, pr: string) => `#${issueId} 的门槛（PR #${pr}）`,
   flakyEnv: (others: string[], load: string, cores: number) =>
     `开票时：同时在做的票 ${others.length ? others.join("、") : "无"}；宿主机 1 / 5 / 15 分钟负载 ${load}（${cores} 核）。`,
@@ -173,6 +178,7 @@ const en: Messages = {
 
   notesTitle: "Acceptance notes",
   noteHeadings: ["### What changed", "### How to verify", "### Result"],
+  profileLine: "Model profile: ",
   notesMissingFile: "file not found",
   notesMissingHeading: (h) => `missing the \`${h}\` heading`,
   notesNoSteps: "no numbered steps under “How to verify”",
@@ -249,6 +255,8 @@ const en: Messages = {
   missingBlocker: (blockers, stuckLabel) =>
     `${blockers} in \`## Blocked by\` can't be found in this repository (a mistyped number, or copied from another repository). Fix Blocked by or delete that line, then remove ${stuckLabel} to continue.`,
   sandboxError: (err) => `sandbox error: ${err}`,
+  agentIdleTimeout: (seconds, stuckLabel) =>
+    `The agent produced no output for ${seconds} seconds and was treated as stuck (AgentIdleTimeoutError). If tests or builds legitimately take this long, raise \`agentIdleTimeoutS\` in \`.sandcastle/sandcastle.config.ts\` (currently ${seconds}), then remove ${stuckLabel} and run again.`,
   pushedTo: (branch) => `Existing commits were pushed to \`${branch}\`. `,
   pushedHere: "Existing commits were pushed to this branch.",
   notPushed: "The commits could not be pushed and remain on the local branch on the host. ",
@@ -267,6 +275,7 @@ const en: Messages = {
     `Sandcastle stopped: landing (push / open PR / merge) failed; the local branch \`${branch}\` is kept.\n\n\`\`\`\n${reason}\n\`\`\`\n\nFix it, then remove ${stuckLabel} and run again.`,
 
   flakyLabelDesc: "Flaky tests (opened automatically by the Sandcastle gate)",
+  mergingLabelDesc: "Sandcastle opened the PR and the gate passed; waiting for checks / merging (resumed after a restart, not reimplemented)",
   flakySeen: (issueId, pr) => `the gate of #${issueId} (PR #${pr})`,
   flakyEnv: (others, load, cores) =>
     `When opened: tickets in progress ${others.length ? others.join(", ") : "none"}; host load (1 / 5 / 15 min) ${load} (${cores} cores).`,

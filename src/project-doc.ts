@@ -200,12 +200,12 @@ export const labelVars = (labels: Record<string, string>): StaticVars =>
   Object.fromEntries(Object.entries(labels).map(([key, name]) => [`L_${constName(key)}`, name]));
 
 /**
- * 按项目语言的固定格式：{{LANG_H_WHAT}} 等是验收说明必须有的三个小标题（脚本按它们检查，见 pr-body.ts）。
- * Language-specific fixed formats: {{LANG_H_WHAT}} etc. are the three headings acceptance notes must have (the script checks them, see pr-body.ts).
+ * 按项目语言的固定格式：{{LANG_H_WHAT}} 等是验收说明必须有的三个小标题（脚本按它们检查，见 pr-body.ts）；{{LANG_PROFILE_LINE}} 是进度评论第一行的前缀。
+ * Language-specific fixed formats: {{LANG_H_WHAT}} etc. are the three headings acceptance notes must have (the script checks them, see pr-body.ts); {{LANG_PROFILE_LINE}} prefixes the first line of progress comments.
  */
 export const languageVars = (m: Messages): StaticVars => {
   const [what, verify, result] = m.noteHeadings;
-  return { LANG_H_WHAT: what, LANG_H_VERIFY: verify, LANG_H_RESULT: result };
+  return { LANG_H_WHAT: what, LANG_H_VERIFY: verify, LANG_H_RESULT: result, LANG_PROFILE_LINE: m.profileLine };
 };
 
 /** 渲染全部提示词，写进临时目录，返回各自的绝对路径（给 promptFile）。 / Render all prompts into a temp directory and return their absolute paths (for promptFile). */
