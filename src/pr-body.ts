@@ -9,6 +9,7 @@
 // and puts it in the `## 验收说明` section at the top of the PR body; when missing or badly formatted the body shows a warning and the PR isn't auto-merged.
 // Text follows the project's language (i18n.ts): parameter m defaults to Chinese.
 
+import type { BrowserCheck } from "./browser-gate.ts";
 import { messages, type Messages } from "./i18n.ts";
 
 /**
@@ -92,13 +93,27 @@ export const pageChangedByReview = (tag: string | undefined): boolean => {
  */
 const details = (title: string, content: string) => `<details><summary>${title}</summary>\n\n${content}\n\n</details>`;
 
+/**
+ * Browser check 一节的内容：RESULT.md 与截图说明；改了页面但票里没有 Browser check 时（noTicketCheck）在前面加提示，没有 `.browser-check/` 也给。
+ * 两样都没有时 undefined，不放这一节。
+ * Content of the Browser check section: RESULT.md and the screenshot note; when pages changed but the ticket has no Browser check (noTicketCheck), a notice goes first, even without `.browser-check/`.
+ * undefined when there's neither, so the section is omitted.
+ */
+export const browserSection = (b: BrowserCheck | undefined, noTicketCheck: boolean, m: Messages = messages()): string | undefined => {
+  const parts = [
+    noTicketCheck ? m.browserNoTicketCheck : undefined,
+    b ? `${b.result ?? m.browserNoResult}\n\n${m.browserShots(b.shots.length)}` : undefined,
+  ].filter((x): x is string => x !== undefined);
+  return parts.length ? parts.join("\n\n") : undefined;
+};
+
 /** Gate / Budget / Usage 的内容（不含 `## 标题` 行）。 / Content of Gate / Budget / Usage (without the `## title` line). */
 export type RestSections = {
   /** Review 一节：reviewer 摘要 + 打回记录。 / Review section: reviewer summary + revision history. */
   review: string;
   /**
-   * Browser check 一节（RESULT.md 与截图说明）；没做浏览器验收时 undefined，不放这一节。
-   * Browser check section (RESULT.md and screenshot notes); undefined when no browser check was done, so the section is omitted.
+   * Browser check 一节（browserSection：RESULT.md 与截图说明，或票缺 Browser check 的提示）；都没有时 undefined，不放这一节。
+   * Browser check section (browserSection: RESULT.md and screenshot notes, or the missing-ticket-Browser-check notice); undefined when neither, so the section is omitted.
    */
   browser?: string;
   gate: string;

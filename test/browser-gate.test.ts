@@ -1,8 +1,9 @@
 // test/browser-gate.test.ts —— 浏览器验收作为自动合并的硬条件（`src/browser-gate.ts`，纯函数）：
 // 哪些改动算改了页面、浏览器验收缺什么（返回问题数组，缺哪个报哪个）、合并前的结论（留不留 PR、原因）。
 import { describe, expect, it } from "vitest";
-import { browserProblems, browserVerdict, pageFiles } from "../src/browser-gate.ts";
+import { browserProblems, browserSetupWarning, browserVerdict, pageFiles, ticketHasBrowserCheck } from "../src/browser-gate.ts";
 import { messages } from "../src/i18n.ts";
+import { setTermLanguage } from "../src/term.ts";
 
 const zh = messages("zh");
 const en = messages("en");
@@ -87,5 +88,34 @@ describe("英文文案", () => {
     expect(browserProblems({ shots: [] }, "done", en)).toEqual(["no screenshots", "no RESULT.md"]);
     expect(browserVerdict({ pages: true, hasBrowser: false }, en).block).toContain("## Browser check");
     expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "none" }, en).block).toMatch(/^Pages changed/);
+  });
+});
+
+describe("ticketHasBrowserCheck：票正文有没有 Browser check", () => {
+  it("实现指引里的列表项算", () => {
+    expect(ticketHasBrowserCheck("## Implementation guide\n- **Change**: `a.ts`\n- **Browser check**：以管理员打开 /customers，应看到列表")).toBe(true);
+  });
+  it("没有这一项不算；只提到 browser check 字样也不算", () => {
+    expect(ticketHasBrowserCheck("## Implementation guide\n- **Change**: `a.ts`\n后面再做 browser check")).toBe(false);
+  });
+});
+
+describe("browserSetupWarning：项目有页面却没配浏览器验收", () => {
+  it("中文：说明后果，给两种补法和文档路径", () => {
+    setTermLanguage("zh", {});
+    const w = browserSetupWarning("docs/config.zh-CN.md");
+    expect(w).toContain("PROJECT.md 没有「浏览器验收」");
+    expect(w).toContain("改页面的票会留给人看");
+    expect(w).toContain("onboard");
+    expect(w).toContain("## 浏览器验收");
+    expect(w).toContain("docs/config.zh-CN.md");
+  });
+  it("英文", () => {
+    setTermLanguage("en", {});
+    const w = browserSetupWarning("docs/config.md");
+    expect(w).toContain("no Browser check section");
+    expect(w).toContain("onboard");
+    expect(w).toContain("## Browser check");
+    expect(w).toContain("docs/config.md");
   });
 });

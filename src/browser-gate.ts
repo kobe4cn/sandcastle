@@ -4,6 +4,7 @@
 // and the review's <browser-check> tag; if anything is missing the PR is left open, with each missing item spelled out. Pure functions; land() in main.ts acts on browserVerdict.
 
 import type { Messages } from "./i18n.ts";
+import { t } from "./term.ts";
 
 /** .browser-check/ 拷到宿主机后的内容（main.ts 的 collectBrowserCheck）。 / The .browser-check/ contents copied to the host (collectBrowserCheck in main.ts). */
 export type BrowserCheck = { result?: string; shots: string[] };
@@ -63,3 +64,21 @@ export function browserVerdict(
   const problems = browserProblems(x.browser, x.tag, m);
   return problems.length ? { block: m.reasonBrowser(problems.join(m.sep)) } : {};
 }
+
+/**
+ * 票正文里有没有 Browser check：实现指引里的列表项 `- **Browser check**`（prompts/ticket-sizing.md），不是 `##` 节。
+ * Whether the ticket body has a Browser check: the `- **Browser check**` list item of the implementation guide (prompts/ticket-sizing.md), not a `##` section.
+ */
+export const ticketHasBrowserCheck = (body: string): boolean => /\*\*Browser check\*\*/.test(body);
+
+/**
+ * 项目有页面（探测到网页界面或配了 browser.pagePaths）却没配浏览器验收时的提醒：run 启动时和 doctor 共用这段文案。
+ * 只打在终端，按终端语言（term.ts 的 t）。docPath 是 config 文档路径（onboard.ts 的 manual）。
+ * The reminder when the project has pages (a detected web UI or browser.pagePaths set) but no browser check configured: shared by run's startup and doctor.
+ * Terminal only, in the terminal language (t in term.ts). docPath is the config manual path (manual in onboard.ts).
+ */
+export const browserSetupWarning = (docPath: string): string =>
+  t(
+    `探测到网页界面（或配了 browser.pagePaths），但 PROJECT.md 没有「浏览器验收」：改页面的票会留给人看、不会自动合并。补法：重跑 onboard 让它写这一节；或在 .sandcastle/PROJECT.md 里手动加 \`## 浏览器验收\`（怎么准备数据、在后台起 dev server、登录、查日志），写法见 ${docPath} 的「浏览器验收」一节。`,
+    `A web UI was detected (or browser.pagePaths is set), but PROJECT.md has no Browser check section: tickets that change pages are left for a human and won't auto-merge. To fix: rerun onboard so it writes the section; or add \`## Browser check\` to .sandcastle/PROJECT.md by hand (preparing data, starting the dev server in the background, logging in, checking logs), following the Browser check section of ${docPath}.`,
+  );

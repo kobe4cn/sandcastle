@@ -1,7 +1,8 @@
 // test/sandcastle-pr-body.test.ts —— Sandcastle PR 正文的验收说明（`.sandcastle/pr-body.ts`，纯函数、不连库）：
 // 格式检查（三个小标题、编号步骤、不出现二级标题）、准备段落的三种形态（配了准备步骤、改了页面但没配、没改页面）、正文各节顺序与折叠、只替换一节。
 import { describe, expect, it } from 'vitest';
-import { acceptanceSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from '../src/pr-body.ts';
+import { acceptanceSection, browserSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from '../src/pr-body.ts';
+import { messages } from '../src/i18n.ts';
 import crm from '../examples/duckdb_crm/sandcastle.config.ts';
 
 const notes = [
@@ -105,6 +106,31 @@ describe('Sandcastle PR 正文其余各节 restSections', () => {
     const body = restSections({ review: '摘要', gate: 'g', budget: 'b', usage: 'u' });
     expect(body).not.toContain('Browser check');
     expect(body.indexOf('## Review')).toBeLessThan(body.indexOf('<details>'));
+  });
+});
+
+describe('Sandcastle PR 正文的 Browser check 一节 browserSection', () => {
+  const b = { result: '- ✅ 列表正常（list.png）', shots: ['/tmp/list.png'] };
+  it('有 .browser-check/、票里有 Browser check：RESULT.md + 截图说明', () => {
+    expect(browserSection(b, false)).toBe('- ✅ 列表正常（list.png）\n\n截图 1 张，附在下面。');
+  });
+  it('没有 .browser-check/、也不缺 Browser check：没有这一节', () => {
+    expect(browserSection(undefined, false)).toBeUndefined();
+  });
+  it('票里缺 Browser check、没有 .browser-check/：只有提示', () => {
+    expect(browserSection(undefined, true)).toBe(messages('zh').browserNoTicketCheck);
+    expect(messages('zh').browserNoTicketCheck).toContain('票里没有 Browser check，建议补 prep 规则');
+  });
+  it('票里缺 Browser check、有 .browser-check/：提示在前，RESULT.md 在后', () => {
+    const s = browserSection(b, true)!;
+    expect(s.startsWith(messages('zh').browserNoTicketCheck)).toBe(true);
+    expect(s).toContain('列表正常');
+  });
+  it('英文', () => {
+    expect(browserSection(undefined, true, messages('en'))).toContain('no Browser check');
+  });
+  it('只有提示时 restSections 也出这一节', () => {
+    expect(restSections({ review: 'r', browser: browserSection(undefined, true), gate: 'g', budget: 'b', usage: 'u' })).toContain('## Browser check');
   });
 });
 

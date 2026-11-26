@@ -86,6 +86,9 @@ const zh = {
   browserMissingShots: (names: string) => `RESULT.md 引用的截图不存在：${names}`,
   browserTagNotDone: (tag: string) => `review 的 browser-check 是 \`${tag}\`，不是 done`,
   browserNoTag: "review 没有给出 browser-check（要求是 done）",
+  // —— 票里缺 Browser check 的提示（pr-body.ts 的 browserSection、land 的 PR 评论） —— / Notice for a ticket without a Browser check (browserSection in pr-body.ts, the PR comment in land)
+  browserNoTicketCheck:
+    "⚠️ 改了页面，但票里没有 Browser check，建议补 prep 规则：prep 写实现指引时，改页面的票要加 `- **Browser check**` 一项（以什么角色打开哪个页面、做什么、应该看到什么）。",
   reasonMergeFailed: (out: string, retry: string) => `合并失败：${out}\n\nrebase 后重试也没成：${retry}`,
   reasonBranchProtection: (out: string) =>
     `门槛已通过，但仓库的分支保护不让 Sandcastle 合并（要求审批、必需检查或合并队列等）。请人合并，或调整分支保护 / 配置里的 \`mergeRequires\`。gh 的报错：${out}`,
@@ -252,6 +255,8 @@ const en: Messages = {
   browserMissingShots: (names) => `screenshots referenced in RESULT.md don't exist: ${names}`,
   browserTagNotDone: (tag) => `the review's browser-check is \`${tag}\`, not done`,
   browserNoTag: "the review gave no browser-check (done is required)",
+  browserNoTicketCheck:
+    "⚠️ Pages changed, but the ticket has no Browser check; consider adding a prep rule: when prep writes the implementation guide, tickets that change pages should get a `- **Browser check**` item (which role opens which page, what to do, what should be seen).",
   reasonMergeFailed: (out, retry) => `Merge failed: ${out}\n\nRetrying after a rebase also failed: ${retry}`,
   reasonBranchProtection: (out) =>
     `The gate passed, but the repository's branch protection won't let Sandcastle merge (required reviews, required checks, merge queue, etc.). Please merge it yourself, or adjust the branch protection / \`mergeRequires\` in the config. gh's error: ${out}`,

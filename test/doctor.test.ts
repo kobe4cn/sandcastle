@@ -202,8 +202,7 @@ describe("diagnose：浏览器验收", () => {
     const checks = await run(root);
     expect(check(checks, "浏览器验收")).toMatchObject({
       level: "warn",
-      detail: expect.stringContaining("网页界面"),
-      fix: expect.stringContaining("docs/config.zh-CN.md"),
+      detail: expect.stringMatching(/网页界面.*改页面的票会留给人看.*onboard.*docs\/config\.zh-CN\.md/),
     });
     // PROJECT.md 那一项不再拼浏览器验收的文字
     expect(check(checks, "PROJECT.md")?.detail).not.toContain("浏览器验收");
@@ -211,6 +210,15 @@ describe("diagnose：浏览器验收", () => {
 
   it("有网页界面、有这一节：通过", async () => {
     expect(check(await run(readyRepo()), "浏览器验收")?.level).toBe("ok");
+  });
+
+  it("没有网页界面但配了 browser.pagePaths、PROJECT.md 没有这一节：同样警告", async () => {
+    const root = pythonRepo();
+    installFiles(root, detectProject(root));
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(config, readFileSync(config, "utf8").replace("  autoMerge: false,", "  autoMerge: false,\n  browser: { pagePaths: [/\\.tsx$/] },"));
+    // 这个夹具是英文项目，检查项名和文案都是英文
+    expect(check(await run(root), "Browser check")).toMatchObject({ level: "warn", detail: expect.stringMatching(/browser\.pagePaths.*onboard.*docs\/config\.md/) });
   });
 
   it("没有网页界面：没有这一项", async () => {

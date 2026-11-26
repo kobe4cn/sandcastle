@@ -11,11 +11,12 @@ import { existsSync, readdirSync, readFileSync, realpathSync, rmSync } from "nod
 import { dirname, join, relative, resolve } from "node:path";
 import { parseEnv } from "node:util";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
+import { browserSetupWarning } from "./browser-gate.ts";
 import { detectProject } from "./detect.ts";
 import type { Forge, IssueState } from "./forge.ts";
 import { blockersOf } from "./guide.ts";
 import { inspectModels } from "./models.ts";
-import { setTermLanguage, t } from "./term.ts";
+import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { CLAUDE_FILES, fillDocsHint, manual, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
 import { OPEN_QUESTIONS, readOpenQuestions } from "./open-questions.ts";
 import { CONFIG_FILE, configDir, loadProject, type Labels, type Project } from "./profile.ts";
@@ -173,18 +174,14 @@ export async function diagnose(opts: {
   }
 
   // ---- 浏览器验收 ---- / Browser check
-  // 启发式检查，只警告：探测到网页界面但 PROJECT.md 没写怎么在沙箱里起 dev server，改页面的票只能留给人看；PROJECT.md 解析失败上面已经报过，这里跳过。
-  // A heuristic check that only warns: a web UI was detected but PROJECT.md doesn't say how to start the dev server in the sandbox, so tickets that change pages are left for a human; a PROJECT.md parse failure was already reported above, so skip it here.
-  if (doc && detectProject(cwd).webUi) {
+  // 启发式检查，只警告：探测到网页界面或配了 browser.pagePaths，但 PROJECT.md 没写怎么在沙箱里起 dev server，改页面的票只能留给人看；
+  // 文案和 run 启动时的警告共用 browserSetupWarning。PROJECT.md 解析失败上面已经报过，这里跳过。
+  // A heuristic check that only warns: a web UI was detected or browser.pagePaths is set, but PROJECT.md doesn't say how to start the dev server in the sandbox, so tickets that change pages are left for a human;
+  // the text is shared with run's startup warning via browserSetupWarning. A PROJECT.md parse failure was already reported above, so skip it here.
+  if (doc && ((project?.browser.pagePaths.length ?? 0) > 0 || detectProject(cwd).webUi)) {
     const name = t("浏览器验收", "Browser check");
     if (doc.hasBrowser) add(name, "ok", t("PROJECT.md 写了浏览器验收", "PROJECT.md has a browser check"));
-    else
-      add(
-        name,
-        "warn",
-        t("探测到网页界面，但 PROJECT.md 没有「浏览器验收」：改页面的票会留给人看", "A web UI was detected but PROJECT.md has no Browser check section: tickets that change pages are left for a human"),
-        t(`照 ${manual("config", "zh")} 的「浏览器验收」一节补上`, `Add it following the Browser check section of ${manual("config", "en")}`),
-      );
+    else add(name, "warn", browserSetupWarning(manual("config", termLanguage())));
   }
 
   // ---- 合并条件 ---- / Merge requirements

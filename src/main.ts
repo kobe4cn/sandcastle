@@ -86,7 +86,7 @@ import {
   type AgentRun, type Phase, type UsageRecord,
 } from "./models.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
-import { acceptanceSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from "./pr-body.ts";
+import { acceptanceSection, browserSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from "./pr-body.ts";
 import type { ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { type MergeFlowDeps, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
 import { loadProject } from "./profile.ts";
@@ -97,9 +97,11 @@ import {
 import { messages } from "./i18n.ts";
 import { duration, flakyTicketsLine, gateDoneLine, gateEnv, gateInfraLine, startGateProgress } from "./gate-progress.ts";
 import { createGateQueue, type GatePriority } from "./gate-queue.ts";
-import { setTermLanguage, t } from "./term.ts";
+import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
-import { type BrowserCheck, browserVerdict, pageFiles } from "./browser-gate.ts";
+import { type BrowserCheck, browserSetupWarning, browserVerdict, pageFiles, ticketHasBrowserCheck } from "./browser-gate.ts";
+import { detectProject } from "./detect.ts";
+import { manual } from "./onboard.ts";
 import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
 
 // ---------------------------------------------------------------------------
@@ -628,7 +630,7 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
     // When an external PR (that `Closes` this ticket) exists, continue on its branch; otherwise use our own branch as usual.
     const pr = prFor(issue.number);
     const branch = pr && !pr.branch.startsWith("sandcastle/") ? pr.branch : ownBranch(issue.number);
-    picked.push({ id: String(issue.number), title: issue.title, branch });
+    picked.push({ id: String(issue.number), title: issue.title, branch, browserCheck: ticketHasBrowserCheck(issue.body) });
   }
   return picked;
 }
@@ -646,7 +648,11 @@ const peakContext = (...runs: ({ readonly iterations: readonly sandcastle.Iterat
 const tagged = (stdout: string, tag: string) =>
   new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(stdout)?.[1]?.trim();
 
-type Issue = { id: string; title: string; branch: string };
+/**
+ * browserCheck：票正文有没有 `- **Browser check**`（plan 时设；resume 构造的不带，那条路不走 land）。
+ * browserCheck: whether the ticket body has `- **Browser check**` (set by plan; the ones built on resume lack it, and that path doesn't go through land).
+ */
+type Issue = { id: string; title: string; branch: string; browserCheck?: boolean };
 
 const ownBranch = (issueId: string | number) => `sandcastle/issue-${issueId}`;
 /**
@@ -1318,9 +1324,6 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     : flaky
       ? M.gateFlaky(tierName, result.gate.output)
       : M.gatePassed(tierName, result.gate.output.slice(-500));
-  const browserSection = result.browser
-    ? `${result.browser.result ?? M.browserNoResult}\n\n${M.browserShots(result.browser.shots.length)}`
-    : undefined;
   const revisionNote = result.revisions.length
     ? `${M.revisions(result.revisions.length)}${result.revisions
         .map((items, n) => `<details><summary>${M.revisionN(n + 1)}</summary>\n\n${items}\n\n</details>`)
@@ -1330,13 +1333,16 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   // 改了页面：diff 命中 browser.pagePaths，或有 .browser-check/，或 review 说改了。 / Pages changed: the diff hits browser.pagePaths, or there's a .browser-check/, or the review says so.
   const pageChanged =
     pageFiles(result.changed, project.browser.pagePaths).length > 0 || result.browser !== undefined || pageChangedByReview(result.browserTag);
+  // 改了页面但票里没有 Browser check：PR 正文的 Browser check 一节写提示（没有 .browser-check/ 也写），另发一条评论。
+  // Pages changed but the ticket has no Browser check: the PR body's Browser check section carries a notice (even without .browser-check/), plus a separate comment.
+  const noTicketCheck = pageChanged && issue.browserCheck === false;
   const pr = await pushAndOpenPr(
     issue,
     {
       acceptance: acceptanceSection(issue.branch, result.notes, { pageChanged, pagePrep: project.acceptancePrep, m: M }),
       rest: restSections({
         review: `${result.summary}${revisionNote}`,
-        browser: browserSection,
+        browser: browserSection(result.browser, noTicketCheck, M),
         gate: gateNote,
         budget: `${budgetNote}${overBudget}`,
         usage: usageTable(result.usage, M),
@@ -1345,6 +1351,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     result.browser?.shots ?? [],
   );
   reportDecisions(issue.id, pr);
+  if (noTicketCheck) attempt(() => forge.commentPr(pr, M.browserNoTicketCheck));
   if (flaky && result.gate.ok) {
     // 开 flaky 票 / 评论老票时 gh 出错不让整个落地失败（票会被打成 stuck）：打一行提示，跳过 PR 评论，继续合并。
     // A gh error while filing / commenting on flaky tickets must not fail the whole landing (the ticket would go stuck): print a line, skip the PR comment, keep merging.
@@ -1939,6 +1946,10 @@ if (!project.customSandbox) {
     );
   reportOrphans(removeOrphanContainers(process.cwd(), false));
 }
+// 项目有页面（探测到网页界面或配了 browser.pagePaths）却没配浏览器验收：启动就警告，不等改页面的票留 PR 才发现。
+// The project has pages (a detected web UI or browser.pagePaths set) but no browser check configured: warn at startup rather than when a page-changing ticket's PR is left open.
+if ((project.browser.pagePaths.length > 0 || detectProject(process.cwd()).webUi) && !DOC.hasBrowser)
+  console.warn(`⚠ ${browserSetupWarning(manual("config", termLanguage()))}`);
 /** 打一行删掉了哪些孤儿容器。 / Print one line naming the orphan containers removed. */
 function reportOrphans(removed: string[]) {
   if (removed.length === 0) return;
