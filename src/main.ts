@@ -1765,12 +1765,19 @@ for (let pass = 1; ; pass++) {
 // The last merged tickets reached the remote after the previous fetch, so sync once more at the end.
 await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
 syncHostBase();
+// 还有没有带 pr-open 的 open 票；查不到时当作有，照旧提醒去审。 / Whether any open ticket still has pr-open; if the query fails assume yes and keep the review reminder.
+function prOpenLeft(): boolean {
+  const r = attempt(() => listIssues([LABEL.prOpen]));
+  return !r.ok || r.value.length > 0;
+}
 // 一张票都没开工时不说「全部完成」，改为说明空转原因。 / When no ticket was ever started, explain the idle exit instead of "All done".
 console.log(
   everStarted
     ? t(
-        `\n全部完成。本地 main 已快进到 ${BASE_REF}（不在 main 上时除外，见上面的警告）；带 ${LABEL.prOpen} 的票在 ${forge.name} 上等你审。`,
-        `\nAll done. Local main is fast-forwarded to ${BASE_REF} (unless the host isn't on main, see the warnings above); tickets labelled ${LABEL.prOpen} are waiting for your review on ${forge.name}.`,
+        `\n全部完成。本地 main 已快进到 ${BASE_REF}（不在 main 上时除外，见上面的警告）` +
+          (prOpenLeft() ? `；带 ${LABEL.prOpen} 的票在 ${forge.name} 上等你审。` : "。"),
+        `\nAll done. Local main is fast-forwarded to ${BASE_REF} (unless the host isn't on main, see the warnings above)` +
+          (prOpenLeft() ? `; tickets labelled ${LABEL.prOpen} are waiting for your review on ${forge.name}.` : "."),
       )
     : `\n${idleSummary(waitingOn, LABEL)}`,
 );

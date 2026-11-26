@@ -72,7 +72,7 @@ describe("waitForChecks", () => {
   it("空列表宽限期内继续等，宽限期过了仍为空当作没有 CI", async () => {
     const c = clock();
     const forge = fakeForge([]);
-    expect(await waitForChecks(forge, "13", all, c)).toEqual({ ok: true });
+    expect(await waitForChecks(forge, "13", all, c)).toEqual({ ok: true, noChecks: true });
     expect(c.now()).toBe(60_000);
     expect(forge.calls).toHaveLength(3);
   });

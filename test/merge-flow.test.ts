@@ -157,6 +157,18 @@ describe("waitChecksOffSlot", () => {
     expect(f.logs).toEqual(["  ⧗ #7 等 PR #42 上的检查（最多 30 分钟，不占空位）"]);
   });
 
+  it("没有检查（宽限期后按没有 CI）时多打一行说明只按门槛合并", async () => {
+    const f = fakeDeps({ wait: { ok: true, noChecks: true } });
+    expect(await waitChecksOffSlot("7", "42", f.d)).toEqual({ ok: true, noChecks: true });
+    expect(f.logs).toEqual(["  ⧗ #7 等 PR #42 上的检查（最多 30 分钟，不占空位）", "  · #7 的 PR #42 上没有检查（没有 CI），只按门槛合并"]);
+  });
+
+  it("检查通过时不打没有检查的说明", async () => {
+    const f = fakeDeps({ wait: { ok: true } });
+    await waitChecksOffSlot("7", "42", f.d);
+    expect(f.logs).toHaveLength(1);
+  });
+
   it("等的过程抛错时也会 delete 和 reacquire", async () => {
     const f = fakeDeps({ wait: new Error("boom") });
     await expect(waitChecksOffSlot("7", "42", f.d)).rejects.toThrow("boom");

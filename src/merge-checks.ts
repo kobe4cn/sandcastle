@@ -23,7 +23,7 @@ export function checksVerdict(checks: PrCheck[]): ChecksVerdict {
 }
 
 /** waitForChecks 的结果；超时用 why 区分，不抛错。 / waitForChecks's result; a timeout is told apart by why, never thrown. */
-export type ChecksWait = { ok: true } | { ok: false; why: "fail"; checks: PrCheck[] } | { ok: false; why: "timeout"; checks: PrCheck[] };
+export type ChecksWait = { ok: true; noChecks?: true } | { ok: false; why: "fail"; checks: PrCheck[] } | { ok: false; why: "timeout"; checks: PrCheck[] };
 
 /** waitForChecks 的可选参数（测试注入时钟）。 / Optional parameters for waitForChecks (tests inject the clock). */
 export type ChecksWaitOptions = {
@@ -68,7 +68,7 @@ export async function waitForChecks(
     if (checks) {
       if (checks.length === 0) {
         // 宽限期过了（或已到超时）仍为空：当作没有 CI / Still empty after the grace period (or at the timeout): treat as no CI
-        if (now() - start >= emptyGraceMs || expired) return { ok: true };
+        if (now() - start >= emptyGraceMs || expired) return { ok: true, noChecks: true };
       } else {
         const v = checksVerdict(checks);
         if (v.kind === "pass") return { ok: true };

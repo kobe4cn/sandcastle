@@ -72,7 +72,10 @@ export async function waitChecksOffSlot(issueId: string, pr: string, d: MergeFlo
   d.host.release();
   logOf(d)(t(`  ⧗ #${issueId} 等 PR #${pr} 上的检查（最多 ${d.mergeRequires.timeoutMinutes} 分钟，不占空位）`, `  ⧗ #${issueId} waiting for checks on PR #${pr} (up to ${d.mergeRequires.timeoutMinutes} minute${d.mergeRequires.timeoutMinutes === 1 ? "" : "s"}, not holding a slot)`));
   try {
-    return await (d.waitForChecks ?? waitForChecks)(d.forge, pr, d.mergeRequires);
+    const r = await (d.waitForChecks ?? waitForChecks)(d.forge, pr, d.mergeRequires);
+    if (r.ok && r.noChecks)
+      logOf(d)(t(`  · #${issueId} 的 PR #${pr} 上没有检查（没有 CI），只按门槛合并`, `  · No checks on PR #${pr} for #${issueId} (no CI); merging on the gate alone`));
+    return r;
   } finally {
     d.ciWaiting.delete(issueId);
     await d.host.reacquire();
