@@ -54,10 +54,15 @@ const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
  */
 const RESERVED_ENV = ["CLAUDE_CODE_AUTO_COMPACT_WINDOW"];
 /**
- * 别家档案里要清掉的 Claude 凭据：不能跟着请求发到别家的接口。
- * Claude credentials cleared for other vendors' profiles: they must not be sent to another vendor's API.
+ * Claude 凭据：不能跟着请求发到别家的接口。容器级 env 里清空（CLAUDE_CREDENTIALS_CLEARED），只有 Claude 档案的会话从 stdin 拿到（agentFor）。
+ * Claude credentials: they must not be sent to another vendor's API. Cleared in the container-level env (CLAUDE_CREDENTIALS_CLEARED); only Claude profiles' sessions receive them, over stdin (agentFor).
  */
-const CLAUDE_CREDENTIALS = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
+export const CLAUDE_CREDENTIALS: readonly string[] = ["CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"];
+/**
+ * 合进 sandbox env，覆盖 sandcastle 从 .sandcastle/.env 读到的凭据：容器的 env 在 podman run 时定死，同一个容器会先后跑 Claude 和别家的会话，凭据只能按会话给。
+ * Merged into the sandbox env to override the credentials sandcastle reads from .sandcastle/.env: the container's env is fixed at podman run and one container may run both Claude and other vendors' sessions, so credentials can only be given per session.
+ */
+export const CLAUDE_CREDENTIALS_CLEARED: Readonly<Record<string, string>> = Object.fromEntries(CLAUDE_CREDENTIALS.map((k) => [k, ""]));
 
 /** claude-code 撞订阅限额的报错，如「You've hit your 5-hour limit · resets 6:20am (UTC)」。 */
 export const CLAUDE_LIMIT_PATTERN = /hit your .*?limit/i;
@@ -76,13 +81,28 @@ const fail = (message: string): never => {
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
 /**
- * sandcastle 只把 .sandcastle/.env 里列出的键带进容器（值取文件里的，空的取宿主机环境变量）。
- * sandcastle passes only the keys listed in .sandcastle/.env into the container (values from the file; empty ones from the host environment).
+ * sandcastle 只把 .sandcastle/.env 里列出的键带进容器（值取文件里的，空的取宿主机环境变量），两边都没值的不带。
+ * sandcastle passes only the keys listed in .sandcastle/.env into the container (values from the file; empty ones from the host environment); keys with no value either way are dropped.
  */
-function sandcastleEnvKeys(): Set<string> {
-  if (!existsSync(SANDCASTLE_ENV_PATH)) return new Set();
+function sandcastleEnv(): Record<string, string> {
+  if (!existsSync(SANDCASTLE_ENV_PATH)) return {};
   const vars = parseEnv(readFileSync(SANDCASTLE_ENV_PATH, "utf8"));
-  return new Set(Object.keys(vars).filter((k) => vars[k] || process.env[k]));
+  const resolved: Record<string, string> = {};
+  for (const k of Object.keys(vars)) {
+    const value = vars[k] || process.env[k];
+    if (value) resolved[k] = value;
+  }
+  return resolved;
+}
+const sandcastleEnvKeys = () => new Set(Object.keys(sandcastleEnv()));
+
+/**
+ * .sandcastle/.env 里有值的 Claude 凭据，按 CLAUDE_CREDENTIALS 的顺序。
+ * Claude credentials with a value in .sandcastle/.env, in CLAUDE_CREDENTIALS order.
+ */
+function claudeCredentials(): [string, string][] {
+  const env = sandcastleEnv();
+  return CLAUDE_CREDENTIALS.flatMap((k): [string, string][] => (env[k] ? [[k, env[k]]] : []));
 }
 
 function parseProfile(name: string, raw: unknown, warn: (m: string) => void): Profile & { readonly refs: readonly { where: string; variable: string }[] } {
@@ -253,6 +273,18 @@ const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 /**
  * createSandbox 里的 sandbox.run 不用 agent provider 的 env（只用容器启动时的），所以档案的 env 加在命令前面：
  * `env -u … K=V claude …`，另加 SANDCASTLE_PROFILE（implementer 在进度评论里写明用的档案）。命令在容器里由 sh -c 执行，`${VAR}` 写成 "$VAR"，密钥不出现在宿主机的命令行里。
+ *
+ * Claude 凭据不在容器级 env 里（main.ts 用 CLAUDE_CREDENTIALS_CLEARED 清空），按会话给：
+ * - Claude 档案：.env 里有值的凭据每个一行放在 prompt 前面从 stdin 送进去，sh 用 read 读进没导出的变量、export 后 exec 成 claude，
+ *   值不进任何命令行，sh 被替换掉；没值的凭据 `env -u`（容器里是空串）。
+ * - 别家档案：`env -u` 两个凭据，stdin 只有 prompt，这次会话起的进程都没有凭据（之前 Claude 会话留在后台的进程除外）。
+ *
+ * Profile env goes in front of the command because sandbox.run in createSandbox ignores the agent provider's env: `env -u … K=V claude …`,
+ * plus SANDCASTLE_PROFILE. The command runs under sh -c in the container; `${VAR}` becomes "$VAR", so secrets never appear on the host's command line.
+ * Claude credentials aren't in the container-level env (main.ts clears them with CLAUDE_CREDENTIALS_CLEARED); they're given per session:
+ * - Claude profiles: each credential with a value goes as one stdin line ahead of the prompt; sh reads it into an unexported variable, exports it and execs claude,
+ *   so the value is on no command line and sh is replaced; credentials without a value are `env -u`'d (they're empty strings in the container).
+ * - Other vendors' profiles: both credentials are `env -u`'d and stdin is just the prompt, so no process the session starts has them (except background processes an earlier Claude session left running).
  */
 export function agentFor(profile: Profile, env: Record<string, string>, phase?: Phase): sandcastle.AgentProvider {
   const base = sandcastle.claudeCode(profile.model, { env, ...(profile.effort ? { effort: profile.effort } : {}) });
@@ -262,13 +294,22 @@ export function agentFor(profile: Profile, env: Record<string, string>, phase?: 
     const ref = SECRET_REF.exec(v);
     return `${k}=${ref ? `"$${ref[1]}"` : shellQuote(v)}`;
   });
-  const unset = profile.thirdParty ? CLAUDE_CREDENTIALS.map((k) => `-u ${k}`) : [];
-  const prefix = `env ${[...unset, ...assignments].join(" ")} `;
+  const envPrefix = (unset: readonly string[]) => `env ${[...unset.map((k) => `-u ${k}`), ...assignments].join(" ")} `;
   return {
     ...base,
+    // resume 会话也走这里（resumeSession 是 options 的一项）。 / Resumed sessions come through here too (resumeSession is one of the options).
     buildPrintCommand: (options) => {
       const cmd = base.buildPrintCommand(options);
-      return { ...cmd, command: prefix + cmd.command };
+      const creds = profile.thirdParty ? [] : claudeCredentials();
+      if (creds.length === 0) return { ...cmd, command: envPrefix(CLAUDE_CREDENTIALS) + cmd.command };
+      const given = new Set(creds.map(([k]) => k));
+      const reads = creds.map((_, i) => `IFS= read -r __c${i}; `).join("");
+      const exports = `export ${creds.map(([k], i) => `${k}="$__c${i}"`).join(" ")}; `;
+      return {
+        ...cmd,
+        command: `${reads}${exports}exec ${envPrefix(CLAUDE_CREDENTIALS.filter((k) => !given.has(k)))}${cmd.command}`,
+        stdin: creds.map(([, v]) => `${v}\n`).join("") + (cmd.stdin ?? ""),
+      };
     },
   };
 }

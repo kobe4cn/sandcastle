@@ -128,7 +128,12 @@ Sandcastle 处理期间，PR 作者不要往这个分支推提交。本地和远
 - `profiles` 是档案：`harness`（目前只支持 `claude-code`；`codex` 预留，写了会报错）、`model`（传给 `claude --model`）、可选的 `effort`、`env`、`limitPattern`、`resetTimeZone`。
 - `env` 照抄厂商给 Claude Code 的配置（比如智谱 coding plan 的 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_DEFAULT_*_MODEL`）。只对这次会话的 claude 进程生效，加在命令前面（`env K=V claude …`），因为 `createSandbox` 里的 `sandbox.run` 不用 agent provider 的 env。
 - 密钥不写进 `models.json`：值写成 `"${GLM_API_KEY}"`，在容器里从同名环境变量取。变量要列在 `.sandcastle/.env` 里，sandcastle 只把那里列出的变量带进容器。
-- 档案设了 `ANTHROPIC_BASE_URL` 就算别家：命令前 `env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY`，Claude 的凭据不会发到别家的接口。别家档案没设 `ANTHROPIC_DEFAULT_HAIKU_MODEL`（后台小任务和子 agent 用）或 `limitPattern` 时启动会警告。
+- 档案设了 `ANTHROPIC_BASE_URL` 就算别家，Claude 的凭据（`CLAUDE_CODE_OAUTH_TOKEN`、`ANTHROPIC_API_KEY`）不会发到别家的接口，范围是整个容器，不只 claude 进程：
+  - 凭据不在容器级 env 里：sandcastle 会把 `.sandcastle/.env` 的键都放进 `podman run -e`，脚本在 sandbox env 里把这两个键覆盖成空串（`CLAUDE_CREDENTIALS_CLEARED`）。同一个容器会先后跑 Claude 和别家的会话（implement=glm、review=opus，或撞限额中途换档案），容器 env 在 `podman run` 时就定死了，所以只能按会话给。
+  - Claude 档案的会话：`.env` 里有值的凭据每个一行放在 prompt 前面从 stdin 送进去，命令是 `IFS= read -r __c0; export CLAUDE_CODE_OAUTH_TOKEN="$__c0"; exec env … claude …`，值不出现在任何命令行里，外层 sh 被 exec 替换掉；这次会话的 claude 及其子进程有凭据。`.env` 没列凭据时两个键都 `env -u`。
+  - 别家档案的会话：命令前 `env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY`，stdin 只有 prompt，这次会话里容器内任何进程的环境都没有凭据（门槛、装依赖等其它 exec 也没有）。例外：同一个容器里之前 Claude 档案的会话在后台留下、还活着的进程（如 `&` 起的 dev server）是 claude 的子进程，环境里有凭据，别家会话能从它的 `/proc/<pid>/environ` 读到。
+  - 项目配置里自定义 `sandbox` 的，必须把收到的 env 原样传给容器，否则清空无效、凭据会留在容器级 env 里。
+- 别家档案没设 `ANTHROPIC_DEFAULT_HAIKU_MODEL`（后台小任务和子 agent 用）或 `limitPattern` 时启动会警告。
 - 上下文预算统一 150k：档案里的 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 警告后忽略。主模型看不到图片的档案在 `env` 里加 `"SANDCASTLE_NO_IMAGES": "1"`，并把 `ANTHROPIC_DEFAULT_HAIKU_MODEL` 设成能看图的模型（看图子代理用它，见「上下文预算」）。implement 只用 glm，不设后备：glm 到限额时等它恢复。
 - `phases` 给每个阶段一个有序的档案列表，6 个阶段都要写。每次调度开头读一次：改了配置下次调度生效，不用重启；启动时打印一次，之后只在配置变化时打印。第一次就读不成（JSON 坏了、档案名不存在、阶段用到的档案引用的变量不在 `.sandcastle/.env` 里）直接退出；运行中途改坏了就警告并沿用上一份。
 - 换档案以一次会话为单位：implement 的每次会话单独挑档案，档案名经环境变量 `SANDCASTLE_PROFILE` 给 implementer，进度评论第一行写明。不用 promptArgs：运行中的旧进程也会读到新提示词，多出的占位符会让它报错。撞上限额（Claude 档案认 `hit your … limit`，别家认 `limitPattern`）就记下这个档案的重置时间，重置前所有票都跳过它，用列表里的下一个；认不出重置时间就跳过 1 小时。重置时间认「resets 6:20am (UTC)」和「2026-11-07 15:30:00」两种，后一种按 `resetTimeZone` 解析。列表里的都在等时，分支推到远端，等最早恢复的那个，不打 stuck。其他报错照常走临时错误重试。

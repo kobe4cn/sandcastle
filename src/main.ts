@@ -82,7 +82,7 @@ import { stripVTControlCharacters } from "node:util";
 import * as sandcastle from "@ai-hero/sandcastle";
 import type { SandboxExecOptions } from "@ai-hero/sandcastle";
 import {
-  AllProfilesLimited, CLAUDE_LIMIT_PATTERN, agentFor, limitResetAt, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
+  AllProfilesLimited, CLAUDE_CREDENTIALS_CLEARED, CLAUDE_LIMIT_PATTERN, agentFor, limitResetAt, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
   type AgentRun, type Phase, type UsageRecord,
 } from "./models.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
@@ -318,7 +318,11 @@ const copyToWorktree = project.install.copyToWorktree;
 
 // createSandbox 里的 sandbox.run 不使用 agent provider 的 env，只有容器启动时 podman({env}) 的 env
 // 才进得了 agent 的 shell，所以测试库连接与上下文预算都在这里注入。
-const sandboxFor = (env: Record<string, string>) => project.sandbox({ ...claudeEnv, ...env });
+// Claude 凭据在这里清空（覆盖 sandcastle 从 .sandcastle/.env 读到的值）：容器级 env 对同一个容器里的所有会话都可见，
+// 别家档案的会话不能有；Claude 档案的会话由 agentFor 从 stdin 按会话送进去（models.ts）。
+// Claude credentials are cleared here (overriding what sandcastle reads from .sandcastle/.env): the container-level env is visible to every session
+// in that container and other vendors' sessions must not have them; agentFor hands them to Claude profiles' sessions over stdin, per session (models.ts).
+const sandboxFor = (env: Record<string, string>) => project.sandbox({ ...claudeEnv, ...env, ...CLAUDE_CREDENTIALS_CLEARED });
 
 // ---------------------------------------------------------------------------
 // Host helpers
@@ -1854,7 +1858,8 @@ async function schedule(): Promise<ScheduleResult> {
     try {
       // 丢弃的数组：prep 用量落地时从 usage.jsonl 读回（可能是上一次进程跑的）。 / Discarded array: prep usage is read back from usage.jsonl on landing (it may have run in an earlier process).
       await runAgent("prep", String(issue.number), `prep-${issue.number}`, {}, [], (agent) => sandcastle.run({
-        sandbox: project.sandbox({}),
+        // 凭据清空的原因同 sandboxFor。 / Credentials cleared for the same reason as in sandboxFor.
+        sandbox: project.sandbox({ ...CLAUDE_CREDENTIALS_CLEARED }),
         name: `prep-${issue.number}`,
         maxIterations: 1,
         idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,

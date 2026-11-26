@@ -156,7 +156,10 @@ export interface ProjectProfile {
   /** 标签名。默认见 DEFAULT_LABELS。 / Label names. Defaults in DEFAULT_LABELS. */
   labels?: Partial<Labels>;
 
-  /** 沙箱；默认 podman，env 是要进容器的环境变量。 / Sandbox; podman by default, env holds the variables passed into the container. */
+  /**
+   * 沙箱；默认 podman，env 是要进容器的环境变量，要原样传给容器：里面把 Claude 凭据覆盖成空串，不传就会留在容器级 env 里、别家档案的会话也能读到。
+   * Sandbox; podman by default. env holds the variables passed into the container and must be passed through as-is: it overrides the Claude credentials with empty strings, without which they stay in the container-level env where other vendors' sessions can read them.
+   */
   sandbox?: (env: Record<string, string>) => SandboxProvider;
   install: {
     /** 沙箱建好后跑的命令（装依赖）。 / Command run once the sandbox is ready (installs dependencies). */

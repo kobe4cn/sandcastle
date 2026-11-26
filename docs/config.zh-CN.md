@@ -100,7 +100,7 @@ onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-
 | `agentIdleTimeoutS` | 2400 | agent 多久没输出算卡死 |
 | `pollIntervalMs` / `maxIdlePolls` | 10 分钟 / 12 | 调度间隔；连续空转多少次后结束 |
 | `labels` | 见下 | 改标签名 |
-| `sandbox(env)` | podman | 换沙箱实现（`@ai-hero/sandcastle` 的 SandboxProvider） |
+| `sandbox(env)` | podman | 换沙箱实现（`@ai-hero/sandcastle` 的 SandboxProvider）。`env` 要原样传进容器：里面把 Claude 凭据清空，别家档案的会话才读不到 |
 | `integrity` | 无 | 合并前的一致性检查：`{ name, command(head, baseRef), broken(baseRef) }`。比如检查数据库迁移链有没有分叉：rebase 没有文本冲突，迁移链也可能断 |
 | `appendOnlyFiles` | `[]` | 只追加的索引文件。几张票同时追加不算改同一个文件，可以并行 |
 | `acceptancePrep(branch)` | 无 | 改了页面的票，PR「验收说明」最前面固定的准备步骤 |

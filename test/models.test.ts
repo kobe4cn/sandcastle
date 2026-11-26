@@ -256,10 +256,21 @@ describe("N1d 别家档案的环境变量", () => {
     limitPattern: "quota",
     env: { ANTHROPIC_BASE_URL: "https://glm.example/api", ANTHROPIC_AUTH_TOKEN: `\${${VAR}}`, ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.5-air", ...env },
   });
-  const command = (p: Profile, phase?: (typeof PHASES)[number]) =>
-    m.agentFor(p, { GH_TOKEN: "x" }, phase).buildPrintCommand({ prompt: "hi", dangerouslySkipPermissions: true }).command;
+  const print = (p: Profile, phase?: (typeof PHASES)[number]) =>
+    m.agentFor(p, { GH_TOKEN: "x" }, phase).buildPrintCommand({ prompt: "hi", dangerouslySkipPermissions: true });
+  const command = (p: Profile, phase?: (typeof PHASES)[number]) => print(p, phase).command;
+  // 宿主机上的 Claude 凭据会被当成 .env 空值的来源，用例里先拿掉，结束时还原。
+  let savedCreds: Record<string, string | undefined> = {};
   beforeEach(() => {
     delete process.env[VAR];
+    savedCreds = Object.fromEntries(m.CLAUDE_CREDENTIALS.map((k) => [k, process.env[k]]));
+    for (const k of m.CLAUDE_CREDENTIALS) delete process.env[k];
+  });
+  afterEach(() => {
+    for (const k of m.CLAUDE_CREDENTIALS) {
+      if (savedCreds[k] === undefined) delete process.env[k];
+      else process.env[k] = savedCreds[k];
+    }
   });
 
   it("设了 ANTHROPIC_BASE_URL：命令前清掉 Claude 凭据，${VAR} 写成容器里的 \"$VAR\"", () => {
@@ -279,10 +290,45 @@ describe("N1d 别家档案的环境变量", () => {
 
     const opus = used.find((x) => x.name === "opus")!;
     expect(opus.thirdParty).toBe(false);
+    // .env 没列凭据：Claude 档案也清掉容器里的空凭据，不加 read 前缀
     const c2 = command(opus);
-    expect(c2).not.toContain("-u CLAUDE_CODE_OAUTH_TOKEN");
     expect(c2).not.toContain("SANDCASTLE_PHASE");
-    expect(c2.startsWith("env SANDCASTLE_PROFILE='opus' ")).toBe(true);
+    expect(c2.startsWith("env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY SANDCASTLE_PROFILE='opus' ")).toBe(true);
+    expect(print(opus).stdin).toBe("hi");
+  });
+
+  it("容器级 env 清空凭据：CLAUDE_CREDENTIALS_CLEARED 两个键都是空串", () => {
+    expect(m.CLAUDE_CREDENTIALS_CLEARED).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: "", ANTHROPIC_API_KEY: "" });
+  });
+
+  it("Claude 档案 + .env 有 token：token 从 stdin 第一行送进 claude，命令行里没有值", () => {
+    project({ profiles: { glm: glm(), opus: claude() }, phases: phasesAll(["opus", "glm"]) }, `CLAUDE_CODE_OAUTH_TOKEN=tok-secret\nANTHROPIC_API_KEY=\n${VAR}=k\n`);
+    const used = m.inspectModels().used;
+    const { command: cmd, stdin } = print(used.find((x) => x.name === "opus")!);
+    expect(stdin).toBe("tok-secret\nhi");
+    expect(cmd).not.toContain("tok-secret");
+    expect(cmd.startsWith(`IFS= read -r __c0; export CLAUDE_CODE_OAUTH_TOKEN="$__c0"; exec env -u ANTHROPIC_API_KEY SANDCASTLE_PROFILE='opus' claude `)).toBe(true);
+
+    // 第三方档案：stdin 和命令都没有 token
+    const g = print(used.find((x) => x.name === "glm")!);
+    expect(g.stdin).toBe("hi");
+    expect(g.command).not.toContain("tok-secret");
+    expect(g.command).not.toContain("read -r");
+    expect(g.command.startsWith("env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY ")).toBe(true);
+    // provider env 也进容器级 env：两种档案都不放凭据
+    for (const p of used) for (const k of m.CLAUDE_CREDENTIALS) expect(m.agentFor(p, { GH_TOKEN: "x" }).env).not.toHaveProperty(k);
+  });
+
+  it("两个凭据都有值（空的取宿主机）：按顺序各读一行，resume 会话同样处理", () => {
+    process.env.ANTHROPIC_API_KEY = "key-from-host";
+    project({ profiles: { opus: claude() }, phases: phasesAll(["opus"]) }, "ANTHROPIC_API_KEY=\nCLAUDE_CODE_OAUTH_TOKEN=tok\n");
+    const p = m.inspectModels().used[0]!;
+    const r = m.agentFor(p, {}, "revise").buildPrintCommand({ prompt: "go", dangerouslySkipPermissions: true, resumeSession: "sess-1" });
+    expect(r.stdin).toBe("tok\nkey-from-host\ngo");
+    expect(r.command).toContain(`IFS= read -r __c0; IFS= read -r __c1; export CLAUDE_CODE_OAUTH_TOKEN="$__c0" ANTHROPIC_API_KEY="$__c1"; exec env SANDCASTLE_PROFILE='opus' `);
+    expect(r.command).not.toContain("-u ");
+    expect(r.command).toContain("--resume 'sess-1'");
+    expect(r.command).not.toContain("key-from-host");
   });
 
   it("值里的单引号被转义", () => {

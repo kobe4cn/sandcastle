@@ -100,7 +100,7 @@ Example (replace the commands, port and accounts with the project's own):
 | `agentIdleTimeoutS` | 2400 | How long without output before the agent counts as stuck |
 | `pollIntervalMs` / `maxIdlePolls` | 10 minutes / 12 | Scheduling interval; how many idle polls in a row end the run |
 | `labels` | see below | Rename labels |
-| `sandbox(env)` | podman | Swap the sandbox implementation (a `@ai-hero/sandcastle` SandboxProvider) |
+| `sandbox(env)` | podman | Swap the sandbox implementation (a `@ai-hero/sandcastle` SandboxProvider). Pass `env` into the container as-is: it blanks the Claude credentials so third-party profile sessions can't read them |
 | `integrity` | none | Consistency check before merging: `{ name, command(head, baseRef), broken(baseRef) }`. For example, checking whether the database migration chain forked: a rebase can have no text conflict and still break the chain |
 | `appendOnlyFiles` | `[]` | Append-only index files. Several tickets appending to one doesn't count as changing the same file, so they can run in parallel |
 | `acceptancePrep(branch)` | none | For tickets that change pages, fixed setup steps at the top of the PR's acceptance notes |
