@@ -48,6 +48,7 @@ Gate script output conventions (optional; used to select tests by dependency and
 - Print a line `GATE_TIER: selected …` to say only dependency-selected tests ran; without it the run counts as the full suite.
 - When the environment variable `GATE_FULL=1` is set, the full suite must run (`baseline` and the fallback check on main set it).
 - When failing files pass on a solo rerun, print `GATE_FLAKY`. List the rerun files before it and the summary of the first failure after it. The pipeline opens `flaky` tickets for those files.
+- When a service the gate depends on is unreachable (non-zero exit code and an output line matching `ECONNREFUSED`, `getaddrinfo ENOTFOUND` / `EAI_AGAIN`, `Cannot connect to the Docker daemon` / `Cannot connect to Podman`), the terminal prints that line, no fix session is opened, it doesn't count as a failure, and the whole step reruns later; if it's still unreachable once retries run out, the ticket is marked stuck with a comment naming that line. Add the project's own connection errors with the optional `gate.envErrorPattern` (a regex, e.g. `/MongoServerSelectionError/`). `No test files found` and ordinary assertion failures don't count.
 - Output is parsed line by line as plain text, with ANSI escape codes stripped. The gate sets `NO_COLOR=1` / `FORCE_COLOR=0` by default; to get colors back, set `NO_COLOR: ""` in `gate.env`. When the gate script greps its own failure lines, do not rely on color codes.
 
 ## Isolation helpers

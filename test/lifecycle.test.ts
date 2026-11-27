@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { messages } from "../src/i18n.ts";
 import {
-  acquireRunLock, errorLine, GateInfraError, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, missingImage, orphanContainers,
+  acquireRunLock, errorLine, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GateInfraError, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, missingImage, orphanContainers,
   parseContainers, podmanProblem, removeOrphanContainers, waitForPodman,
 } from "../src/lifecycle.ts";
 import type { TryResult } from "../src/shell.ts";
@@ -102,6 +102,50 @@ describe("孤儿容器", () => {
     expect(removeOrphanContainers(ROOT, true, run)).toEqual([]);
     up = true;
     expect(removeOrphanContainers(ROOT, true, run)).toEqual(["sandcastle-2"]);
+  });
+});
+
+describe("门槛环境类错误", () => {
+  it("取含 ECONNREFUSED 的那一行", () => {
+    const out = "RUN  v3\n FAIL  test/db.test.ts\nError: connect ECONNREFUSED 127.0.0.1:5432\n  at TCPConnectWrap\n";
+    expect(gateEnvError(1, out)).toBe("Error: connect ECONNREFUSED 127.0.0.1:5432");
+  });
+  it("DNS 失败：getaddrinfo EAI_AGAIN / ENOTFOUND", () => {
+    expect(gateEnvError(1, "x\n  getaddrinfo EAI_AGAIN db\n")).toBe("getaddrinfo EAI_AGAIN db");
+    expect(gateEnvError(1, "getaddrinfo ENOTFOUND redis")).toBe("getaddrinfo ENOTFOUND redis");
+  });
+  it("容器运行时连不上", () => {
+    expect(gateEnvError(1, "Cannot connect to the Docker daemon at unix:///var/run/docker.sock")).toContain("Docker daemon");
+  });
+  it("自定义 extra 正则追加规则", () => {
+    const out = "ok\nMongoServerSelectionError: server selection timed out\n";
+    expect(gateEnvError(1, out)).toBeNull();
+    expect(gateEnvError(1, out, /MongoServerSelectionError/)).toBe("MongoServerSelectionError: server selection timed out");
+  });
+  it("No test files found 不算", () => {
+    expect(gateEnvError(1, "No test files found, exiting with code 1")).toBeNull();
+  });
+  it("普通断言失败不算", () => {
+    expect(gateEnvError(1, " FAIL  test/a.test.ts > adds\nAssertionError: expected 2 to be 3\n")).toBeNull();
+  });
+  it("退出码 0 不算", () => {
+    expect(gateEnvError(0, "connect ECONNREFUSED 127.0.0.1:5432")).toBeNull();
+  });
+  it("自定义正则带 g 标志也每行都认", () => {
+    expect(gateEnvError(1, "a Mongo down\nb Mongo down", /Mongo/g)).toBe("a Mongo down");
+  });
+  it("太长的行截到 200 个字符", () => {
+    expect(gateEnvError(1, `connect ECONNREFUSED ${"x".repeat(500)}`)?.length).toBe(200);
+  });
+  it("GateEnvError 的消息带固定前缀", () => {
+    const e = new GateEnvError("connect ECONNREFUSED 127.0.0.1:5432");
+    expect(e.message).toBe(`${GATE_ENV_PREFIX} connect ECONNREFUSED 127.0.0.1:5432`);
+    expect(GATE_ENV_PREFIX).toBe("gate env:");
+  });
+  it("gateEnvReason 从报错里取出匹配的那一行，别的报错返回 null", () => {
+    expect(gateEnvReason(new GateEnvError("getaddrinfo EAI_AGAIN db"))).toBe("getaddrinfo EAI_AGAIN db");
+    expect(gateEnvReason(new GateInfraError("Cannot connect to Podman"))).toBeNull();
+    expect(gateEnvReason(new Error("boom"))).toBeNull();
   });
 });
 

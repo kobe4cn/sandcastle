@@ -92,12 +92,12 @@ import type { ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { type MergeFlowDeps, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
 import { loadProject } from "./profile.ts";
 import {
-  acquireRunLock, errorLine, exitWhenDone, GATE_INFRA_PREFIX, GateInfraError, imageExists, isAgentIdleTimeout, isGateInfraFailure, logErrorDetail, missingImage, onInterrupt,
+  acquireRunLock, errorLine, exitWhenDone, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GATE_INFRA_PREFIX, GateInfraError, imageExists, isAgentIdleTimeout, isGateInfraFailure, logErrorDetail, missingImage, onInterrupt,
   podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath, waitForPodman,
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
 import { parseReviewed, type ReviewedState, resumeDecision, reviewedComment } from "./resume-state.ts";
-import { duration, flakyTicketsLine, gateDoneLine, gateEnv, gateInfraLine, startGateProgress } from "./gate-progress.ts";
+import { duration, flakyTicketsLine, gateDoneLine, gateEnv, gateEnvLine, gateInfraLine, startGateProgress } from "./gate-progress.ts";
 import { createGateQueue, type GatePriority } from "./gate-queue.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { loadProjectDoc, projectDocPath, projectDocWatcher, renderPrompts } from "./project-doc.ts";
@@ -312,6 +312,13 @@ async function runGate<R extends ExecResult>(
       throw new GateInfraError(infra);
     }
     const stdout = progress.output() || stripVTControlCharacters(r.stdout);
+    // 门槛依赖的服务连不上（数据库 ECONNREFUSED、DNS 失败等，#54）：同样报「没跑成」，抛给 retryTransient，不进 fix 会话。
+    // A service the gate depends on is unreachable (database ECONNREFUSED, DNS failure, etc., #54): likewise "didn't run", thrown to retryTransient, no fix session.
+    const envLine = gateEnvError(r.exitCode, stdout, project.gate.envErrorPattern);
+    if (envLine !== null) {
+      console.warn(gateEnvLine(issueId, envLine));
+      throw new GateEnvError(envLine);
+    }
     const tier = gateTierName(gateTier(stdout));
     const took = duration(Date.now() - started);
     const before = waited > 5_000 ? t(`（之前排队 ${duration(waited)}）`, ` (queued ${duration(waited)} before)`) : "";
@@ -355,7 +362,9 @@ const PODMAN_TRANSIENT = new RegExp(
   [GATE_INFRA_PREFIX, "Cannot connect to Podman", "ssh: handshake failed", "Image '.*' not found locally", "podman rm failed"].join("|"),
   "i",
 );
-const TRANSIENT = new RegExp(`${REMOTE_TRANSIENT.source}|CopyToWorktreeTimeoutError|timed out|${PODMAN_TRANSIENT.source}`, "i");
+// 门槛依赖的服务连不上（GATE_ENV_PREFIX，#54）也定时重跑，但不进 PODMAN_TRANSIENT（不用等 podman）。
+// A service the gate depends on being unreachable (GATE_ENV_PREFIX, #54) is rerun later too, but isn't in PODMAN_TRANSIENT (no waiting for podman).
+const TRANSIENT = new RegExp(`${REMOTE_TRANSIENT.source}|CopyToWorktreeTimeoutError|timed out|${PODMAN_TRANSIENT.source}|${GATE_ENV_PREFIX}`, "i");
 const TRANSIENT_RETRY_WAITS_MS = [60_000, 300_000, 900_000];
 
 async function retryTransient<T>(what: string, fn: () => Promise<T>): Promise<T> {
@@ -1369,13 +1378,18 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
       ? t(`agent ${AGENT_IDLE_TIMEOUT_S} 秒没有输出（空闲超时；测试或构建确实要这么久就调大 agentIdleTimeoutS）`, `agent produced no output for ${AGENT_IDLE_TIMEOUT_S}s (idle timeout; raise agentIdleTimeoutS if tests or builds really take this long)`)
       : errorLine(outcome.reason);
     console.error(`  ✗ #${issue.id} ${t("失败：", "failed: ")}${why}${t(`（详情见 ${ERROR_LOG}）`, ` (details in ${ERROR_LOG})`)}`);
+    // 门槛依赖的服务连不上（#54）：写明匹配到的那一行，不写成通用的沙箱错误。
+    // A service the gate depends on is unreachable (#54): state the matched line rather than a generic sandbox error.
+    const envDown = gateEnvReason(outcome.reason);
     markStuck(
       issue.id,
       isAgentIdleTimeout(outcome.reason)
         ? M.agentIdleTimeout(AGENT_IDLE_TIMEOUT_S, LABEL.stuck)
-        : PODMAN_TRANSIENT.test(String(outcome.reason))
-          ? M.podmanDown(errorLine(outcome.reason))
-          : M.sandboxError(errorLine(outcome.reason)),
+        : envDown !== null
+          ? M.gateEnvDown(envDown, LABEL.stuck)
+          : PODMAN_TRANSIENT.test(String(outcome.reason))
+            ? M.podmanDown(errorLine(outcome.reason))
+            : M.sandboxError(errorLine(outcome.reason)),
     );
     return;
   }
@@ -1881,7 +1895,10 @@ function start(issue: Issue, resume = false) {
         // 打 stuck 不让下次再做；本地分支保留，人看过后去掉 stuck 即可接着跑。
         // Marking stuck keeps it from being retried; the local branch is kept, and removing stuck after a human looks lets it continue.
         if (!issueClosed(issue.id)) attempt(() => forge.addLabel(issue.id, LABEL.stuck));
-        if (!issueClosed(issue.id)) attempt(() => forge.commentIssue(issue.id, M.landError(issue.branch, reason, LABEL.stuck)));
+        // rebase 后的门槛撞上依赖服务连不上（#54）：同样写明匹配到的那一行。 / The gate after a rebase hit an unreachable service (#54): name the matched line here too.
+        const envDown = gateEnvReason(e);
+        const body = envDown !== null ? M.gateEnvDown(envDown, LABEL.stuck) : M.landError(issue.branch, reason, LABEL.stuck);
+        if (!issueClosed(issue.id)) attempt(() => forge.commentIssue(issue.id, body));
       }
     });
   })()

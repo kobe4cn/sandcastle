@@ -61,6 +61,13 @@ export interface GateConfig {
    * The gate script reruns failing files once when there are at most this many (stated in the fix prompt). Default 3.
    */
   rerunMax?: number;
+  /**
+   * 追加的环境类错误规则：门槛退出码非 0 且输出某一行命中它（或默认规则 ECONNREFUSED、getaddrinfo ENOTFOUND/EAI_AGAIN、容器运行时连不上）时，
+   * 当作依赖的服务连不上：不开 fix 会话、不算失败，稍后整步重跑，重试用完在票上写明那一行。
+   * Extra environment-error rule: when the gate exits non-zero and a line of its output matches this (or the default rule: ECONNREFUSED, getaddrinfo ENOTFOUND/EAI_AGAIN, container runtime unreachable),
+   * a service it depends on is treated as unreachable: no fix session, not counted as a failure, the whole step reruns later, and once retries run out the ticket names that line.
+   */
+  envErrorPattern?: RegExp;
   /** 留给人审的 PR rebase 后只跑这个（不跑测试）。 / The only thing run after rebasing a PR left for review (no tests). */
   typecheck: string;
   /**

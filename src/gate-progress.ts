@@ -48,6 +48,14 @@ export function gateInfraLine(issueId: string, reason: string): string {
 }
 
 /**
+ * 门槛依赖的服务连不上时的一行：打出匹配到的那一行，不说「失败」，也不计入票的失败。
+ * The line when a service the gate depends on is unreachable: prints the matched line, not "failed", and doesn't count against the ticket.
+ */
+export function gateEnvLine(issueId: string, line: string): string {
+  return t(`  ⚠ #${issueId} 门槛依赖的服务连不上（${line}），不算失败，稍后重试`, `  ⚠ #${issueId} a service the gate depends on is unreachable (${line}); not a failure, will retry`);
+}
+
+/**
  * 票落地时门槛偶发失败记入了哪些 flaky 票（可能是复用的老票，所以说「记入」）；没有票时返回 undefined，不打。
  * Which flaky tickets the gate's flaky failures were recorded in when the ticket lands (may be reused existing tickets, hence "recorded in"); undefined when there are none, so nothing is printed.
  */

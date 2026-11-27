@@ -130,3 +130,13 @@ describe("limitedWaiting（#48）", () => {
     }
   });
 });
+
+describe("gateEnvDown（#54）", () => {
+  it("中英文都写明匹配到的那一行，并提示去掉 stuck", () => {
+    const line = "connect ECONNREFUSED 127.0.0.1:5432";
+    expect(messages("zh").gateEnvDown(line, "`sandcastle:stuck`")).toBe("门槛依赖的服务连不上（`connect ECONNREFUSED 127.0.0.1:5432`），重试用完仍未恢复。先把服务起来，再去掉 `sandcastle:stuck`。");
+    const en = messages("en").gateEnvDown(line, "`sandcastle:stuck`");
+    expect(en).toContain("`connect ECONNREFUSED 127.0.0.1:5432`");
+    expect(en).toContain("`sandcastle:stuck`");
+  });
+});

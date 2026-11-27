@@ -103,6 +103,47 @@ export class GateInfraError extends Error {
   }
 }
 
+/** 门槛环境类错误的报错前缀（main.ts 的 TRANSIENT 认它）。 / Prefix of gate environment errors (matched by TRANSIENT in main.ts). */
+export const GATE_ENV_PREFIX = "gate env:";
+
+/**
+ * 门槛依赖的服务连不上（数据库 ECONNREFUSED、DNS 失败、容器运行时断开）：不是代码的错，不进 fix 会话，抛给 retryTransient 定时重跑。
+ * A service the gate depends on is unreachable (database ECONNREFUSED, DNS failure, container runtime down): not the code's fault; no fix session, thrown to retryTransient to rerun later.
+ */
+export class GateEnvError extends Error {
+  constructor(line: string) {
+    super(`${GATE_ENV_PREFIX} ${line}`);
+    this.name = "GateEnvError";
+  }
+}
+
+/** 默认的环境类错误规则。 / Default environment-error rule. */
+const GATE_ENV_DEFAULT = /ECONNREFUSED|getaddrinfo (ENOTFOUND|EAI_AGAIN)|Cannot connect to the Docker daemon|Cannot connect to Podman/;
+
+/**
+ * 门槛输出里第一条环境类错误的那一行（截到 200 个字符），没有返回 null。extra 是项目配置的 gate.envErrorPattern，追加在默认规则之后。
+ * 退出码 0 直接返回 null。测试本身断言 ECONNREFUSED 又真失败时会误判，靠重试用完后转 stuck 兜底。
+ * The first environment-error line in the gate output (truncated to 200 characters), or null. extra is the project's gate.envErrorPattern, added on top of the default rule.
+ * Exit code 0 returns null. A test that asserts on ECONNREFUSED and really fails is misjudged; falling back to stuck once retries run out covers that.
+ */
+export function gateEnvError(exitCode: number, output: string, extra?: RegExp): string | null {
+  if (exitCode === 0) return null;
+  // 去掉 g / y：带状态的正则逐行 test 会受 lastIndex 影响。 / Drop g / y: a stateful regex tested line by line is thrown off by lastIndex.
+  const custom = extra && new RegExp(extra.source, extra.flags.replace(/[gy]/g, ""));
+  const line = output.split("\n").map((l) => l.trim()).find((l) => GATE_ENV_DEFAULT.test(l) || custom?.test(l) === true);
+  return line === undefined ? null : line.slice(0, 200);
+}
+
+/**
+ * 报错是 GateEnvError 时取出匹配的那一行，否则 null。
+ * The matched line when the error is a GateEnvError, otherwise null.
+ */
+export function gateEnvReason(e: unknown): string | null {
+  const text = String((e as { message?: unknown } | undefined)?.message ?? e);
+  const i = text.indexOf(GATE_ENV_PREFIX);
+  return i === -1 ? null : text.slice(i + GATE_ENV_PREFIX.length).split("\n")[0].trim();
+}
+
 /**
  * 门槛结束后判断是不是基础设施故障，是就返回一行原因，否则 null。
  * 退出码 125 / 255（podman 自己出错）、stderr 命中连接类错误、或此刻 `podman info` 不通，都算；退出码 137 只有 podman 不通时才算（podman 正常时多半是 OOM，按门槛失败处理）。

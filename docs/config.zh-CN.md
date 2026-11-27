@@ -48,6 +48,7 @@ export default defineProject({
 - 输出一行 `GATE_TIER: selected …`，表示只跑了按依赖选出的测试；没有这一行就算完整测试。
 - 环境变量 `GATE_FULL=1` 时必须跑完整测试（`baseline` 和 main 上的兜底检查会设）。
 - 失败的文件单独重跑后通过时，输出 `GATE_FLAKY`。它前面列出重跑过的文件，后面是第一次失败的摘要。流水线会为这些文件开 `flaky` 票。
+- 门槛依赖的服务连不上时（退出码非 0，且输出某一行命中 `ECONNREFUSED`、`getaddrinfo ENOTFOUND` / `EAI_AGAIN`、`Cannot connect to the Docker daemon` / `Cannot connect to Podman`），终端打出那一行，不开 fix 会话、不算失败，稍后整步重跑；重试用完仍连不上就打 stuck，评论写明那一行。项目自己的连接类报错用可选的 `gate.envErrorPattern`（正则，比如 `/MongoServerSelectionError/`）追加。`No test files found` 和普通的断言失败不算。
 - 输出按纯文本逐行解析，ANSI 转义码会被去掉。门槛默认设了 `NO_COLOR=1` / `FORCE_COLOR=0`，想要颜色就在 `gate.env` 里设 `NO_COLOR: ""`；门槛脚本自己 grep 失败行时不要依赖颜色码。
 
 ## 隔离辅助函数
