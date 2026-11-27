@@ -1,5 +1,9 @@
 # 更新记录
 
+## Unreleased
+
+- onboard 的 agent 段收成摘要：开始一行（沿用凭据说明，`agentStartHint`）、完成一行（新增纯函数 `agentDoneLine`：doc 写「完成，笔记见 .sandcastle/logs/onboard.md」，questions 写「完成」）；claude 的 stderr 和 agent 笔记全文只在 `--verbose` 打（stderr 末尾几行照收进失败警告），`--questions-only` 的输出同样收拢、也认 `--verbose`；agent 失败（没装 claude、非零退出、超时、超上限）的警告照旧单独成醒目一行（`src/onboard.ts` 的 `runAgent` 加 `verbose` 参数，`questionsOnlyRun`、onboard 的 agent 段；src/cli.ts 中英 help、README 中英命令表、DEVELOPMENT.md 同步）（closes #97）
+
 ## 0.3.1
 
 - onboard 的终端输出收成阶段摘要：探测两行（项目 / 平台 / 基线，门槛 / 受保护路径条数 / 有无网页界面）、文件一行计数（「新建 N 个，跳过 M 个（已存在）」）、校验一行（PROJECT.md 是否通过、缺口清单条数）；要人处理的（另存为 `.new` 的冲突文件、PROJECT.md 校验失败、GitLab 警告）仍在摘要之外各自单独成醒目的一行。新增 `sandpipe onboard --verbose` 打出完整明细（各命令、受保护路径的正则、逐个文件的状态行、缺口清单明细），README 中英命令表同步（纯函数 `detectSummary`、`filesSummary`、`validationSummary`，`src/onboard.ts`）（closes #96）

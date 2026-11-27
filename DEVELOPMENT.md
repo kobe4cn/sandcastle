@@ -52,7 +52,7 @@
    - 生成 `.sandcastle/` 下的 `sandcastle.config.ts`（按 env 文件里指向本机的变量生成 isolation.env 初稿，没有时按 compose 服务猜）、`PROJECT.md` 草稿、`models.json`、`.env.example`、`.gitignore`、`Containerfile`，
      装 `.claude/hooks/sandcastle-context.mjs`（上下文预算）与 `screenshot-checker` 子代理，并在 `.claude/settings.json` 里登记 hook；`.sandcastle/` 下已存在的文件一律跳过，`.claude/` 下本工具的文件（`CLAUDE_FILES`）已存在且和模板不同时，显示 `git diff --no-index --stat`，问保留 / 覆盖 / 另存 `.new` / 看完整 diff，非交互时另存 `.new`（`src/claude-conflict.ts`，`sandpipe update` 同样处理）；
    - 让宿主机的 claude（默认 opus，`--model` 换，`--no-agent` 跳过）读代码把 `PROJECT.md` 写完整，只许改 PROJECT.md 和缺口清单 `.sandcastle/OPEN-QUESTIONS.md`（已存在的不动）；
-     写完用 `parseOpenQuestions` 校验；`sandcastle.config.ts` 的建议打印出来，并存进 `.sandcastle/logs/onboard.md`。
+     写完用 `parseOpenQuestions` 校验；笔记存进 `.sandcastle/logs/onboard.md`，`--verbose` 才打印全文（agent 的 stderr 同理）。
    - 早于缺口清单接入的项目跑 `onboard --questions-only`：提示词是 `prompts/onboard-questions.md`，agent 读现有 PROJECT.md 和代码，只许写缺口清单；
      不生成其他文件、不写 logs。清单已存在或没有 PROJECT.md 时打印提示后退出。
 2. 看一遍 `PROJECT.md`（项目知识，给 agent 看）与 `sandcastle.config.ts`（怎么跑：测试隔离、门槛），填 `.sandcastle/.env`，建镜像。

@@ -14,14 +14,16 @@
 //      the hook, subagent and skills under .claude/ (CLAUDE_FILES, agent-facing, one language only), registering the hook in .claude/settings.json
 // 3. 补全 PROJECT.md（默认开，--no-agent 跳过）：宿主机上跑一次 claude -p，读代码把草稿写完整，拿不准的写进缺口清单 OPEN-QUESTIONS.md；
 //    只许改这两个文件（清单已存在时只许改 PROJECT.md）；写完按 parseProjectDoc 和 parseOpenQuestions 校验。
-//    claude 用的是本机 Claude Code 登录的账号（和 .env 里的 token 无关），它的 stderr 按行加 [claude] 前缀转写，失败时把退出码和末尾几行写进警告。
+//    claude 用的是本机 Claude Code 登录的账号（和 .env 里的 token 无关）；stderr 和笔记全文只在 --verbose 打（stderr 按行加 [claude] 前缀），
+//    失败时把退出码和 stderr 末尾几行单独写成醒目的警告。
 //    Complete PROJECT.md (on by default, --no-agent skips it): one claude -p on the host reads the code, finishes the draft and puts open points into OPEN-QUESTIONS.md;
 //    it may edit only those two files (only PROJECT.md if the list already exists); then validated with parseProjectDoc and parseOpenQuestions.
-//    claude runs under the local Claude Code login (unrelated to the token in .env); its stderr is echoed line by line with a [claude] prefix, and failures put the exit code and the last lines into the warning.
-// 4. 终端输出按阶段收成摘要（探测、文件、校验各一到两行，detectSummary / filesSummary / validationSummary）；--verbose 打完整明细。
-//    要人处理的（另存为 .new 的冲突文件、PROJECT.md 校验失败、GitLab 警告）永远单独成醒目的一行，不被计数收掉。
-//    Terminal output is summarized per stage (detection, files, validation, one to two lines each: detectSummary / filesSummary / validationSummary); --verbose prints the full details.
-//    Things needing a human (a conflict file saved as .new, a PROJECT.md validation failure, the GitLab warning) always get their own prominent line and are never folded into the counts.
+//    claude runs under the local Claude Code login (unrelated to the token in .env); stderr and the full notes print only under --verbose (stderr line-prefixed with [claude]),
+//    and failures get the exit code and the last stderr lines as their own prominent warning.
+// 4. 终端输出按阶段收成摘要（探测、文件、agent、校验各一到两行，detectSummary / filesSummary / validationSummary，agent 段是 agentStartHint 开始行加 agentDoneLine 完成行）；--verbose 打完整明细。
+//    要人处理的（另存为 .new 的冲突文件、PROJECT.md 校验失败、agent 失败、GitLab 警告）永远单独成醒目的一行，不被计数收掉。
+//    Terminal output is summarized per stage (detection, files, agent, validation, one to two lines each: detectSummary / filesSummary / validationSummary, the agent stage being agentStartHint's start line plus agentDoneLine's done line); --verbose prints the full details.
+//    Things needing a human (a conflict file saved as .new, a PROJECT.md validation failure, an agent failure, the GitLab warning) always get their own prominent line and are never folded into the counts.
 
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { execFileSync, spawn } from "node:child_process";
@@ -797,10 +799,10 @@ export function agentFailureMessage(reason: string, stderrLines: string[]): stri
 }
 
 /**
- * 在宿主机上跑一次 claude -p：stdout 收齐了返回；stderr 按行加 [claude] 前缀转写到终端，最后几行进失败信息。
- * Runs claude -p once on the host: stdout is collected and returned; stderr is echoed to the terminal line by line with the [claude] prefix, and its last lines go into the failure message.
+ * 在宿主机上跑一次 claude -p：stdout 收齐了返回；stderr 按行加 [claude] 前缀转写到终端（--verbose 时），最后几行总是收进失败信息。
+ * Runs claude -p once on the host: stdout is collected and returned; stderr is echoed to the terminal line by line with the [claude] prefix (under --verbose), and its last lines always go into the failure message.
  */
-function runAgent(root: string, prompt: string, model: string, writable: string[]): Promise<string> {
+function runAgent(root: string, prompt: string, model: string, writable: string[], verbose: boolean): Promise<string> {
   const allowed = [
     "Read",
     "Grep",
@@ -836,10 +838,10 @@ function runAgent(root: string, prompt: string, model: string, writable: string[
       child.kill();
       fail(t("claude 30 分钟没跑完，已停止", "claude didn't finish within 30 minutes; stopped it"));
     }, 30 * 60_000);
-    // 转写 stderr 并留最后几行（去掉前缀），失败信息要用。
-    // Echo stderr and keep the last lines (prefix stripped) for the failure message.
+    // 转写 stderr 并留最后几行（去掉前缀），失败信息要用；转写只在 --verbose 时做，末尾几行总是收（关掉的只能是 write）。
+    // Echo stderr and keep the last lines (prefix stripped) for the failure message; echoing happens only under --verbose, the tail is always collected (only the write can be turned off).
     const echo = (prefixed: string) => {
-      if (prefixed) process.stderr.write(prefixed);
+      if (prefixed && verbose) process.stderr.write(prefixed);
       for (const line of prefixed.split("\n")) {
         if (!line) continue;
         tail.push(line.slice(CLAUDE_PREFIX.length));
@@ -883,10 +885,10 @@ function runAgent(root: string, prompt: string, model: string, writable: string[
 // ---------------------------------------------------------------------------
 
 /**
- * `onboard --questions-only`：只让 agent 写缺口清单，不生成、不改动其他文件（也不写 logs）；agent 的 stderr 按行加 [claude] 前缀转写到终端。
- * `onboard --questions-only`: the agent writes only the open questions list; no other file is generated or touched (no logs either); the agent's stderr is echoed to the terminal line by line with the [claude] prefix.
+ * `onboard --questions-only`：只让 agent 写缺口清单，不生成、不改动其他文件（也不写 logs）；agent 的 stderr 和笔记全文只在 --verbose 打，完成收成一行。
+ * `onboard --questions-only`: the agent writes only the open questions list; no other file is generated or touched (no logs either); the agent's stderr and full notes print only under --verbose, the outcome is one line.
  */
-async function questionsOnlyRun(root: string, f: ProjectFacts, model: string, lang: Language) {
+async function questionsOnlyRun(root: string, f: ProjectFacts, model: string, lang: Language, verbose: boolean) {
   const blocked = questionsOnlyPrecheck(root);
   if (blocked) {
     console.log(blocked);
@@ -895,7 +897,8 @@ async function questionsOnlyRun(root: string, f: ProjectFacts, model: string, la
   const projectMd = readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8");
   console.log(agentStartHint("questions", model));
   try {
-    console.log(`\n${(await runAgent(root, questionsPrompt(f, lang, projectMd), model, [OPEN_QUESTIONS])).trim()}`);
+    const notes = await runAgent(root, questionsPrompt(f, lang, projectMd), model, [OPEN_QUESTIONS], verbose);
+    console.log(verbose ? `\n${notes.trim()}` : agentDoneLine("questions"));
   } catch (e) {
     console.warn(t("  ⚠ agent 失败：", "  ⚠ The agent failed: ") + String((e as Error).message));
     return;
@@ -950,6 +953,16 @@ export function agentStartHint(kind: "doc" | "questions", model: string): string
       ? t("，读代码补全 .sandcastle/PROJECT.md，几分钟……", " to read the code and complete .sandcastle/PROJECT.md, a few minutes…")
       : t(`，读 PROJECT.md 和代码，生成 ${OPEN_QUESTIONS}，几分钟……`, ` to read PROJECT.md and the code and write ${OPEN_QUESTIONS}, a few minutes…`);
   return head + tail;
+}
+
+/**
+ * agent 段的完成行：doc 写明笔记存到了 .sandcastle/logs/onboard.md；questions-only 不写 logs，只写「完成」。
+ * Done line for the agent stage: doc points at the notes saved to .sandcastle/logs/onboard.md; questions-only writes no logs, so it just says done.
+ */
+export function agentDoneLine(kind: "doc" | "questions"): string {
+  return kind === "doc"
+    ? t("完成，笔记见 .sandcastle/logs/onboard.md", "Done; notes in .sandcastle/logs/onboard.md")
+    : t("完成", "Done");
 }
 
 /**
@@ -1091,7 +1104,7 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
   if (f.forge.kind === "gitlab" && !questionsOnly)
     console.warn(t("  ⚠ 远端是 GitLab：GitLab Forge 还没做，文件照常生成，但先别跑", "  ⚠ The remote is GitLab: the GitLab forge isn't done yet. Files are generated, but don't run it yet"));
 
-  if (questionsOnly) return await questionsOnlyRun(root, f, model, lang);
+  if (questionsOnly) return await questionsOnlyRun(root, f, model, lang, verbose);
 
   const docExisted = existsSync(join(root, ".sandcastle/PROJECT.md"));
   // 在生成文件和 agent 之前算：清单已存在就不让 agent 碰。
@@ -1120,10 +1133,13 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
   } else {
     console.log(agentStartHint("doc", model));
     try {
-      const notes = await runAgent(root, onboardPrompt(f, lang, writable), model, writable);
+      const notes = await runAgent(root, onboardPrompt(f, lang, writable), model, writable, verbose);
       mkdirSync(join(root, ".sandcastle/logs"), { recursive: true });
       writeFileSync(join(root, ".sandcastle/logs/onboard.md"), notes);
-      console.log(`\n${notes.trim()}\n${t("（已存到 .sandcastle/logs/onboard.md）", "(saved to .sandcastle/logs/onboard.md)")}`);
+      // 笔记全文只在 --verbose 打；默认一行完成摘要指向存进 logs 的文件。「拿不准的点」不另列，靠下面的校验行。
+      // The full notes print only under --verbose; by default one done line points at the file saved into logs. Open points aren't listed separately — the validation line below covers them.
+      if (verbose) console.log(`\n${notes.trim()}\n${t("（已存到 .sandcastle/logs/onboard.md）", "(saved to .sandcastle/logs/onboard.md)")}`);
+      else console.log(agentDoneLine("doc"));
     } catch (e) {
       console.warn(t("  ⚠ agent 补全失败，PROJECT.md 保留草稿：", "  ⚠ The agent failed; PROJECT.md keeps the draft: ") + String((e as Error).message));
     }
