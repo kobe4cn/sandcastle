@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { agentFailureMessage, agentStartHint, agentWritable, applyLangArg, assertRepoRoot, configSource, containerfileSource, envStepHint, hasGlobalSkill, installFiles, installGlobalSkill, prefixLines, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
+import { agentFailureMessage, agentStartHint, agentWritable, applyLangArg, assertRepoRoot, configSource, containerfileSource, envStepHint, hasGlobalSkill, installFiles, installGlobalSkill, outputCollector, prefixLines, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { OPEN_QUESTIONS } from "../src/open-questions.ts";
 import { setTermLanguage } from "../src/term.ts";
@@ -775,6 +775,28 @@ describe("prefixLines", () => {
     const p = prefixLines("> ");
     expect(p.push("")).toBe("");
     expect(p.flush()).toBe("");
+  });
+});
+
+describe("claude 输出按 UTF-8 流式解码", () => {
+  const zhong = Buffer.from("中");
+
+  it("prefixLines 收 Buffer：「中」的 3 个字节拆成两个 chunk 也拼出完整的字", () => {
+    const p = prefixLines("[c] ");
+    expect(p.push(zhong.subarray(0, 1))).toBe("");
+    expect(p.push(Buffer.concat([zhong.subarray(1), Buffer.from("\n")]))).toBe("[c] 中\n");
+    expect(p.push(zhong.subarray(0, 2))).toBe("");
+    expect(p.push(zhong.subarray(2))).toBe("");
+    expect(p.flush()).toBe("[c] 中\n");
+  });
+
+  it("outputCollector：拆开的多字节字符拼回完整，上限按字节数算", () => {
+    const c = outputCollector(5);
+    expect(c.push(zhong.subarray(0, 2))).toBe(true);
+    expect(c.push(zhong.subarray(2))).toBe(true);
+    expect(c.text()).toBe("中");
+    expect(c.push(Buffer.from("ab"))).toBe(true);
+    expect(c.push(Buffer.from("c"))).toBe(false);
   });
 });
 
