@@ -523,7 +523,7 @@ function sessionTotals(it: sandcastle.IterationResult) {
         const obj = JSON.parse(line);
         if (obj.type === "assistant" && obj.message?.usage) byId.set(obj.message.id ?? `#${byId.size}`, obj.message.usage);
       } catch {
-        // 半行或损坏的行跳过
+        // 半行或损坏的行跳过 / Skip half-written or broken lines
       }
     }
     const sum = { ...zero };

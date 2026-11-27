@@ -277,15 +277,15 @@ export type Labels = {
 };
 
 export const DEFAULT_LABELS: Labels = {
-  picked: "Sandcastle", // 人工选中
-  prepped: "sandcastle:prepped", // prep 已确认可实现
-  prOpen: "sandcastle:pr-open", // 已开 PR，等人审
-  merging: "sandcastle:merging", // 已开 PR、门槛已过，在等检查 / 合并；中断重启后接着等，不重新实现（脚本自动建标签）
-  reviewed: "sandcastle:reviewed", // 评审已通过、正在跑门槛；中断重启后分支没变就直接跑门槛，不重新实现（脚本自动建标签）
-  stuck: "sandcastle:stuck", // 需要人介入（见 issue 评论）
-  decided: "sandcastle:decided", // agent 代拍板过设计决定，等人事后确认（人看过后去掉）
-  flaky: "flaky", // 门槛里重跑才通过的测试文件，脚本自动开票
-  mainBroken: "sandcastle:main-broken", // main 上的兜底完整测试失败，脚本自动开票；调度和 prep 时排最前
+  picked: "Sandcastle", // 人工选中 / Picked by a human
+  prepped: "sandcastle:prepped", // prep 已确认可实现 / prep confirmed it can be implemented
+  prOpen: "sandcastle:pr-open", // 已开 PR，等人审 / PR opened, waiting for human review
+  merging: "sandcastle:merging", // 已开 PR、门槛已过，在等检查或合并；中断重启后接着等，不重新实现（脚本自动建标签） / PR opened and gate passed, waiting for checks or merge; after a restart it keeps waiting instead of re-implementing (created by the pipeline)
+  reviewed: "sandcastle:reviewed", // 评审已通过、正在跑门槛；中断重启后分支没变就直接跑门槛，不重新实现（脚本自动建标签） / Review passed, gate running; after a restart it reruns the gate if the branch is unchanged instead of re-implementing (created by the pipeline)
+  stuck: "sandcastle:stuck", // 需要人介入（见 issue 评论） / Needs a human (see the issue comments)
+  decided: "sandcastle:decided", // agent 代拍板过设计决定，等人事后确认（人看过后去掉） / The agent made design decisions awaiting human confirmation (remove once reviewed)
+  flaky: "flaky", // 门槛里重跑才通过的测试文件，脚本自动开票 / Test files that only passed on a gate retry; the pipeline opens the ticket
+  mainBroken: "sandcastle:main-broken", // main 上的兜底完整测试失败，脚本自动开票；调度和 prep 时排最前 / The fallback full test run on main failed; the pipeline opens the ticket, scheduled and prepped first
   readyForAgent: "ready-for-agent",
   readyForHuman: "ready-for-human",
   needsTriage: "needs-triage", // 票作者没有写权限，等有写权限的人确认（脚本自动建标签） / Ticket author lacks write access; waiting for a maintainer (created by the pipeline)

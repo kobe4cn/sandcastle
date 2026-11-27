@@ -32,10 +32,15 @@ export function commentBlocks(text, fileName = "x.ts") {
   const collect = (ranges) => {
     for (const r of ranges ?? []) seen.set(r.pos, r);
   };
+  // 用 getChildren 连逗号、括号这些 token 也走一遍：对象属性、数组元素后的行尾注释挂在逗号后面，只看语法节点的结尾取不到。
+  // Walk tokens such as commas and brackets via getChildren: a trailing comment after an object property or array element sits past the comma, out of reach from syntax node ends alone.
+  // JSDoc 本身就是一段注释，不往里走：它的子节点后面的 // 是正文，不是另一段注释。
+  // Don't descend into JSDoc, which is a comment itself: a // after its child nodes is body text, not another comment.
   const visit = (node) => {
+    if (ts.isJSDoc(node)) return;
     collect(ts.getLeadingCommentRanges(text, node.getFullStart()));
     collect(ts.getTrailingCommentRanges(text, node.getEnd()));
-    node.forEachChild(visit);
+    for (const child of node.getChildren(sf)) visit(child);
   };
   visit(sf);
   collect(ts.getLeadingCommentRanges(text, sf.endOfFileToken.getFullStart()));

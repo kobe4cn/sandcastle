@@ -49,7 +49,7 @@ export function lastContext(transcriptPath, tailBytes = 512 * 1024) {
       const u = o.type === 'assistant' && o.message?.model !== '<synthetic>' ? o.message?.usage : undefined;
       if (u) return (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
     } catch {
-      // 截断的第一行或损坏的行
+      // 截断的第一行或损坏的行 / A truncated first line or a broken line
     }
   }
   return 0;
@@ -130,7 +130,7 @@ function saveState(state) {
   try {
     writeFileSync(STATE_FILE, JSON.stringify(Object.fromEntries(state)));
   } catch {
-    // 记不下只会多提醒几次、子代理可能多看一张图
+    // 记不下只会多提醒几次、子代理可能多看一张图 / Failing to save only means a few extra reminders and maybe one more image for the subagent
   }
 }
 
