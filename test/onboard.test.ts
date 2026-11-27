@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { agentFailureMessage, agentStartHint, agentWritable, applyLangArg, assertRepoRoot, configSource, containerfileSource, envStepHint, hasGlobalSkill, installFiles, installGlobalSkill, outputCollector, prefixLines, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
+import { agentFailureMessage, agentStartHint, agentWritable, applyLangArg, assertRepoRoot, configSource, containerfileSource, detectSummary, envStepHint, filesSummary, hasGlobalSkill, installFiles, installGlobalSkill, outputCollector, prefixLines, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles, validationSummary } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { OPEN_QUESTIONS } from "../src/open-questions.ts";
 import { setTermLanguage } from "../src/term.ts";
@@ -383,7 +383,7 @@ describe("updateClaudeFiles", () => {
     const asked: string[] = [];
     const log = vi.spyOn(console, "log").mockImplementation(() => {});
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await onboard(["--no-agent"], root, async (file) => {
+    await onboard(["--no-agent", "--verbose"], root, async (file) => {
       asked.push(file);
       return "keep";
     });
@@ -879,5 +879,165 @@ describe("起 agent 的提示和 .env 那一步", () => {
       log.mockRestore();
       warn.mockRestore();
     }
+  });
+});
+
+describe("onboard 的阶段摘要（--verbose 才打明细）", () => {
+  it("detectSummary：两行——项目 / 平台 / 基线，门槛 / 受保护路径条数 / 网页界面；不打印正则字面量", () => {
+    const f = detectProject(nodeRepo());
+    expect(f.protectedPaths.length).toBeGreaterThan(0);
+    const lines = detectSummary(f);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toContain("shop");
+    expect(lines[0]).toContain("node/pnpm");
+    expect(lines[0]).toContain("github acme/shop");
+    expect(lines[0]).toContain("基线 main");
+    expect(lines[1]).toContain("门槛 typecheck + lint + test");
+    expect(lines[1]).toContain(`受保护路径 ${f.protectedPaths.length} 条`);
+    expect(lines[1]).toContain("有网页界面");
+    // 只给条数：第二行里不能出现正则字面量的斜杠
+    // Count only: no slash from a regex literal may appear on the second line
+    expect(lines[1]).not.toContain("/");
+  });
+
+  it("filesSummary：已存在没动的（skipped / kept / unchanged）都算跳过，updated 单独计数，saved-new 不计数", () => {
+    expect(filesSummary([{ file: "a", status: "written" }, { file: "b", status: "written" }, { file: "c", status: "skipped" }])).toBe(
+      "文件  新建 2 个，跳过 1 个（已存在）",
+    );
+    expect(filesSummary([{ file: "a", status: "kept" }, { file: "b", status: "unchanged" }, { file: "c", status: "updated" }, { file: "d", status: "saved-new" }])).toBe(
+      "文件  新建 0 个，跳过 2 个（已存在），更新 1 个",
+    );
+  });
+
+  it("validationSummary：PROJECT.md 是否通过、缺口清单条数；没生成 / 没过不用计数表达", () => {
+    expect(validationSummary(true, { count: 5, state: "ok" })).toBe("校验  PROJECT.md ✓ · 缺口清单 5 条");
+    expect(validationSummary(true, { count: 0, state: "ok" })).toBe("校验  PROJECT.md ✓ · 缺口清单 0 条");
+    expect(validationSummary(false, { count: 3, state: "ok" })).toBe("校验  PROJECT.md ✗ · 缺口清单 3 条");
+    expect(validationSummary(true, { count: 0, state: "missing" })).toContain("缺口清单（没生成）");
+    expect(validationSummary(true, { count: 0, state: "invalid" })).toContain("缺口清单 ✗");
+  });
+
+  it("英文文案", () => {
+    try {
+      setTermLanguage("en", {});
+      const f = detectProject(nodeRepo());
+      const lines = detectSummary(f);
+      expect(lines[0]).toContain("Detect  shop");
+      expect(lines[0]).toContain("base main");
+      expect(lines[1]).toContain("gate typecheck + lint + test");
+      expect(lines[1]).toContain(`· ${f.protectedPaths.length} protected path(s) ·`);
+      expect(lines[1]).toContain("web UI");
+      expect(filesSummary([{ file: "a", status: "written" }, { file: "b", status: "skipped" }])).toBe("Files  1 written, 1 skipped (already present)");
+      expect(filesSummary([{ file: "a", status: "kept" }, { file: "b", status: "updated" }])).toBe("Files  0 written, 1 skipped (already present), 1 updated");
+      expect(validationSummary(true, { count: 5, state: "ok" })).toBe("Checks  PROJECT.md ✓ · 5 open question(s)");
+      expect(validationSummary(true, { count: 0, state: "missing" })).toContain("open questions (not written)");
+      expect(validationSummary(false, { count: 0, state: "invalid" })).toContain("open questions ✗");
+    } finally {
+      setTermLanguage("zh", {});
+    }
+  });
+
+  it("默认输出收成阶段摘要：探测两行、文件一行计数、校验一行；没有逐个文件行、命令明细和正则字面量", async () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await onboard(["--no-agent"], root, async () => "keep");
+      const out = log.mock.calls.flat().join("\n");
+      expect(out).toContain("探测  shop");
+      expect(out).toMatch(/受保护路径 \d+ 条/);
+      expect(out).not.toContain("命令：");
+      expect(out).not.toContain("受保护路径：");
+      expect(out).toMatch(/文件  新建 \d+ 个，跳过 \d+ 个（已存在）/);
+      expect(out).not.toContain("：写入");
+      expect(out).not.toContain("：已存在，跳过");
+      expect(out).not.toContain("：无需改动");
+      expect(out).toContain("校验  PROJECT.md ✓");
+      expect(out).toContain("缺口清单（没生成）");
+      expect(warn.mock.calls.flat().join("\n")).toContain("⚠ 没有生成缺口清单");
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("--verbose 打完整明细：各命令、受保护路径的正则、逐个文件的状态行、缺口清单明细", async () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    writeFileSync(join(root, OPEN_QUESTIONS), "# 缺口清单\n- [规范] 用什么测试风格？ → PROJECT.md「测试」\n");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await onboard(["--no-agent", "--verbose"], root, async () => "keep");
+      const out = log.mock.calls.flat().join("\n");
+      expect(out).toContain("命令：typecheck=");
+      expect(out).toContain("受保护路径：");
+      expect(out).toMatch(/· \.sandcastle\/\S+：已存在，跳过/);
+      expect(out).toContain("✓ 缺口清单还有 1 条");
+      expect(out).toContain("缺口清单 1 条");
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("另存为 .new 的文件在摘要之外单独成醒目一行，不被计数收掉", async () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    writeFileSync(join(root, ".claude/agents/screenshot-checker.md"), "旧版");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await onboard(["--no-agent"], root, async () => "new");
+      const out = log.mock.calls.flat().join("\n");
+      expect(warn.mock.calls.flat().join("\n")).toContain("⚠ .claude/agents/screenshot-checker.md 和当前模板不同，新版另存为 .claude/agents/screenshot-checker.md.new");
+      expect(out).not.toContain("：写入");
+      expect(out).toMatch(/文件  新建 \d+ 个/);
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("PROJECT.md 校验失败：摘要行给 ✗，报错单独成一行", async () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    writeFileSync(join(root, ".sandcastle/PROJECT.md"), "人改过");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await onboard(["--no-agent"], root, async () => "keep");
+      expect(log.mock.calls.flat().join("\n")).toContain("校验  PROJECT.md ✗");
+      expect(warn.mock.calls.flat().join("\n")).toContain("⚠ PROJECT.md 校验没过：");
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("远端是 GitLab 时警告仍然单独成一行", async () => {
+    const root = nodeRepo();
+    execFileSync("git", ["-C", root, "remote", "set-url", "origin", "git@gitlab.com:acme/shop.git"]);
+    installFiles(root, detectProject(root));
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await onboard(["--no-agent"], root, async () => "keep");
+      expect(warn.mock.calls.flat().join("\n")).toContain("⚠ 远端是 GitLab");
+      expect(log.mock.calls.flat().join("\n")).toContain("探测  shop");
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("help 和 README 中英都写上 --verbose", () => {
+    const cli = readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8");
+    // 中英两份 help 里各出现一次
+    // Once in each of the two help texts
+    expect((cli.match(/--verbose/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    for (const p of ["../README.md", "../README.zh-CN.md"])
+      expect(readFileSync(new URL(p, import.meta.url), "utf8")).toMatch(/onboard \[--no-agent\] \[--model[^\n]*\] \[--verbose\]/);
   });
 });
