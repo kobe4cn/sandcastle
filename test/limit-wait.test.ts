@@ -10,7 +10,7 @@ import type { AgentRun } from "../src/models.ts";
 type Models = typeof import("../src/models.ts");
 type LimitWait = typeof import("../src/limit-wait.ts");
 
-const PHASES = ["prep", "implement", "review", "revise", "fix", "rebase"] as const;
+const PHASES = ["prep", "implement", "review", "revise", "fix", "rebase", "re-review"] as const;
 const startCwd = process.cwd();
 let m: Models;
 let lw: LimitWait;

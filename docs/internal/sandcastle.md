@@ -124,7 +124,7 @@ Sandcastle 处理期间，PR 作者不要往这个分支推提交。本地和远
 
 ## 模型配置
 
-每个 agent 阶段（`prep`、`implement`、`review`、`revise`、`fix`、`rebase`）用哪个模型写在 `.sandcastle/models.json`，代码在 `.sandcastle/models.ts`。plan 和门槛是脚本自己做的，不用模型。
+每个 agent 阶段（`prep`、`implement`、`review`、`revise`、`fix`、`rebase`、`re-review`）用哪个模型写在 `.sandcastle/models.json`，代码在 `.sandcastle/models.ts`。plan 和门槛是脚本自己做的，不用模型。
 
 - `profiles` 是档案：`harness`（目前只支持 `claude-code`；`codex` 预留，写了会报错）、`model`（传给 `claude --model`）、可选的 `effort`、`env`、`limitPattern`、`resetTimeZone`。
 - `env` 照抄厂商给 Claude Code 的配置（比如智谱 coding plan 的 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_DEFAULT_*_MODEL`）。只对这次会话的 claude 进程生效，加在命令前面（`env K=V claude …`），因为 `createSandbox` 里的 `sandbox.run` 不用 agent provider 的 env。
@@ -136,7 +136,7 @@ Sandcastle 处理期间，PR 作者不要往这个分支推提交。本地和远
   - 项目配置里自定义 `sandbox` 的，必须把收到的 env 原样传给容器，否则清空无效、凭据会留在容器级 env 里。
 - 别家档案没设 `ANTHROPIC_DEFAULT_HAIKU_MODEL`（后台小任务和子 agent 用）或 `limitPattern` 时启动会警告。
 - 上下文预算统一 150k：档案里的 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 警告后忽略。主模型看不到图片的档案在 `env` 里加 `"SANDCASTLE_NO_IMAGES": "1"`，并把 `ANTHROPIC_DEFAULT_HAIKU_MODEL` 设成能看图的模型（看图子代理用它，见「上下文预算」）。implement 只用 glm，不设后备：glm 到限额时等它恢复。
-- `phases` 给每个阶段一个有序的档案列表，6 个阶段都要写。主循环每轮读一次（不管有没有空位），撞限额等待醒来、重跑前也再读一次：改了配置下一轮生效，不用重启；启动时打印一次，之后只在配置变化时打印。第一次就读不成（JSON 坏了、档案名不存在、阶段用到的档案引用的变量不在 `.sandcastle/.env` 里）直接退出；运行中途改坏了就警告并沿用上一份。
+- `phases` 给每个阶段一个有序的档案列表，除 `re-review` 外都要写。`re-review` 是 fix / rebase 之后的复审会话，没写时沿用 `review` 的列表（老项目升级不用改配置）；写了但为空或档案不存在照样报错。主循环每轮读一次（不管有没有空位），撞限额等待醒来、重跑前也再读一次：改了配置下一轮生效，不用重启；启动时打印一次，之后只在配置变化时打印。第一次就读不成（JSON 坏了、档案名不存在、阶段用到的档案引用的变量不在 `.sandcastle/.env` 里）直接退出；运行中途改坏了就警告并沿用上一份。
 - `PROJECT.md` 不一样：提示词启动时渲染一次，运行中改了要重启 sandpipe 才生效（正在跑的会话已经读过渲染好的文件，不做热加载）。主循环每轮（在读 `models.json` 旁）比一次内容哈希，和启动时不同、且和上一轮看到的也不同时打一行「⚠ .sandcastle/PROJECT.md 已变更，需重启 sandpipe 才生效」（路径是实际读的那份、相对当前目录，设了 `SANDCASTLE_PROJECT_DIR` 时跟着变），同一次修改只打一次；改回启动时的内容不打，文件读不到（被删）不打（#52）。
 - 换档案以一次会话为单位：implement 的每次会话单独挑档案，档案名经环境变量 `SANDCASTLE_PROFILE` 给 implementer，进度评论第一行写明。不用 promptArgs：运行中的旧进程也会读到新提示词，多出的占位符会让它报错。撞上限额（Claude 档案认 `hit your … limit`，别家认 `limitPattern`）就记下这个档案的重置时间（存在 `.sandcastle/logs/limits.json`，重启后照样跳过），重置前所有票都跳过它，用列表里的下一个；认不出重置时间就跳过 1 小时。重置时间认「resets 6:20am (UTC)」和「2026-11-07 15:30:00」两种，后一种按 `resetTimeZone` 解析。列表里的都在等时，分支推到远端，等最早恢复的那个，不打 stuck，并在票上评论一次（阶段、档案、预计恢复时间，#48）。其他报错照常走临时错误重试。
 - 智谱 coding plan 撞限额的错误码是 1308（5 小时额度）和 1310（周 / 月额度），报错是「已达到…的使用上限。您的限额将在 … 重置」；1302 是并发过高，1113 多半是 Key 或 Base URL 配错，都不算限额。

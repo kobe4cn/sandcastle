@@ -10,7 +10,7 @@ import type { AgentRun, Profile } from "../src/models.ts";
 
 type Models = typeof import("../src/models.ts");
 
-const PHASES = ["prep", "implement", "review", "revise", "fix", "rebase"] as const;
+const PHASES = ["prep", "implement", "review", "revise", "fix", "rebase", "re-review"] as const;
 const startCwd = process.cwd();
 let m: Models;
 let log: ReturnType<typeof vi.spyOn>;
@@ -61,7 +61,7 @@ describe("N1a 按阶段挑档案", () => {
       const { profile } = await m.runWithProfile(phase, "#1", async (p) => (used.push(p.name), done()));
       expect(profile.name).toBe(phase === "review" ? "sonnet" : "opus");
     }
-    expect(used).toEqual(["opus", "opus", "sonnet", "opus", "opus", "opus"]);
+    expect(used).toEqual(["opus", "opus", "sonnet", "opus", "opus", "opus", "opus"]);
     const { phases, used: profiles } = m.inspectModels();
     expect(phases.review).toEqual(["sonnet", "opus"]);
     expect(profiles.map((p) => p.name).sort()).toEqual(["opus", "sonnet"]);
@@ -78,6 +78,8 @@ describe("N1a 按阶段挑档案", () => {
     ["空列表", { profiles: { a: claude() }, phases: phasesAll(["a"], { review: [] }) }, "phases.review 要是非空的档案名列表"],
     ["列表里不是字符串", { profiles: { a: claude() }, phases: phasesAll(["a"], { fix: [1] }) }, "phases.fix 要是非空的档案名列表"],
     ["缺阶段", { profiles: { a: claude() }, phases: Object.fromEntries(PHASES.filter((p) => p !== "rebase").map((p) => [p, ["a"]])) }, "phases.rebase 要是非空的档案名列表"],
+    ["re-review 空列表", { profiles: { a: claude() }, phases: phasesAll(["a"], { "re-review": [] }) }, "phases.re-review 要是非空的档案名列表"],
+    ["re-review 未知档案", { profiles: { a: claude() }, phases: phasesAll(["a"], { "re-review": ["ghost"] }) }, "phases.re-review 里的档案 ghost 不在 profiles 里"],
     ["缺 phases", { profiles: { a: claude() } }, "要有 profiles 和 phases 两个对象"],
     ["缺 profiles", { phases: phasesAll(["a"]) }, "要有 profiles 和 phases 两个对象"],
     ["档案缺 model", { profiles: { a: { effort: "high" } }, phases: phasesAll(["a"]) }, "profiles.a.model 要是非空字符串"],
@@ -88,6 +90,24 @@ describe("N1a 按阶段挑档案", () => {
     ["resetTimeZone 不合法", { profiles: { a: claude("x", { resetTimeZone: "Mars/Base" }) }, phases: phasesAll(["a"]) }, "profiles.a.resetTimeZone 不是合法的时区"],
     ["不是 JSON", "{ profiles: ", "不是合法的 JSON"],
   ];
+  it("没写 re-review：不报错，沿用 review 的档案列表", async () => {
+    project({
+      profiles: { opus: claude(), sonnet: claude("claude-sonnet-4-5") },
+      phases: Object.fromEntries(PHASES.filter((p) => p !== "re-review").map((p) => [p, p === "review" ? ["sonnet", "opus"] : ["opus"]])),
+    });
+    m.reloadModels();
+    expect(m.inspectModels().phases["re-review"]).toEqual(["sonnet", "opus"]);
+    const { profile } = await m.runWithProfile("re-review", "#1", async () => done());
+    expect(profile.name).toBe("sonnet");
+  });
+
+  it("写了 re-review：按它选档案", async () => {
+    project({ profiles: { opus: claude(), sonnet: claude("claude-sonnet-4-5") }, phases: phasesAll(["opus"], { "re-review": ["sonnet"] }) });
+    m.reloadModels();
+    const { profile } = await m.runWithProfile("re-review", "#1", async () => done());
+    expect(profile.name).toBe("sonnet");
+  });
+
   it.each(bad)("%s：报错并指明位置", (_name, models, message) => {
     project(models);
     expect(() => m.inspectModels()).toThrow(`.sandcastle/models.json：`);
@@ -661,12 +681,12 @@ describe("N1f 用量记录", () => {
       sessions: 3, input: 15, cacheCreation: 152, cacheRead: 4000, output: 67, peak: 3054,
     });
     expect(Number.isNaN(Date.parse(rec.at))).toBe(false);
-    m.recordUsage("#12", "review", { stdout: "", iterations: [{ sessionFilePath: "/nonexistent/x.jsonl" }] }, "review", p);
+    m.recordUsage("#12", "re-review", { stdout: "", iterations: [{ sessionFilePath: "/nonexistent/x.jsonl" }] }, "re-review", p);
 
     const lines = readFileSync(".sandcastle/logs/usage.jsonl", "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(lines).toHaveLength(2);
     expect(lines[0]).toEqual(rec);
-    expect(lines[1]).toMatchObject({ issue: "#12", phase: "review", profile: "p1", model: "claude-opus-4-5", sessions: 1, peak: 0 });
+    expect(lines[1]).toMatchObject({ issue: "#12", phase: "re-review", profile: "p1", model: "claude-opus-4-5", sessions: 1, peak: 0 });
     for (const l of lines) expect(Object.keys(l)).toEqual(expect.arrayContaining(["issue", "phase", "profile", "model", "peak"]));
   });
 

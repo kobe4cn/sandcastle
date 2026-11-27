@@ -10,7 +10,7 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import { messages, type Messages } from "./i18n.ts";
 import { t } from "./term.ts";
 
-export const PHASES = ["prep", "implement", "review", "revise", "fix", "rebase"] as const;
+export const PHASES = ["prep", "implement", "review", "revise", "fix", "rebase", "re-review"] as const;
 export type Phase = (typeof PHASES)[number];
 
 const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
@@ -200,7 +200,9 @@ function parseConfig(text: string, envKeys: Set<string>, warn: (m: string) => vo
   }
   const phases = {} as Record<Phase, string[]>;
   for (const phase of PHASES) {
-    const list = raw.phases[phase];
+    // re-review 是后加的阶段：老项目没写时沿用 review 的档案，不用改配置；写了就照常校验。
+    // re-review was added later: old projects that don't list it reuse review's profiles without a config change; if listed, it's validated as usual.
+    const list = phase === "re-review" && raw.phases[phase] === undefined ? raw.phases.review : raw.phases[phase];
     if (!Array.isArray(list) || list.length === 0 || !list.every((p) => typeof p === "string")) {
       fail(t(`phases.${phase} 要是非空的档案名列表`, `phases.${phase} must be a non-empty list of profile names`));
     }

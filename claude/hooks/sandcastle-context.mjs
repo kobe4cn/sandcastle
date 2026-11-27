@@ -111,7 +111,7 @@ export function checkBudget(input, env, state) {
   const other = '收尾：不再开始新的探索或改动，把手上这一项做完、提交，按提示词的要求输出结论；没来得及看的部分在输出里写明，交给下一轮。';
   // 没有阶段名（编排脚本还是旧进程，没传 SANDCASTLE_PHASE）时两种都给，由 agent 按自己的任务对号入座
   // Without a phase name (the pipeline is an old process that doesn't pass SANDCASTLE_PHASE), give both, and the agent picks the one matching its task
-  const handoff = phase === 'implement' ? impl : phase ? other : `若你在实现一张票（implement）——${impl}若是其他阶段（prep / review / revise / fix / rebase）——${other}`;
+  const handoff = phase === 'implement' ? impl : phase ? other : `若你在实现一张票（implement）——${impl}若是其他阶段（prep / review / revise / fix / rebase / re-review）——${other}`;
   const level = ctx >= HARD ? `已到 ${k(ctx)}，接近 150k 预算上限，立刻` : `已到约 ${k(ctx)}（预算 150k），现在`;
   return `上下文预算：本会话上下文${level}${handoff}之后只读必要的几行（grep -n / sed -n 小范围），不要再整读文件或跑输出很长的命令。`;
 }

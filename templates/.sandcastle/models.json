@@ -29,6 +29,7 @@
     "review": ["opus"],
     "revise": ["opus"],
     "fix": ["opus"],
-    "rebase": ["opus"]
+    "rebase": ["opus"],
+    "re-review": ["opus"]
   }
 }
