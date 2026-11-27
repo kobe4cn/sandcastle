@@ -49,6 +49,8 @@ describe("resolveProject", () => {
     expect([DEFAULT_LABELS.needsTriage, DEFAULT_LABELS.trusted]).toEqual(["needs-triage", "sandcastle:trusted"]);
     const p = resolveProject({ ...minimal, labels: { trusted: "ok-to-run" } });
     expect([p.labels.needsTriage, p.labels.trusted]).toEqual(["needs-triage", "ok-to-run"]);
+    const q = resolveProject({ ...minimal, labels: { needsTriage: "triage" } });
+    expect([q.labels.needsTriage, q.labels.trusted]).toEqual(["triage", "sandcastle:trusted"]);
   });
 
   it("mergeRequires 只给一个字段时另一个取默认值", () => {

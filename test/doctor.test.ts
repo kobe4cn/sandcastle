@@ -476,7 +476,11 @@ describe("diagnose 的出错分支", () => {
     const root = readyRepo();
     const labels = allLabels.filter((l) => l !== DEFAULT_LABELS.needsTriage && l !== DEFAULT_LABELS.trusted);
     const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(labels, []) });
-    expect(check(checks, "标签")).toMatchObject({ level: "ok", detail: expect.stringContaining("needs-triage") });
+    const labelCheck = check(checks, "标签");
+    expect(labelCheck?.level).toBe("ok");
+    expect(labelCheck?.detail).toMatch(/用到时自动建/);
+    expect(labelCheck?.detail).toContain("needs-triage");
+    expect(labelCheck?.detail).toContain("sandcastle:trusted");
   });
 
   it("只缺 flaky / main-broken（用到时自动建）：通过；gh 没登录：平台不通过、不再查标签", async () => {

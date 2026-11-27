@@ -288,8 +288,8 @@ export const DEFAULT_LABELS: Labels = {
   mainBroken: "sandcastle:main-broken", // main 上的兜底完整测试失败，脚本自动开票；调度和 prep 时排最前
   readyForAgent: "ready-for-agent",
   readyForHuman: "ready-for-human",
-  needsTriage: "needs-triage", // 票作者没有写权限，等人确认（脚本自动建标签）
-  trusted: "sandcastle:trusted", // 有写权限的人确认过这张票可以做（脚本自动建标签）
+  needsTriage: "needs-triage", // 票作者没有写权限，等有写权限的人确认（脚本自动建标签） / Ticket author lacks write access; waiting for a maintainer (created by the pipeline)
+  trusted: "sandcastle:trusted", // 有写权限的人确认过这张票可以交给 Sandcastle（脚本自动建标签） / A maintainer confirmed the ticket can go to Sandcastle (created by the pipeline)
 };
 
 /** 项目配置文件里用：只做类型检查，原样返回。 / For project config files: type checking only, returns its argument unchanged. */
