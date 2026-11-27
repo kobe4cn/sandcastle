@@ -519,6 +519,16 @@ describe("diagnose 的出错分支", () => {
     expect(labelCheck?.detail).toContain("sandcastle:trusted");
   });
 
+  it("只缺 sandcastle:waiting-main（用到时自动建）：通过", async () => {
+    const root = readyRepo();
+    const labels = allLabels.filter((l) => l !== DEFAULT_LABELS.waitingMain);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(labels, []) });
+    const labelCheck = check(checks, "标签");
+    expect(labelCheck?.level).toBe("ok");
+    expect(labelCheck?.detail).toMatch(/用到时自动建/);
+    expect(labelCheck?.detail).toContain("sandcastle:waiting-main");
+  });
+
   it("只缺 flaky / main-broken（用到时自动建）：通过；gh 没登录：平台不通过、不再查标签", async () => {
     const root = readyRepo();
     const labels = allLabels.filter((l) => l !== DEFAULT_LABELS.flaky && l !== DEFAULT_LABELS.mainBroken);
