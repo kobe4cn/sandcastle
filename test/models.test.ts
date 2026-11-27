@@ -185,6 +185,79 @@ describe("N1b 撞限额换档案", () => {
     expect(fn).not.toHaveBeenCalled();
   });
 
+  it("恢复时间写进 .sandcastle/logs/limits.json：重启后照样跳过，过了 until 又会试它、条目被清掉（#46）", async () => {
+    await m.runWithProfile("implement", "#7", async (p) => {
+      if (p.name === "opus") throw new Error(LIMIT);
+      return done();
+    });
+    const until = Date.UTC(2026, 10, 26, 6, 20) + SLACK;
+    expect(JSON.parse(readFileSync(".sandcastle/logs/limits.json", "utf8"))).toEqual({ opus: until });
+
+    // 模拟重启：重新加载模块
+    vi.resetModules();
+    m = await import("../src/models.ts");
+    m.reloadModels();
+    const tried: string[] = [];
+    await m.runWithProfile("implement", "#7", async (p) => (tried.push(p.name), done()));
+    expect(tried).toEqual(["glm"]);
+
+    // 都在等：until 来自文件
+    const err = await m
+      .runWithProfile("implement", "#7", async () => {
+        throw new Error("429 quota exceeded, resets at 2026-11-26 08:00:00");
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(m.AllProfilesLimited);
+    expect((err as InstanceType<Models["AllProfilesLimited"]>).until).toBe(until);
+
+    // 过了 opus 的 until：重启后又会试 opus，写文件时丢掉过期条目
+    vi.setSystemTime(until);
+    vi.resetModules();
+    m = await import("../src/models.ts");
+    m.reloadModels();
+    const later: string[] = [];
+    await m.runWithProfile("implement", "#7", async (p) => (later.push(p.name), done()));
+    expect(later).toEqual(["opus"]);
+  });
+
+  it("limits.json 里过期的条目：读入时丢掉，内存里过期的写入时也丢掉（#46）", async () => {
+    mkdirSync(".sandcastle/logs", { recursive: true });
+    writeFileSync(".sandcastle/logs/limits.json", JSON.stringify({ old: NOW - 1, glm: NOW + 60_000 }));
+    await m
+      .runWithProfile("implement", "#7", async () => {
+        throw new Error(LIMIT);
+      })
+      .catch(() => {});
+    const opusUntil = Date.UTC(2026, 10, 26, 6, 20) + SLACK;
+    // 读入时丢掉 old
+    expect(JSON.parse(readFileSync(".sandcastle/logs/limits.json", "utf8"))).toEqual({ glm: NOW + 60_000, opus: opusUntil });
+
+    // 不重启，glm 在内存里过期；review 的 sonnet 撞限额时整表重写，glm 不再出现
+    vi.setSystemTime(NOW + 60_000);
+    await m
+      .runWithProfile("review", "#8", async () => {
+        throw new Error(LIMIT);
+      })
+      .catch(() => {});
+    expect(JSON.parse(readFileSync(".sandcastle/logs/limits.json", "utf8"))).toEqual({ opus: opusUntil, sonnet: opusUntil });
+  });
+
+  it("limits.json 是坏 JSON 或不是对象：当作空，不抛", async () => {
+    mkdirSync(".sandcastle/logs", { recursive: true });
+    writeFileSync(".sandcastle/logs/limits.json", "{not json");
+    const tried: string[] = [];
+    await m.runWithProfile("implement", "#7", async (p) => (tried.push(p.name), done()));
+    expect(tried).toEqual(["opus"]);
+
+    vi.resetModules();
+    m = await import("../src/models.ts");
+    m.reloadModels();
+    writeFileSync(".sandcastle/logs/limits.json", JSON.stringify({ opus: "soon", glm: [1] }));
+    const again: string[] = [];
+    await m.runWithProfile("implement", "#7", async (p) => (again.push(p.name), done()));
+    expect(again).toEqual(["opus"]);
+  });
+
   it("只配一个档案、撞限额后等待期间配置补上新档案：reloadModels 后重跑用新档案（#43）", async () => {
     writeModels({ profiles: { fake: claude("fake-model") }, phases: phasesAll(["fake"]) });
     m.reloadModels();

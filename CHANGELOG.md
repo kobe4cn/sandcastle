@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 档案撞限额后的恢复时间（含 2 分钟余量）写进 `.sandcastle/logs/limits.json`（`{档案名: epoch 毫秒}`，先写临时文件再 rename），重启后在恢复时间之前照样跳过这个档案，不再把刚撞过限额的档案再试一次；读写时丢掉已过期的条目，文件不存在或损坏当作空（closes #46）
 - `models.json` 改坏时的提示不再带多余的 `Error: ` 前缀，英文下用半角冒号：`⚠ .sandcastle/models.json: invalid JSON …; keeping the previously loaded config`。别家档案的 model 写的是 `opus` / `sonnet` / `haiku`（可带 `[1m]`）、env 里设了对应的 `ANTHROPIC_DEFAULT_*_MODEL` 时，`usage.jsonl` 和 PR 用量表的 model 记成 `opus→glm-5.3[1m]`，不再只记 `opus`、看起来像用了 Claude Opus；值是 `${VAR}` 时照旧记别名（closes #45）
 - 空位全满时改 `models.json` 也生效了：之前只在有空位、开调度时才重读，一张票只配了一个会撞限额的档案、在限额里循环等待时，往配置里补上新档案也没用，只能重启。现在主循环每轮都读（不管有没有空位），限额等待醒来、重跑前也重读一次，等待期间补上的档案马上能用。限额等待的逻辑搬到 `src/limit-wait.ts`（closes #43）
 - 别家档案（设了 `ANTHROPIC_BASE_URL`）的会话里，容器内任何进程都拿不到 Claude 凭据了：之前只对 claude 进程 `env -u`，`podman exec` 起的父进程 sh 的环境里仍有 `CLAUDE_CODE_OAUTH_TOKEN`，第三方模型驱动的 agent 可从 `/proc/<pid>/environ` 读到。现在 sandbox env 把 `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` 覆盖成空串，容器级 env 不再有凭据；Claude 档案的会话从 stdin 拿到 `.sandcastle/.env` 里的凭据（`read` 进 shell 变量后 `exec` 成 claude，值不进命令行），按会话给，同一个容器里先后跑 Claude 和别家的会话也互不影响。自定义 `sandbox` 的项目要把 env 原样传给容器（closes #42）

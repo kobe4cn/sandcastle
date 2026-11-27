@@ -3,7 +3,8 @@
 // Which model each Sandcastle phase uses: reads .sandcastle/models.json, picks a profile per phase, moves to the next one on a usage limit, and records each session's token usage.
 // Format and rules: "模型配置" in docs/internal/sandcastle.md.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { parseEnv } from "node:util";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { messages, type Messages } from "./i18n.ts";
@@ -46,6 +47,8 @@ interface ModelsConfig {
 const CONFIG_PATH = ".sandcastle/models.json";
 const SANDCASTLE_ENV_PATH = ".sandcastle/.env";
 const USAGE_LOG = ".sandcastle/logs/usage.jsonl";
+/** 档案名 → 恢复时间（epoch 毫秒，含余量），重启后照样跳过撞过限额的档案。 / Profile name → reset time (epoch ms, slack included), so a restart still skips profiles that hit a limit. */
+const LIMITS_FILE = ".sandcastle/logs/limits.json";
 const SECRET_REF = /^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$/;
 const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 /**
@@ -327,6 +330,44 @@ export function agentFor(profile: Profile, env: Record<string, string>, phase?: 
  * Profile name → skip it until this time. Shared by all parallel tickets: once one ticket hits opus's limit, the others don't hit it again.
  */
 const blockedUntil = new Map<string, number>();
+let limitsLoaded = false;
+
+/**
+ * 第一次用到 blockedUntil 时从 LIMITS_FILE 读一次，之后内存为准（并行的票在同一进程里）；文件不存在或损坏当作空，丢掉已过期和不是数字的条目。
+ * Read LIMITS_FILE once on first use of blockedUntil, after which memory is the truth (parallel tickets share one process); a missing or corrupt file counts as empty, and expired or non-numeric entries are dropped.
+ */
+function loadLimits() {
+  if (limitsLoaded) return;
+  limitsLoaded = true;
+  let data: unknown;
+  try {
+    data = JSON.parse(readFileSync(LIMITS_FILE, "utf8"));
+  } catch {
+    return;
+  }
+  if (typeof data !== "object" || data === null || Array.isArray(data)) return;
+  const now = Date.now();
+  for (const [name, until] of Object.entries(data)) {
+    if (typeof until === "number" && until > now) blockedUntil.set(name, until);
+  }
+}
+
+/**
+ * 丢掉过期条目后整表写进 LIMITS_FILE（先写临时文件再 rename）；写失败只警告。
+ * Drop expired entries and write the whole table to LIMITS_FILE (temp file, then rename); a failed write only warns.
+ */
+function saveLimits() {
+  const now = Date.now();
+  for (const [name, until] of blockedUntil) if (until <= now) blockedUntil.delete(name);
+  try {
+    mkdirSync(dirname(LIMITS_FILE), { recursive: true });
+    const tmp = `${LIMITS_FILE}.tmp`;
+    writeFileSync(tmp, `${JSON.stringify(Object.fromEntries(blockedUntil))}\n`);
+    renameSync(tmp, LIMITS_FILE);
+  } catch (e) {
+    console.warn(t(`  ⚠ 限额恢复时间没写进 ${LIMITS_FILE}：${errorText(e)}`, `  ⚠ Couldn't write limit reset times to ${LIMITS_FILE}: ${errorText(e)}`));
+  }
+}
 
 /**
  * 这个阶段的档案全都在等限额重置；untilAfterLimit 认它，等到 until 再从头跑。
@@ -406,6 +447,7 @@ export async function runWithProfile<T extends AgentRun>(
   fn: (profile: Profile) => Promise<T>,
 ): Promise<{ run: T; profile: Profile }> {
   if (!config) throw new Error(t("先调用 reloadModels()", "call reloadModels() first"));
+  loadLimits();
   for (;;) {
     const now = Date.now();
     const names = config.phases[phase];
@@ -424,6 +466,7 @@ export async function runWithProfile<T extends AgentRun>(
     const resetAt = limitResetAt(message, profile.resetTimeZone);
     const until = resetAt === null ? now + UNKNOWN_RESET_SKIP_MS : resetAt + RESET_SLACK_MS;
     blockedUntil.set(name, until);
+    saveLimits();
     const why = resetAt === null ? t(`认不出重置时间（${message.slice(-200).trim()}），`, `couldn't read the reset time (${message.slice(-200).trim()}); `) : "";
     const at = new Date(until).toLocaleString();
     console.log(t(`  ⏸ ${what} 的档案 ${name} 撞上用量限额，${why}${at} 前跳过它`, `  ⏸ ${what}: profile ${name} hit its usage limit; ${why}skipping it until ${at}`));
