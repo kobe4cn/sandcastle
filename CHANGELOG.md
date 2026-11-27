@@ -1,5 +1,9 @@
 # 更新记录
 
+## Unreleased
+
+- 用量记录记下子代理实际用的模型：`usage.jsonl` 每条记录新增可选 `models` 字段，从这次 run 各会话 stream-json result 行的 `modelUsage` 按模型累加输入 / 缓存写 / 缓存读 / 输出 token（含子代理，如第三方档案下看截图的小模型；键是 Claude Code 实际请求的模型 ID，第三方档案下就是映射后的真实名，等于档案 env 某个 `ANTHROPIC_DEFAULT_*_MODEL` 的明文值时记成 `haiku→glm-4.5-air`），Claude 档案每个模型另带 `costUSD`、第三方档案不带；PR 正文 Usage 表在 `models` 有 2 个及以上模型时，在这条 run 的行下面每个模型加一行 `↳ <模型名>`（列数不变、不显示费用），宿主日志能证明截图这类任务真的交给了能看图的模型（`src/models.ts` 的 `agentFor` 加 `onModelUsage`、`recordUsage` 加 `modelUsage` 参数、`usageTable` 加模型子行，src/main.ts 的 `runAgent` 接线）（closes #53）
+
 ## 0.3.2
 
 - onboard 输出加语言一行、精简「下一步」，`--lang en` 时全英文：校验之后打一行语言（纯函数 `languageSource`、`languageLine`），写明当前输出语言怎么定的（`SANDPIPE_LANG` / `--lang` / 按提交信息判断 / 提交太少按文档或默认）和怎么换；终端按 `SANDPIPE_LANG`、生成的文件按 `--lang`，两者不一致时把终端和文件分别写清楚。「下一步」每步一行只写要敲的命令或要做的动作，上线清单（baseline → 金丝雀 → 小票 → 自动合并）只给一个链接；`.env` 一步压短但仍写明流水线用 `CLAUDE_CODE_OAUTH_TOKEN`（`claude setup-token` 生成）或 `ANTHROPIC_API_KEY`、与本机 Claude Code 登录无关；`--questions-only` 的「接下来」同风格；没设 `SANDPIPE_LANG` 时 `--lang en` 让整段终端输出都是英文（README 中英、接入检查清单中英同步）（closes #98）
