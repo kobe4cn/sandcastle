@@ -84,6 +84,21 @@ describe('Sandcastle 的 blocker 与子票 blockersOf / splitChildren', () => {
     expect(blockersOf(body)).toEqual([487, 548, 275, 276, 305, 306]);
   });
 
+  it('Blocked by：只认列表项里的票号，列表后的说明段落、续行、单独一行的票号不算', () => {
+    const body = [
+      '## Blocked by', '',
+      '- #90（…）',
+      '* #91',
+      '- [ ] #92',
+      '1. #93',
+      '  续行提到 #94',
+      '',
+      '属于 #77（自举）。',
+      '#78',
+    ].join('\n');
+    expect(blockersOf(body)).toEqual([90, 91, 92, 93]);
+  });
+
   it('Blocked by：没有这一节时为空', () => {
     expect(blockersOf('## What to build\n\n依赖 #12。\n')).toEqual([]);
   });

@@ -105,17 +105,32 @@ const stripParens = (line: string) => {
 };
 
 /**
- * `## Blocked by` 里的 blocker 票号。括号里的票号是说明（「#487（原为 #472，已拆票）」「无（#275 已关闭）」），不算；
- * 括号外的都算，所以一行写几个（「#275、#276」「#305, #306」）也认。曾经把括号里拆过的父票也算成 blocker，
- * 父票拆完一直 open，这些票就永远排不上（2026-11-09 #473–#476）。
- * Blocker numbers in `## Blocked by`. Numbers inside parentheses are notes ("#487（原为 #472，已拆票）", "无（#275 已关闭）") and don't count;
- * everything outside does, so several per line ("#275、#276", "#305, #306") work too. Split parents in parentheses used to count as blockers,
- * and since a split parent stays open those tickets never got scheduled (2026-11-09 #473–#476).
+ * `## Blocked by` 里列表项的标记与正文：认 `- `、`* `、`+ `、`- [ ] `/`- [x] `、`1. `/`1) `，
+ * 取标记（含可选的复选框）后面的部分。`* ` 后面必须有空白，`**加粗**` 才不会被误认成列表项。
+ * 只给 blockersOf 用；上面的 BULLET 是给 changedFiles 用的，不认序号和复选框。
+ * List-item marker and text in `## Blocked by`: `- `, `* `, `+ `, `- [ ] `/`- [x] `, `1. `/`1) `,
+ * capturing what follows the marker (with an optional checkbox). `* ` requires whitespace after it so `**bold**` isn't a list item.
+ * Only for blockersOf; BULLET above is for changedFiles and knows no ordinals or checkboxes.
+ */
+const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s*)?(.*)$/;
+
+/**
+ * `## Blocked by` 里的 blocker 票号：只认列表项（`- #68 …`、`1. #93`、`- [ ] #92`）里的，列表后面的说明段落、
+ * 续行和单独一行的票号都不算——曾经把列表后面一段「属于 #77（自举）。」里的票也当成 blocker，
+ * 长期开着的 epic 让那张票一直排不上（2026-11 #93）。列表项内括号里的票号仍是说明
+ * （「#487（原为 #472，已拆票）」「无（#275 已关闭）」）不算，括号外的都算，一行写几个（「#275、#276」「#305, #306」）也认。
+ * 曾经把括号里拆过的父票也算成 blocker，父票拆完一直 open，这些票就永远排不上（2026-11-09 #473–#476）。
+ * Blocker numbers in `## Blocked by`: only those inside list items (`- #68 …`, `1. #93`, `- [ ] #92`); prose after the list,
+ * continuation lines and a bare `#12` line don't count — a trailing paragraph "属于 #77（自举）。" used to count as a blocker
+ * and a long-open epic kept that ticket unschedulable (2026-11 #93). Inside a list item, numbers in parentheses are still notes
+ * ("#487（原为 #472，已拆票）", "无（#275 已关闭）") and don't count; everything outside does, so several per line ("#275、#276", "#305, #306") work too.
+ * Split parents in parentheses used to count as blockers, and since a split parent stays open those tickets never got scheduled (2026-11-09 #473–#476).
  */
 export const blockersOf = (body: string): number[] => {
   const refs = section(body, "Blocked by")
     .split("\n")
-    .flatMap((line) => [...stripParens(line).matchAll(/#(\d+)/g)].map((m) => Number(m[1])));
+    .map((line) => line.match(LIST_ITEM)?.[1] ?? "")
+    .flatMap((text) => [...stripParens(text).matchAll(/#(\d+)/g)].map((m) => Number(m[1])));
   return [...new Set(refs)];
 };
 

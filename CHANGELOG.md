@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- `## Blocked by` 只认列表项（`- `、`* `、`1. ` 开头）里的票号：列表后面不带列表标记的行（说明段落、署名、单独一行的 `#12`）不再算 blocker，免得人随手补一句关联票（比如「属于 #77。」）就让整张票一直排不上（`src/guide.ts` 的 `blockersOf`；doctor 的 Blocked by 检查与调度随之生效）（closes #99）
 - README 中英「Onboard a project / 接入一个项目」一节各补一段：onboard 补全 PROJECT.md 用本机 Claude Code 的登录，流水线只用 `.sandcastle/.env` 里的 `CLAUDE_CODE_OAUTH_TOKEN` 或 `ANTHROPIC_API_KEY`，两者互不相干（closes #91）
 - onboard 起 agent 时写清楚用的哪套凭据：提示写明在本机用 `claude -p` 跑、用的是本机 Claude Code 登录的账号（不是 `.sandcastle/.env` 里的 token）；claude 的 stderr 改为按行加 `[claude]` 前缀转写到终端（半行缓冲到换行或结束），失败（非零退出、30 分钟超时、没装 claude、输出超上限）时的警告带退出码 / 原因和 stderr 最后几行，不再吞掉 claude 自己的报错（`runAgent` 从 `execFileSync` 改成 `spawn`，纯函数 `prefixLines`、`agentFailureMessage`、`agentStartHint`、`envStepHint`，`src/onboard.ts`）；结束「下一步」里填 `.env` 的一步写明流水线用的是其中的 `CLAUDE_CODE_OAUTH_TOKEN`（`claude setup-token` 生成）或 `ANTHROPIC_API_KEY`，与本机 Claude Code 登录无关，接入检查清单中英同步（closes #90）
 
