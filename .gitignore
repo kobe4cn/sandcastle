@@ -1,3 +1,9 @@
 node_modules/
 dist/
 *.tgz
+
+# Sandcastle：沙箱里浏览器验收的截图与结论、playwright-cli 会话、验收说明（编排脚本读出后附到 PR，不提交）
+# Sandcastle: browser-check screenshots and results, playwright-cli sessions, acceptance notes (attached to the PR by the pipeline, not committed)
+.browser-check/
+.playwright-cli/
+.pr-notes/
