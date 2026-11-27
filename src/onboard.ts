@@ -22,8 +22,10 @@
 //    and failures get the exit code and the last stderr lines as their own prominent warning.
 // 4. 终端输出按阶段收成摘要（探测、文件、agent、校验各一到两行，detectSummary / filesSummary / validationSummary，agent 段是 agentStartHint 开始行加 agentDoneLine 完成行）；--verbose 打完整明细。
 //    要人处理的（另存为 .new 的冲突文件、PROJECT.md 校验失败、agent 失败、GitLab 警告）永远单独成醒目的一行，不被计数收掉。
+//    校验后打一行语言（languageLine：当前语言怎么定的、怎么换）；「下一步」每步一行只写命令 / 动作，上线清单只给链接。
 //    Terminal output is summarized per stage (detection, files, agent, validation, one to two lines each: detectSummary / filesSummary / validationSummary, the agent stage being agentStartHint's start line plus agentDoneLine's done line); --verbose prints the full details.
 //    Things needing a human (a conflict file saved as .new, a PROJECT.md validation failure, an agent failure, the GitLab warning) always get their own prominent line and are never folded into the counts.
+//    After the checks a language line prints (languageLine: how the current language was decided and how to switch it); "Next" lists one command or action per line, the launch checklist as a link only.
 
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { execFileSync, spawn } from "node:child_process";
@@ -38,7 +40,7 @@ import type { Language } from "./i18n.ts";
 import { DEFAULT_LABELS } from "./profile.ts";
 import { OPEN_QUESTIONS, readOpenQuestions, unknownSectionTargets } from "./open-questions.ts";
 import { parseProjectDoc, SECTIONS, SECTIONS_EN } from "./project-doc.ts";
-import { setTermLanguage, t, termLanguage } from "./term.ts";
+import { envLanguage, setTermLanguage, t, termLanguage } from "./term.ts";
 import { RELEASES_REPO } from "./version.ts";
 
 export const TOOL_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
@@ -906,7 +908,9 @@ async function questionsOnlyRun(root: string, f: ProjectFacts, model: string, la
   const qc = checkOpenQuestions(root);
   if (qc.state === "ok") console.log(t(`✓ 缺口清单还有 ${qc.count} 条`, `✓ ${qc.count} open question(s) left`));
   for (const w of qc.warnings) console.warn(w);
-  if (qc.count > 0) console.log(`\n${t("接下来：", "Next: ")}${fillDocsHint(qc.count)}`);
+  // 「接下来」和 onboard 的「下一步」同风格：一步一行带编号
+  // "Next" matches onboard's next steps: one numbered line per step
+  if (qc.count > 0) console.log(["", t("接下来：", "Next:"), `  1. ${fillDocsHint(qc.count)}`].join("\n"));
 }
 
 /**
@@ -971,8 +975,8 @@ export function agentDoneLine(kind: "doc" | "questions"): string {
  */
 export const envStepHint = () =>
   t(
-    "cp .sandcastle/.env.example .sandcastle/.env，填流水线用的 token：CLAUDE_CODE_OAUTH_TOKEN（claude setup-token 生成）或 ANTHROPIC_API_KEY；流水线只用这里面的 token，与本机 Claude Code 登录无关",
-    "cp .sandcastle/.env.example .sandcastle/.env and fill in the token the pipeline uses: CLAUDE_CODE_OAUTH_TOKEN (from claude setup-token) or ANTHROPIC_API_KEY; the pipeline reads only this file, independent of your local Claude Code login",
+    "cp .sandcastle/.env.example .sandcastle/.env，填 CLAUDE_CODE_OAUTH_TOKEN（claude setup-token 生成）或 ANTHROPIC_API_KEY；流水线只用这个文件，与本机 Claude Code 登录无关",
+    "cp .sandcastle/.env.example .sandcastle/.env and fill in CLAUDE_CODE_OAUTH_TOKEN (from claude setup-token) or ANTHROPIC_API_KEY; the pipeline uses only this file, independent of your local Claude Code login",
   );
 
 /**
@@ -981,6 +985,62 @@ export const envStepHint = () =>
  */
 export function applyLangArg(f: ProjectFacts, langArg: Language | undefined): ProjectFacts {
   return langArg && f.commitLanguageBasis !== "commits" ? { ...f, commitLanguage: langArg, commitLanguageBasis: "lang" } : f;
+}
+
+/**
+ * 生成的文件的语言来源（不看 SANDPIPE_LANG，它只影响终端）：--lang 优先，其次 commitLanguageBasis（lang 也算 --lang）。
+ * Source of the generated files' language (ignoring SANDPIPE_LANG, which affects only the terminal): --lang first, then the basis ("lang" counts as --lang too).
+ */
+function fileLanguageSource(langArg: Language | undefined, f: ProjectFacts): "flag" | "commits" | "few-commits" | "docs" {
+  return langArg || f.commitLanguageBasis === "lang" ? "flag" : f.commitLanguageBasis;
+}
+
+/**
+ * 终端语言是怎么定的：SANDPIPE_LANG（非空即算设了，与 setTermLanguage 同口径，无效值走 locale）→ --lang → commitLanguageBasis。
+ * 顺序不能反：提交够多时给了 --lang，basis 仍是 commits，但来源是 --lang。
+ * How the terminal language was decided: SANDPIPE_LANG (any non-empty value counts as set, same rule as setTermLanguage; invalid ones fall through to the locale) → --lang → commitLanguageBasis.
+ * The order can't be reversed: with enough commits plus an explicit --lang the basis stays "commits" while the source is the flag.
+ */
+export function languageSource(
+  langArg: Language | undefined,
+  f: ProjectFacts,
+  env: NodeJS.ProcessEnv = process.env,
+): "env" | "flag" | "commits" | "few-commits" | "docs" {
+  if (env.SANDPIPE_LANG) return "env";
+  return fileLanguageSource(langArg, f);
+}
+
+/**
+ * 语言一行：当前输出语言、来源和怎么换。终端按 SANDPIPE_LANG，生成的文件按 --lang / 提交语言；
+ * 两者不一致（SANDPIPE_LANG 设了且和文件语言不同）时把终端和文件分别写清楚，各自标来源。
+ * The language line: the current output language, where it came from and how to change it. The terminal follows SANDPIPE_LANG,
+ * generated files follow --lang / the commit language; when the two differ (SANDPIPE_LANG set and different from the file language),
+ * the terminal and the files are spelled out separately, each with its source.
+ */
+export function languageLine(langArg: Language | undefined, f: ProjectFacts, env: NodeJS.ProcessEnv = process.env): string {
+  const lang: Language = langArg ?? f.commitLanguage;
+  const name = (l: Language) => (l === "zh" ? t("中文", "Chinese") : t("英文", "English"));
+  const other: Language = lang === "zh" ? "en" : "zh";
+  const from: Record<"env" | "flag" | "commits" | "few-commits" | "docs", string> = {
+    env: t("按 SANDPIPE_LANG", "from SANDPIPE_LANG"),
+    flag: t("按 --lang", "from --lang"),
+    commits: t("按提交信息判断", "judged from commit messages"),
+    "few-commits": t("提交太少，按仅有的提交或默认", "too few commits: the few there are, or the default"),
+    docs: t("提交太少，按文档判断", "too few commits: judged from the docs"),
+  };
+  if (env.SANDPIPE_LANG && envLanguage(env) !== lang)
+    return t(
+      `语言  终端${name(envLanguage(env))}（${from.env}），生成的文件 ${name(lang)}（${from[fileLanguageSource(langArg, f)]}）`,
+      `Language  terminal ${name(envLanguage(env))} (${from.env}), generated files ${name(lang)} (${from[fileLanguageSource(langArg, f)]})`,
+    );
+  const source = languageSource(langArg, f, env);
+  // 设了 SANDPIPE_LANG 时 --lang 动不了终端，怎么换只指 SANDPIPE_LANG
+  // With SANDPIPE_LANG set --lang can't move the terminal, so the switch hint points only at SANDPIPE_LANG
+  const howTo =
+    source === "env"
+      ? t(`要${name(other)}设 SANDPIPE_LANG=${other}`, `for ${name(other)} set SANDPIPE_LANG=${other}`)
+      : t(`要${name(other)}用 --lang ${other}，或设 SANDPIPE_LANG=${other}`, `for ${name(other)} use --lang ${other}, or set SANDPIPE_LANG=${other}`);
+  return t(`语言  ${name(lang)}（${from[source]}；${howTo}）`, `Language  ${name(lang)} (${from[source]}; ${howTo})`);
 }
 
 /**
@@ -1159,6 +1219,9 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
   if (!projectOk) console.warn(t("⚠ PROJECT.md 校验没过：", "⚠ PROJECT.md is invalid: ") + projectError);
   for (const w of qc.warnings) console.warn(w);
   const remaining = qc.count;
+  // 校验之后、「下一步」之前：语言一行写明当前语言怎么定的、怎么换
+  // After the checks and before "Next": the language line says how the current language was decided and how to change it
+  console.log(languageLine(langArg, f));
 
   // 给网页链接而不是本机路径：pnpm 全局装的包路径很长，在终端里没法点。
   // Print a web link rather than a local path: packages installed globally with pnpm live under a very long path that can't be clicked in a terminal.
@@ -1168,18 +1231,14 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
       "",
       t("接下来：", "Next:"),
       ...[
-        t(
-          "看一遍 .sandcastle/PROJECT.md 和 sandcastle.config.ts（门槛、测试隔离），改成符合项目实际的样子",
-          "Read .sandcastle/PROJECT.md and sandcastle.config.ts (gate, test isolation) and make them match the project",
-        ),
+        // 每步只写要敲的命令或要做的动作，解释压到最短；上线清单只给链接
+        // Each step is just the command or action; explanations are minimal; the launch checklist is a link only
+        t("看一遍 .sandcastle/PROJECT.md 和 sandcastle.config.ts，按项目实际修改", "Read .sandcastle/PROJECT.md and sandcastle.config.ts, adjust them to fit the project"),
         ...(remaining > 0 ? [fillDocsHint(remaining)] : []),
         envStepHint(),
         `${t("建镜像：", "Build the image: ")}podman build -t ${defaultImageName(root)} -f .sandcastle/Containerfile .sandcastle`,
         t("sandpipe doctor --fix 检查一遍（顺带建好标签）", "sandpipe doctor --fix to check everything (and create the labels)"),
-        t(
-          `之后按 ${checklist}：baseline 跑一次完整门槛 → 金丝雀票 → 真实小票 → 打开自动合并`,
-          `Then follow ${checklist}: baseline full gate → canary ticket → real small tickets → enable auto-merge`,
-        ),
+        `${t("上线清单：", "Launch checklist: ")}${checklist}`,
       ].map((step, i) => `  ${i + 1}. ${step}`),
     ].join("\n"),
   );
