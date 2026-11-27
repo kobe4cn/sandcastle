@@ -14,11 +14,13 @@
 //      the hook, subagent and skills under .claude/ (CLAUDE_FILES, agent-facing, one language only), registering the hook in .claude/settings.json
 // 3. 补全 PROJECT.md（默认开，--no-agent 跳过）：宿主机上跑一次 claude -p，读代码把草稿写完整，拿不准的写进缺口清单 OPEN-QUESTIONS.md；
 //    只许改这两个文件（清单已存在时只许改 PROJECT.md）；写完按 parseProjectDoc 和 parseOpenQuestions 校验。
+//    claude 用的是本机 Claude Code 登录的账号（和 .env 里的 token 无关），它的 stderr 按行加 [claude] 前缀转写，失败时把退出码和末尾几行写进警告。
 //    Complete PROJECT.md (on by default, --no-agent skips it): one claude -p on the host reads the code, finishes the draft and puts open points into OPEN-QUESTIONS.md;
 //    it may edit only those two files (only PROJECT.md if the list already exists); then validated with parseProjectDoc and parseOpenQuestions.
+//    claude runs under the local Claude Code login (unrelated to the token in .env); its stderr is echoed line by line with a [claude] prefix, and failures put the exit code and the last lines into the warning.
 
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -727,7 +729,52 @@ export function questionsOnlyPrecheck(root: string): string | null {
   return null;
 }
 
-function runAgent(root: string, prompt: string, model: string, writable: string[]): string {
+// claude 的 stderr 每行加这个前缀再转写，和 sandpipe 自己的提示区分开。
+// Every echoed stderr line from claude gets this prefix, to tell it apart from sandpipe's own messages.
+const CLAUDE_PREFIX = "  [claude] ";
+// 失败信息里保留的 stderr 行数。 / How many stderr lines to keep in the failure message.
+const STDERR_TAIL = 5;
+// stdout 的上限，对齐原来 execFileSync 的 maxBuffer。 / stdout cap, matching the old execFileSync maxBuffer.
+const MAX_STDOUT = 16 * 1024 * 1024;
+
+/**
+ * 按行加前缀的缓冲器：push 收 chunk，凑齐的完整行（前缀 + 换行）一次返回；半行留在缓冲里，flush 在结束时补出去。
+ * Line-prefixing buffer: push() takes a chunk and returns the lines completed so far (prefix + newline each); a partial line stays buffered until flush() emits it at the end.
+ */
+export function prefixLines(prefix: string): { push(chunk: string): string; flush(): string } {
+  let buffer = "";
+  return {
+    push(chunk: string): string {
+      buffer += chunk;
+      const lines = buffer.split("\n");
+      // 最后一段是半行，留到下一个 chunk 或 flush。
+      // The last piece is a partial line, kept for the next chunk or the flush.
+      buffer = lines.pop() ?? "";
+      return lines.map((line) => prefix + line + "\n").join("");
+    },
+    flush(): string {
+      if (!buffer) return "";
+      const rest = prefix + buffer + "\n";
+      buffer = "";
+      return rest;
+    },
+  };
+}
+
+/**
+ * claude 失败时的提示：退出码 / 原因在前，stderr 最后几行带 [claude] 前缀跟在后面，不吞掉 claude 自己的报错。
+ * Failure text for claude: the exit code / reason first, then the last stderr lines with the [claude] prefix, so claude's own errors aren't swallowed.
+ */
+export function agentFailureMessage(reason: string, stderrLines: string[]): string {
+  const tail = stderrLines.slice(-STDERR_TAIL).map((line) => `${CLAUDE_PREFIX}${line}`);
+  return tail.length ? `${reason}\n${tail.join("\n")}` : reason;
+}
+
+/**
+ * 在宿主机上跑一次 claude -p：stdout 收齐了返回；stderr 按行加 [claude] 前缀转写到终端，最后几行进失败信息。
+ * Runs claude -p once on the host: stdout is collected and returned; stderr is echoed to the terminal line by line with the [claude] prefix, and its last lines go into the failure message.
+ */
+function runAgent(root: string, prompt: string, model: string, writable: string[]): Promise<string> {
   const allowed = [
     "Read",
     "Grep",
@@ -741,17 +788,68 @@ function runAgent(root: string, prompt: string, model: string, writable: string[
     "Bash(sed -n:*)",
     "Bash(head:*)",
   ];
-  return execFileSync(
-    "claude",
-    ["-p", prompt, "--model", model, "--allowedTools", allowed.join(","), "--output-format", "text"],
-    {
-      cwd: root,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "inherit"],
-      maxBuffer: 16 * 1024 * 1024,
-      timeout: 30 * 60_000,
-    },
-  );
+  return new Promise<string>((resolve, reject) => {
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const tail: string[] = [];
+    const prefixer = prefixLines(CLAUDE_PREFIX);
+    const child = spawn(
+      "claude",
+      ["-p", prompt, "--model", model, "--allowedTools", allowed.join(","), "--output-format", "text"],
+      { cwd: root, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const fail = (reason: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(new Error(agentFailureMessage(reason, tail)));
+    };
+    // 30 分钟没跑完就停掉，onboard 不能一直挂着。
+    // Stop it after 30 minutes: onboard must not hang forever.
+    timer = setTimeout(() => {
+      child.kill();
+      fail(t("claude 30 分钟没跑完，已停止", "claude didn't finish within 30 minutes; stopped it"));
+    }, 30 * 60_000);
+    // 转写 stderr 并留最后几行（去掉前缀），失败信息要用。
+    // Echo stderr and keep the last lines (prefix stripped) for the failure message.
+    const echo = (prefixed: string) => {
+      if (prefixed) process.stderr.write(prefixed);
+      for (const line of prefixed.split("\n")) {
+        if (!line) continue;
+        tail.push(line.slice(CLAUDE_PREFIX.length));
+        if (tail.length > STDERR_TAIL) tail.shift();
+      }
+    };
+    let stdout = "";
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk;
+      // 超过上限就停，免得失控的输出把内存吃满。
+      // Stop past the cap so runaway output can't eat memory.
+      if (stdout.length > MAX_STDOUT) {
+        child.kill();
+        fail(t(`claude 输出超过 ${MAX_STDOUT / 1024 / 1024}MB，已停止`, `claude produced more than ${MAX_STDOUT / 1024 / 1024}MB of output; stopped it`));
+      }
+    });
+    child.stderr?.on("data", (chunk: Buffer) => echo(prefixer.push(chunk.toString())));
+    child.on("error", (e: NodeJS.ErrnoException) => {
+      fail(
+        e.code === "ENOENT"
+          ? t("没找到 claude 命令：本机没装 Claude Code？", "The claude command wasn't found: is Claude Code installed on this machine?")
+          : `${t("claude 没跑起来：", "claude failed to start: ")}${e.message}`,
+      );
+    });
+    child.on("close", (code) => {
+      // 结束时把剩下的半行补出去，也计入末尾几行。
+      // Emit the trailing partial line at the end and count it into the tail.
+      echo(prefixer.flush());
+      if (settled) return;
+      if (code === 0) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(stdout);
+      } else fail(t(`claude 退出码 ${code}`, `claude exited with code ${code}`));
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -760,21 +858,21 @@ function runAgent(root: string, prompt: string, model: string, writable: string[
 // ---------------------------------------------------------------------------
 
 /**
- * `onboard --questions-only`：只让 agent 写缺口清单，不生成、不改动其他文件（也不写 logs），agent 的输出直接打到终端。
- * `onboard --questions-only`: the agent writes only the open questions list; no other file is generated or touched (no logs either), and the agent's output goes straight to the terminal.
+ * `onboard --questions-only`：只让 agent 写缺口清单，不生成、不改动其他文件（也不写 logs）；agent 的 stderr 按行加 [claude] 前缀转写到终端。
+ * `onboard --questions-only`: the agent writes only the open questions list; no other file is generated or touched (no logs either); the agent's stderr is echoed to the terminal line by line with the [claude] prefix.
  */
-function questionsOnlyRun(root: string, f: ProjectFacts, model: string, lang: Language) {
+async function questionsOnlyRun(root: string, f: ProjectFacts, model: string, lang: Language) {
   const blocked = questionsOnlyPrecheck(root);
   if (blocked) {
     console.log(blocked);
     return;
   }
   const projectMd = readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8");
-  console.log(t(`\n让 agent（${model}）读 PROJECT.md 和代码，生成 ${OPEN_QUESTIONS}，几分钟……`, `\nAsking the agent (${model}) to read PROJECT.md and the code and write ${OPEN_QUESTIONS}, a few minutes…`));
+  console.log(agentStartHint("questions", model));
   try {
-    console.log(`\n${runAgent(root, questionsPrompt(f, lang, projectMd), model, [OPEN_QUESTIONS]).trim()}`);
+    console.log(`\n${(await runAgent(root, questionsPrompt(f, lang, projectMd), model, [OPEN_QUESTIONS])).trim()}`);
   } catch (e) {
-    console.warn(t("  ⚠ agent 失败：", "  ⚠ The agent failed: ") + String((e as Error).message).slice(0, 300));
+    console.warn(t("  ⚠ agent 失败：", "  ⚠ The agent failed: ") + String((e as Error).message));
     return;
   }
   const remaining = reportOpenQuestions(root);
@@ -809,6 +907,32 @@ function reportOpenQuestions(root: string): number {
 
 export const fillDocsHint = (remaining: number) =>
   t(`在 Claude Code 里运行 /fill-project-docs，补完缺口清单（还剩 ${remaining} 条）`, `Run /fill-project-docs in Claude Code to work through the open questions (${remaining} left)`);
+
+/**
+ * 起 agent 前的提示：写明在本机用 claude -p 跑、用的是本机 Claude Code 登录的账号（不是 .sandcastle/.env 里的 token）。
+ * Hint printed before starting the agent: says it runs claude -p locally under the local Claude Code login (not the token in .sandcastle/.env).
+ */
+export function agentStartHint(kind: "doc" | "questions", model: string): string {
+  const head = t(
+    `\n在本机用 claude -p 跑 agent（${model}，用本机 Claude Code 登录的账号，不是 .sandcastle/.env 里的 token）`,
+    `\nRunning the agent locally with claude -p (${model}, under your local Claude Code login, not the token in .sandcastle/.env)`,
+  );
+  const tail =
+    kind === "doc"
+      ? t("，读代码补全 .sandcastle/PROJECT.md，几分钟……", " to read the code and complete .sandcastle/PROJECT.md, a few minutes…")
+      : t(`，读 PROJECT.md 和代码，生成 ${OPEN_QUESTIONS}，几分钟……`, ` to read PROJECT.md and the code and write ${OPEN_QUESTIONS}, a few minutes…`);
+  return head + tail;
+}
+
+/**
+ * 「下一步」里填 .env 那一步：写明流水线用 .env 里的 token，与本机 Claude Code 登录无关。
+ * The fill-in-.env step under "Next": says the pipeline uses the token from .env, independent of the local Claude Code login.
+ */
+export const envStepHint = () =>
+  t(
+    "cp .sandcastle/.env.example .sandcastle/.env，填流水线用的 token：CLAUDE_CODE_OAUTH_TOKEN（claude setup-token 生成）或 ANTHROPIC_API_KEY；流水线只用这里面的 token，与本机 Claude Code 登录无关",
+    "cp .sandcastle/.env.example .sandcastle/.env and fill in the token the pipeline uses: CLAUDE_CODE_OAUTH_TOKEN (from claude setup-token) or ANTHROPIC_API_KEY; the pipeline reads only this file, independent of your local Claude Code login",
+  );
 
 /**
  * 提交历史不够判断时，显式给的 --lang 决定提交语言；提交够多时不动（界面语言和提交语言可以不同）。
@@ -873,7 +997,7 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
   if (f.forge.kind === "gitlab" && !questionsOnly)
     console.warn(t("  ⚠ 远端是 GitLab：GitLab Forge 还没做，文件照常生成，但先别跑", "  ⚠ The remote is GitLab: the GitLab forge isn't done yet. Files are generated, but don't run it yet"));
 
-  if (questionsOnly) return questionsOnlyRun(root, f, model, lang);
+  if (questionsOnly) return await questionsOnlyRun(root, f, model, lang);
 
   const docExisted = existsSync(join(root, ".sandcastle/PROJECT.md"));
   // 在生成文件和 agent 之前算：清单已存在就不让 agent 碰。
@@ -887,14 +1011,14 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
   if (noAgent || docExisted) {
     if (docExisted) console.log(t("PROJECT.md 已存在，不再让 agent 重写。", "PROJECT.md already exists; not asking the agent to rewrite it."));
   } else {
-    console.log(t(`\n让 agent（${model}）读代码补全 .sandcastle/PROJECT.md，几分钟……`, `\nAsking the agent (${model}) to read the code and complete .sandcastle/PROJECT.md, a few minutes…`));
+    console.log(agentStartHint("doc", model));
     try {
-      const notes = runAgent(root, onboardPrompt(f, lang, writable), model, writable);
+      const notes = await runAgent(root, onboardPrompt(f, lang, writable), model, writable);
       mkdirSync(join(root, ".sandcastle/logs"), { recursive: true });
       writeFileSync(join(root, ".sandcastle/logs/onboard.md"), notes);
       console.log(`\n${notes.trim()}\n${t("（已存到 .sandcastle/logs/onboard.md）", "(saved to .sandcastle/logs/onboard.md)")}`);
     } catch (e) {
-      console.warn(t("  ⚠ agent 补全失败，PROJECT.md 保留草稿：", "  ⚠ The agent failed; PROJECT.md keeps the draft: ") + String((e as Error).message).slice(0, 300));
+      console.warn(t("  ⚠ agent 补全失败，PROJECT.md 保留草稿：", "  ⚠ The agent failed; PROJECT.md keeps the draft: ") + String((e as Error).message));
     }
   }
 
@@ -920,7 +1044,7 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
           "Read .sandcastle/PROJECT.md and sandcastle.config.ts (gate, test isolation) and make them match the project",
         ),
         ...(remaining > 0 ? [fillDocsHint(remaining)] : []),
-        t("cp .sandcastle/.env.example .sandcastle/.env，填 token", "cp .sandcastle/.env.example .sandcastle/.env and fill in the tokens"),
+        envStepHint(),
         `${t("建镜像：", "Build the image: ")}podman build -t ${defaultImageName(root)} -f .sandcastle/Containerfile .sandcastle`,
         t("sandpipe doctor --fix 检查一遍（顺带建好标签）", "sandpipe doctor --fix to check everything (and create the labels)"),
         t(

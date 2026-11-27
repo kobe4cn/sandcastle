@@ -1,5 +1,9 @@
 # 更新记录
 
+## Unreleased
+
+- onboard 起 agent 时写清楚用的哪套凭据：提示写明在本机用 `claude -p` 跑、用的是本机 Claude Code 登录的账号（不是 `.sandcastle/.env` 里的 token）；claude 的 stderr 改为按行加 `[claude]` 前缀转写到终端（半行缓冲到换行或结束），失败（非零退出、30 分钟超时、没装 claude、输出超上限）时的警告带退出码 / 原因和 stderr 最后几行，不再吞掉 claude 自己的报错（`runAgent` 从 `execFileSync` 改成 `spawn`，纯函数 `prefixLines`、`agentFailureMessage`、`agentStartHint`、`envStepHint`，`src/onboard.ts`）；结束「下一步」里填 `.env` 的一步写明流水线用的是其中的 `CLAUDE_CODE_OAUTH_TOKEN`（`claude setup-token` 生成）或 `ANTHROPIC_API_KEY`，与本机 Claude Code 登录无关，接入检查清单中英同步（closes #90）
+
 ## 0.3.0
 
 - 浏览器验收门槛要求评审的逐条结论：改了页面的票，评审给了 `<browser-check>done</browser-check>` 但 `<browser-verdict>` 缺失或为空时留 PR（「review 给了 browser-check done，但没有逐条的 browser-verdict」）；逐条结论里有行首为 ❌ / ❓ 的条目时也留 PR，列出这些行，即使 `RESULT.md` 全 ✅。只机械看行首，不比对 `RESULT.md` 的步骤。评审结论随 `sandcastle:reviewed` 标记评论的 JSON（`browserVerdict`）持久化，恢复路径读回来参与门槛；旧评论没有这个字段时照常解析、按缺失挡下（fail-closed）（closes #84）

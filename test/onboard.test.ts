@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { agentWritable, applyLangArg, assertRepoRoot, configSource, containerfileSource, hasGlobalSkill, installFiles, installGlobalSkill, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
+import { agentFailureMessage, agentStartHint, agentWritable, applyLangArg, assertRepoRoot, configSource, containerfileSource, envStepHint, hasGlobalSkill, installFiles, installGlobalSkill, prefixLines, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
+import { OPEN_QUESTIONS } from "../src/open-questions.ts";
+import { setTermLanguage } from "../src/term.ts";
 import { parseProjectDoc, SECTIONS, SECTIONS_EN } from "../src/project-doc.ts";
 import { nodeRepo, pythonRepo } from "./fixtures.ts";
 
@@ -750,5 +752,110 @@ describe("在项目外运行 onboard / update", () => {
     const plain = mkdtempSync(join(tmpdir(), "sandpipe-plain-"));
     await expect(updateClaudeFiles(plain, overwrite)).rejects.toThrow("sandcastle.config.ts");
     expect(readdirSync(plain)).toEqual([]);
+  });
+});
+
+describe("prefixLines", () => {
+  it("凑齐的完整行加前缀返回，半行留到下一个 chunk 或 flush", () => {
+    const p = prefixLines("  [claude] ");
+    expect(p.push("第一行\nWarning: expired\n")).toBe("  [claude] 第一行\n  [claude] Warning: expired\n");
+    expect(p.push("半")).toBe("");
+    expect(p.push("行\n")).toBe("  [claude] 半行\n");
+    expect(p.flush()).toBe("");
+  });
+
+  it("结束时把剩下的半行补一个换行输出，之后再 flush 为空", () => {
+    const p = prefixLines("[x] ");
+    expect(p.push("a\nb")).toBe("[x] a\n");
+    expect(p.flush()).toBe("[x] b\n");
+    expect(p.flush()).toBe("");
+  });
+
+  it("空 chunk 不产出任何内容", () => {
+    const p = prefixLines("> ");
+    expect(p.push("")).toBe("");
+    expect(p.flush()).toBe("");
+  });
+});
+
+describe("agentFailureMessage", () => {
+  it("退出码 / 原因在前，stderr 末尾几行按 [claude] 前缀跟在后面", () => {
+    expect(agentFailureMessage("claude 退出码 1", ["a", "b"])).toBe("claude 退出码 1\n  [claude] a\n  [claude] b");
+  });
+
+  it("只保留最后 5 行；没有 stderr 时只有原因本身", () => {
+    expect(agentFailureMessage("r", ["1", "2", "3", "4", "5", "6", "7"])).toBe(
+      "r\n  [claude] 3\n  [claude] 4\n  [claude] 5\n  [claude] 6\n  [claude] 7",
+    );
+    expect(agentFailureMessage("r", [])).toBe("r");
+  });
+});
+
+describe("起 agent 的提示和 .env 那一步", () => {
+  it("提示写明在本机用 claude -p 跑、用本机 Claude Code 登录的账号，不是 .env 的 token", () => {
+    for (const kind of ["doc", "questions"] as const) {
+      const zh = agentStartHint(kind, "opus");
+      expect(zh).toContain("claude -p");
+      expect(zh).toContain("本机 Claude Code 登录");
+      expect(zh).toContain("不是 .sandcastle/.env 里的 token");
+      expect(zh).toContain("opus");
+    }
+    expect(agentStartHint("doc", "opus")).toContain(".sandcastle/PROJECT.md");
+    expect(agentStartHint("questions", "opus")).toContain(OPEN_QUESTIONS);
+  });
+
+  it("英文文案", () => {
+    try {
+      setTermLanguage("en", {});
+      for (const kind of ["doc", "questions"] as const) {
+        const en = agentStartHint(kind, "opus");
+        expect(en).toContain("claude -p");
+        expect(en).toContain("local Claude Code login");
+        expect(en).toContain("not the token in .sandcastle/.env");
+      }
+    } finally {
+      setTermLanguage("zh", {});
+    }
+  });
+
+  it("下一步的 .env 提示写明流水线用的 token 和与本机登录无关", () => {
+    const zh = envStepHint();
+    expect(zh).toContain("cp .sandcastle/.env.example .sandcastle/.env");
+    expect(zh).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+    expect(zh).toContain("claude setup-token");
+    expect(zh).toContain("ANTHROPIC_API_KEY");
+    expect(zh).toContain("与本机 Claude Code 登录无关");
+  });
+
+  it(".env 提示的英文文案", () => {
+    try {
+      setTermLanguage("en", {});
+      const en = envStepHint();
+      expect(en).toContain("cp .sandcastle/.env.example .sandcastle/.env");
+      expect(en).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+      expect(en).toContain("claude setup-token");
+      expect(en).toContain("ANTHROPIC_API_KEY");
+      expect(en).toMatch(/independent of .*local Claude Code login/);
+    } finally {
+      setTermLanguage("zh", {});
+    }
+  });
+
+  it("onboard 的「下一步」里有带 token 说明的 .env 一步", async () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    writeFileSync(join(root, ".sandcastle/PROJECT.md"), "人改过");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await onboard(["--no-agent"], root, async () => "keep");
+      const out = log.mock.calls.flat().join("\n");
+      expect(out).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+      expect(out).toContain("claude setup-token");
+      expect(out).toContain("与本机 Claude Code 登录无关");
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
   });
 });
