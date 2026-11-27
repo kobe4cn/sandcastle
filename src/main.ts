@@ -100,7 +100,7 @@ import { parseReviewed, type ReviewedState, resumeDecision, reviewedComment } fr
 import { duration, flakyTicketsLine, gateDoneLine, gateEnv, gateInfraLine, startGateProgress } from "./gate-progress.ts";
 import { createGateQueue, type GatePriority } from "./gate-queue.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
-import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
+import { loadProjectDoc, projectDocPath, projectDocWatcher, renderPrompts } from "./project-doc.ts";
 import { type BrowserCheck, browserSetupWarning, browserVerdict, pageFiles, ticketHasBrowserCheck } from "./browser-gate.ts";
 import { detectProject } from "./detect.ts";
 import { manual } from "./onboard.ts";
@@ -158,9 +158,10 @@ const ONLY = new Set((process.env.SANDCASTLE_ONLY ?? "").split(",").map((s) => s
 const allowed = (id: string | number) => ONLY.size === 0 || ONLY.has(String(id).replace(/^#/, ""));
 
 const LABEL = project.labels;
-// 提示词：通用模板 + .sandcastle/PROJECT.md 的章节 + 平台命令，启动时渲染一次（改了 PROJECT.md 要重启才生效）
-// Prompts: generic templates + .sandcastle/PROJECT.md sections + forge commands, rendered once at startup (restart after changing PROJECT.md)
+// 提示词：通用模板 + .sandcastle/PROJECT.md 的章节 + 平台命令，启动时渲染一次（改了 PROJECT.md 要重启才生效，主循环每轮检查、变了警告一次，#52）
+// Prompts: generic templates + .sandcastle/PROJECT.md sections + forge commands, rendered once at startup (restart after changing PROJECT.md; the main loop checks every pass and warns once per change, #52)
 const DOC = loadProjectDoc();
+const projectDocChanged = projectDocWatcher(() => readFileSync(projectDocPath(), "utf8"));
 const PROMPTS = renderPrompts({ doc: DOC, forgeGuide: forge.agentGuide(), labels: LABEL, language: project.language });
 const APPEND_ONLY: ReadonlySet<string> = new Set(project.appendOnlyFiles);
 
@@ -2082,6 +2083,7 @@ for (let pass = 1; ; pass++) {
   // 每轮读一次 .sandcastle/models.json，不管有没有空位：改了配置不用重启，下一轮生效（#43：空位全满时也要读）。
   // Read .sandcastle/models.json every pass whether or not a slot is free: config changes apply next pass without a restart (#43: read even when every slot is taken).
   reloadModels();
+  if (projectDocChanged()) console.warn(t("  ⚠ .sandcastle/PROJECT.md 已变更，需重启 sandpipe 才生效", "  ⚠ .sandcastle/PROJECT.md changed; restart sandpipe for it to take effect"));
   if (busy() < MAX_PARALLEL) {
     const now = new Date().toLocaleString();
     console.log(t(`\n=== 调度 ${pass}（${now}，${busy()}/${MAX_PARALLEL} 个空位已占）===\n`, `\n=== Pass ${pass} (${now}, ${busy()}/${MAX_PARALLEL} slots taken) ===\n`));

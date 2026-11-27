@@ -11,6 +11,7 @@
 // and given to sandcastle's promptFile. Parameters known only at run time (TASK_ID, BRANCH…) still go through promptArgs, replaced upstream.
 // Why inject instead of letting the agent read PROJECT.md: each phase needs only a few sections, and injecting guarantees they are read without spending extra context.
 
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -143,11 +144,39 @@ export function parseProjectDoc(md: string, file = PROJECT_DOC): ProjectDoc {
   return doc;
 }
 
-/** 读配置目录（见 configDir）里的 PROJECT.md。 / Read PROJECT.md from the config directory (see configDir). */
+/** 配置目录（见 configDir）里 PROJECT.md 的路径。 / Path of PROJECT.md in the config directory (see configDir). */
+export const projectDocPath = (dir = configDir()) => join(dir, PROJECT_DOC);
+
+/** 读配置目录里的 PROJECT.md。 / Read PROJECT.md from the config directory. */
 export function loadProjectDoc(dir = configDir()): ProjectDoc {
-  const file = join(dir, PROJECT_DOC);
+  const file = projectDocPath(dir);
   if (!existsSync(file)) throw new Error(t(`找不到 ${file}：先跑 sandpipe onboard 生成，或按 templates/.sandcastle/PROJECT.md 写一份`, `${file} not found: run sandpipe onboard, or write one following templates/.sandcastle/PROJECT.md`));
   return parseProjectDoc(readFileSync(file, "utf8"), file);
+}
+
+/**
+ * 提示词启动时渲染一次，运行中改 PROJECT.md 不生效（不热加载：正在跑的会话已经读过渲染好的文件）。
+ * 返回的函数每轮调度调一次：内容和启动时不同、且和上一轮看到的也不同时返回 true，调用方据此警告「需重启」；
+ * 改回启动时的内容不报，读取出错（文件被删）返回 false、不抛错（#52）。
+ * Prompts are rendered once at startup; editing PROJECT.md mid-run has no effect (no hot reload: running sessions already read the rendered files).
+ * Call the returned function once per pass: it returns true when the content differs from startup and from what the previous call saw,
+ * so the caller can warn "restart needed"; reverting to the startup content isn't reported, and a read error (file deleted) returns false without throwing (#52).
+ */
+export function projectDocWatcher(read: () => string): () => boolean {
+  const hash = (s: string) => createHash("sha256").update(s).digest("hex");
+  const initial = hash(read());
+  let last = initial;
+  return () => {
+    let now: string;
+    try {
+      now = hash(read());
+    } catch {
+      return false;
+    }
+    const changed = now !== initial && now !== last;
+    last = now;
+    return changed;
+  };
 }
 
 // ---- 提示词渲染 ---- / Prompt rendering

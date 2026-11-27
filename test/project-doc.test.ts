@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { githubForge } from "../src/forges/github.ts";
 import { DEFAULT_LABELS } from "../src/profile.ts";
-import { parseProjectDoc, PROMPT_NAMES, readPromptSource, renderPrompts, renderTemplate } from "../src/project-doc.ts";
+import { parseProjectDoc, projectDocWatcher, PROMPT_NAMES, readPromptSource, renderPrompts, renderTemplate } from "../src/project-doc.ts";
 
 const crmDoc = readFileSync(new URL("../examples/duckdb_crm/PROJECT.md", import.meta.url), "utf8");
 const templateDoc = readFileSync(new URL("../templates/.sandcastle/PROJECT.md", import.meta.url), "utf8");
@@ -136,5 +136,54 @@ describe("进度评论第一行跟随项目语言", () => {
     const en = render(minimal(), "en").implement;
     expect(en).toContain("第一行写 `Model profile: <档案名>`");
     expect(en).not.toContain("模型档案：");
+  });
+});
+
+describe("projectDocWatcher：运行中改了 PROJECT.md 只提醒一次（#52）", () => {
+  it("内容不变返回 false", () => {
+    const changed = projectDocWatcher(() => "原文");
+    expect(changed()).toBe(false);
+    expect(changed()).toBe(false);
+  });
+
+  it("改了返回 true，下一轮没再变返回 false，又改了再返回 true", () => {
+    let text = "原文";
+    const changed = projectDocWatcher(() => text);
+    text = "改一";
+    expect(changed()).toBe(true);
+    expect(changed()).toBe(false);
+    text = "改二";
+    expect(changed()).toBe(true);
+    expect(changed()).toBe(false);
+  });
+
+  it("改回启动时的内容返回 false", () => {
+    let text = "原文";
+    const changed = projectDocWatcher(() => text);
+    text = "改一";
+    expect(changed()).toBe(true);
+    text = "原文";
+    expect(changed()).toBe(false);
+  });
+
+  it("改回原文后再改成报过的内容，算一次新的修改，再报一次", () => {
+    let text = "原文";
+    const changed = projectDocWatcher(() => text);
+    text = "改一";
+    expect(changed()).toBe(true);
+    text = "原文";
+    expect(changed()).toBe(false);
+    text = "改一";
+    expect(changed()).toBe(true);
+  });
+
+  it("read 抛错（文件被删）返回 false，不抛错", () => {
+    let gone = false;
+    const changed = projectDocWatcher(() => {
+      if (gone) throw new Error("ENOENT");
+      return "原文";
+    });
+    gone = true;
+    expect(changed()).toBe(false);
   });
 });

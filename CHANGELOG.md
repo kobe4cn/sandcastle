@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 运行中改了 `.sandcastle/PROJECT.md` 终端会提醒了：提示词只在启动时渲染，改它要重启 sandpipe 才生效，之前没有任何提示，容易以为已经生效（`models.json` 是每轮热加载的）。现在主循环每轮比一次 PROJECT.md 的内容哈希，变了打一行「⚠ .sandcastle/PROJECT.md 已变更，需重启 sandpipe 才生效」，同一次修改只打一次，改回原样或文件被删不打。不做热加载（纯函数 `projectDocWatcher`，`src/project-doc.ts`）（closes #52）
 - 门槛失败后的 fix 会话不再自己跑完整门槛：提示词改成只单独跑失败的测试文件和类型检查确认变绿，完整门槛由编排器在会话结束后跑。之前 agent 按提示自己跑一遍完整门槛（长项目近一小时），编排器再跑一遍，门槛时间翻倍；一条阻塞命令跑完整门槛还可能超过 agent 空闲超时，会话被杀、票打成 stuck。这次只改提示词，空闲超时本身没有加兜底（closes #51）
 - 评审已通过、门槛跑到一半时进程中断，重启后不再从 implement 重做：review 给出 merge 后、跑门槛前，票上打 `sandcastle:reviewed`（流水线第一次用到时自己建，`doctor --fix` 也会建），另发一条 `<!-- sandcastle:reviewed@<sha> -->` 开头的评论，存评审摘要、修改轮次和 browser-check。重启后（或门槛撞临时错误重跑 build 时）worktree 的 HEAD 还是这个 sha，就打「↻ 接着上次：#n 评审已过，直接跑门槛」，跳过 implement / review；PR 的用量表和预算一行取 `usage.jsonl` 里这张票的 implement / review / revise 记录。HEAD 变了就去掉标签、正常重做。落地开头不论成败都去掉这个标签，人用 `/sandcastle` 打回后会重新实现。纯函数在新文件 `src/resume-state.ts`（closes #49）
 - 全部档案撞限额等待时票上看得出来了：一个阶段的档案全都撞上用量限额、票进入等待时，在票上发一条评论，写明阶段、档案名和预计恢复时间（运行机器的本地时间），带标记 `<!-- sandcastle:limited -->`。同一次等待（醒来再撞、认不出重置时间每 30 分钟重来）只发一条；票上最后一条评论已经是它时不再发，重启后不重复；成功跑完后下次再撞会重新发。单个 Claude 限额报错和已关的票不发，发评论失败只打一行警告、照样等待。prep 不等限额，不发（closes #48）
