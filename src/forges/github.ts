@@ -111,10 +111,19 @@ export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefin
       const raw = JSON.parse(
         gh([
           "issue", "list", "--state", "open", "--limit", "200",
-          ...labels.flatMap((label) => ["--label", label]), "--json", "number,title,body,labels,updatedAt",
+          ...labels.flatMap((label) => ["--label", label]), "--json", "number,title,body,labels,updatedAt,author",
         ]),
-      ) as (Omit<ForgeIssue, "labels"> & { labels: { name: string }[] })[];
-      return raw.map((i) => ({ ...i, labels: i.labels.map((l) => l.name) }));
+      ) as (Omit<ForgeIssue, "labels" | "author"> & { labels: { name: string }[]; author: { login?: string; is_bot?: boolean } | null })[];
+      // 作者账号删了时 author 为空：按 GitHub 的写法当成 ghost（查权限 404 → 不可信）
+      // A deleted author's account leaves author empty: treat it as ghost, as GitHub does (permission lookup 404s → untrusted)
+      return raw.map((i) => ({
+        ...i,
+        labels: i.labels.map((l) => l.name),
+        author: { login: i.author?.login || "ghost", bot: i.author?.is_bot === true },
+      }));
+    },
+    repoPermission(login) {
+      return gh(["api", `repos/{owner}/{repo}/collaborators/${login}/permission`, "--jq", ".permission"]);
     },
     listClosedIssueNumbers(label) {
       return lines(gh(["issue", "list", "--state", "closed", "--label", label, "--limit", "100", "--json", "number", "--jq", ".[].number"])).map(Number);

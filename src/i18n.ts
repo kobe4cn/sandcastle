@@ -150,6 +150,10 @@ const zh = {
   stuck: (reason: string) => `Sandcastle 停下了：${reason}`,
   missingBlocker: (blockers: string, stuckLabel: string) =>
     `\`## Blocked by\` 里的 ${blockers} 在本仓库查不到（票号写错，或者是从别的仓库复制来的）。改正 Blocked by 或者删掉这一行，然后去掉 ${stuckLabel} 就能继续。`,
+  untrustedAuthor: (login: string, triage: string, trusted: string) =>
+    `这张票的作者 @${login} 对本仓库没有写权限，Sandcastle 不会 prep 或实现它。有写权限的人看过、确认可以交给 Sandcastle 后，打上 \`${trusted}\`、去掉 \`${triage}\` 就会照常调度。`,
+  needsTriageLabelDesc: "票的作者没有写权限，等有写权限的人确认",
+  trustedLabelDesc: "有写权限的人确认过这张票可以交给 Sandcastle",
   sandboxError: (err: string) => `沙箱出错：${err}`,
   podmanDown: (err: string) => `podman 连不上（重试多次仍失败）：${err}`,
   gateEnvDown: (line: string, stuckLabel: string) => `门槛依赖的服务连不上（\`${line}\`），重试用完仍未恢复。先把服务起来，再去掉 ${stuckLabel}。`,
@@ -337,6 +341,10 @@ const en: Messages = {
   stuck: (reason) => `Sandcastle stopped: ${reason}`,
   missingBlocker: (blockers, stuckLabel) =>
     `${blockers} in \`## Blocked by\` can't be found in this repository (a mistyped number, or copied from another repository). Fix Blocked by or delete that line, then remove ${stuckLabel} to continue.`,
+  untrustedAuthor: (login, triage, trusted) =>
+    `This ticket's author @${login} doesn't have write access to this repository, so Sandcastle won't prep or implement it. Once someone with write access has reviewed it and confirmed it can go to Sandcastle, add \`${trusted}\` and remove \`${triage}\`, and it will be scheduled as usual.`,
+  needsTriageLabelDesc: "Ticket author lacks write access; waiting for a maintainer",
+  trustedLabelDesc: "A maintainer confirmed this ticket can go to Sandcastle",
   sandboxError: (err) => `sandbox error: ${err}`,
   podmanDown: (err) => `podman unreachable (still failing after several retries): ${err}`,
   gateEnvDown: (line, stuckLabel) => `A service the gate depends on is unreachable (\`${line}\`) and still wasn't back after the retries. Bring the service up, then remove ${stuckLabel}.`,

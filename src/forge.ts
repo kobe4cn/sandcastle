@@ -11,6 +11,8 @@
 // Issue and PR numbers are always strings (no #); host-specific notation (GitLab's MR is `!n`) is handled by the implementation.
 // To add a host: implement this interface, put it in forges/, register it in forges/index.ts; the contract tests are in test/forge-github.test.ts.
 
+import type { Author } from "./trust.ts";
+
 export type ForgeIssue = {
   number: number;
   title: string;
@@ -18,6 +20,8 @@ export type ForgeIssue = {
   labels: string[];
   /** ISO 时间。prep 靠它判断「issue 自上次 prep 以来有没有变」。 / ISO time. prep uses it to tell whether the issue changed since the last prep. */
   updatedAt: string;
+  /** 开票的人；bot 是机器人账号（GitHub App 等）。 / Who opened the ticket; bot marks a bot account (GitHub App etc.). */
+  author: Author;
 };
 
 /** 一个 PR / MR 在 Sandcastle 里需要知道的东西。 / What Sandcastle needs to know about a PR / MR. */
@@ -72,6 +76,11 @@ export interface Forge {
   // ---- issue ----
   /** 带全部 labels 的 open issue。必须用实时接口，不能用有延迟的搜索索引（刚打上的标签要立刻查得到）。 */
   listOpenIssues(labels: string[]): ForgeIssue[];
+  /**
+   * 某个登录名在当前仓库的权限：admin / write / read / none（maintain 映射成 write，triage 映射成 read）。用户不存在等 404 时抛错。
+   * A login's permission on the current repo: admin / write / read / none (maintain maps to write, triage to read). Throws on 404 (e.g. no such user).
+   */
+  repoPermission(login: string): string;
   /** 带 label 的已关闭 issue 的编号。 / Numbers of closed issues with the label. */
   listClosedIssueNumbers(label: string): number[];
   /** 正文含 `## Split into`、且不带 withoutLabel 的 open issue（拆过的父票）。 */

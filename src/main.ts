@@ -104,6 +104,7 @@ import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { loadProjectDoc, projectDocPath, projectDocWatcher, renderPrompts } from "./project-doc.ts";
 import { type BrowserCheck, browserSetupWarning, browserVerdict, pageFiles, ticketHasBrowserCheck } from "./browser-gate.ts";
 import { allowedProtected, allowedSection, protectedBlock } from "./protected-paths.ts";
+import { createTrust, needsHold } from "./trust.ts";
 import { detectProject } from "./detect.ts";
 import { probeTcp, servicesProblem } from "./preflight.ts";
 import { manual } from "./onboard.ts";
@@ -442,6 +443,9 @@ type ListedIssue = ForgeIssue;
 const listIssues = (include: string[], exclude: string[] = []): ListedIssue[] =>
   forge.listOpenIssues(include).filter((issue) => !issue.labels.some((label) => exclude.includes(label)));
 
+/** 票作者可不可信（查权限按登录名缓存 1 小时，见 trust.ts）。 / Whether a ticket's author is trusted (permission lookups cached per login for an hour; see trust.ts). */
+const isTrustedAuthor = createTrust({ permission: (l) => forge.repoPermission(l), trustedAuthors: project.trustedAuthors });
+
 // ---------------------------------------------------------------------------
 // Plan：确定性计算，不交给 agent（planner agent 曾把「同文件只留编号小的」比反）
 // Plan: deterministic, not left to an agent (a planner agent once inverted "keep the lower number when files clash")
@@ -487,6 +491,47 @@ function stuckOnMissing(issue: { number: number }, missing: number[]) {
   );
   const r = attempt(() => markStuck(String(issue.number), M.missingBlocker(M.list(refs), LABEL.stuck)));
   if (!r.ok) console.warn(t(`  ⚠ #${issue.number} 打 ${LABEL.stuck} 失败：`, `  ⚠ Labelling #${issue.number} ${LABEL.stuck} failed: `) + r.out.slice(0, 200));
+}
+
+/**
+ * 作者不可信、又没有 trusted 标签的票：打 needs-triage、评论一次，返回 true 表示已挡住（调用方 continue）。
+ * 打了 needs-triage 的票下次从候选里排除，所以不会重复评论。quiet 时只跳过，不打标签、不评论。
+ * 查权限出错只警告、这一轮跳过，不打标签。
+ * Tickets whose author isn't trusted and that lack the trusted label: label needs-triage and comment once; returns true when held (the caller continues).
+ * Tickets labelled needs-triage are excluded from candidates next time, so the comment isn't repeated. When quiet, only skip: no label, no comment.
+ * A failed permission lookup only warns and skips the ticket this pass, without labelling it.
+ */
+function holdUntrusted(issue: ListedIssue, quiet = false): boolean {
+  const check = attempt(() => needsHold(issue, LABEL.trusted, isTrustedAuthor));
+  if (!check.ok) {
+    if (!quiet)
+      console.warn(
+        t(`  ⚠ 跳过 #${issue.number}：查作者 ${issue.author.login} 的权限失败：`, `  ⚠ Skipping #${issue.number}: looking up author ${issue.author.login}'s permission failed: `) +
+          check.out.slice(0, 200),
+      );
+    return true;
+  }
+  if (!check.value) return false;
+  if (quiet) return true;
+  console.log(
+    t(
+      `  跳过 #${issue.number}：作者 ${issue.author.login} 没有写权限，打 ${LABEL.needsTriage} 等人确认`,
+      `  Skipping #${issue.number}: author ${issue.author.login} lacks write access; labelling ${LABEL.needsTriage} for a maintainer to confirm`,
+    ),
+  );
+  attempt(() => forge.ensureLabel(LABEL.needsTriage, "d876e3", M.needsTriageLabelDesc));
+  attempt(() => forge.ensureLabel(LABEL.trusted, "0e8a16", M.trustedLabelDesc));
+  // 先打标签再评论：标签没打上就不评论（下一轮重来），免得每轮重复评论；评论失败只警告，不再补。
+  // Label first, then comment: no comment when labelling fails (retried next pass), so comments never repeat; a failed comment only warns and isn't retried.
+  const id = String(issue.number);
+  const labelled = attempt(() => forge.addLabel(id, LABEL.needsTriage));
+  if (!labelled.ok) {
+    console.warn(t(`  ⚠ #${issue.number} 打 ${LABEL.needsTriage} 失败：`, `  ⚠ Labelling #${issue.number} ${LABEL.needsTriage} failed: `) + labelled.out.slice(0, 200));
+    return true;
+  }
+  const commented = attempt(() => forge.commentIssue(id, M.untrustedAuthor(issue.author.login, LABEL.needsTriage, LABEL.trusted)));
+  if (!commented.ok) console.warn(t(`  ⚠ #${issue.number} 评论失败：`, `  ⚠ Commenting on #${issue.number} failed: `) + commented.out.slice(0, 200));
+  return true;
 }
 
 /**
@@ -604,7 +649,7 @@ async function cleanupClosedIssues() {
 function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue[] {
   const log = quiet ? () => {} : console.log;
   const warn = quiet ? () => {} : console.warn;
-  const candidates = listIssues([LABEL.picked, LABEL.prepped], [LABEL.prOpen, LABEL.stuck]);
+  const candidates = listIssues([LABEL.picked, LABEL.prepped], [LABEL.prOpen, LABEL.stuck, LABEL.needsTriage]);
   // 等人审的 PR 还没合进 main：它们改的文件先占上，免得新票在旧 main 上改同一个文件，两个 PR 互相冲突。
   // PRs under review aren't in main yet: claim their files first, so a new ticket doesn't change the same file on an old main and make the two PRs conflict.
   const waiting = listIssues([LABEL.picked, LABEL.prOpen]);
@@ -622,6 +667,7 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
   }
   const picked: Issue[] = [];
   for (const issue of candidates.filter((c) => allowed(c.number) && !running.has(String(c.number)) && !merging(c)).sort(byUrgency)) {
+    if (holdUntrusted(issue, quiet)) continue;
     const missing = missingBlockers(issue.body);
     if (missing.length > 0) {
       if (!quiet) stuckOnMissing(issue, missing); // quiet 时只跳过，不打 stuck / when quiet, only skip, don't label stuck
@@ -2099,7 +2145,7 @@ async function schedule(): Promise<ScheduleResult> {
   // skipped tickets stay in toPrep, so the "new children were split off" check below doesn't count them as new.
   // Usage limits aren't waited out here (that would hold the host lock and block finished tickets from landing): stop this prep and let the main loop decide how long to wait.
   // Ascending number order, matching plan: older tickets (usually blockers of later ones) are prepped and started first.
-  const toPrep = listIssues([LABEL.picked], [LABEL.prepped, LABEL.prOpen, LABEL.stuck])
+  const toPrep = listIssues([LABEL.picked], [LABEL.prepped, LABEL.prOpen, LABEL.stuck, LABEL.needsTriage])
     .filter((issue) => allowed(issue.number))
     .sort(byUrgency);
   let prepLimitedUntil: number | undefined;
@@ -2113,6 +2159,7 @@ async function schedule(): Promise<ScheduleResult> {
       console.log(t(`  已有 ${slots} 张可开工的票，先开工；其余票下次调度再 prep`, `  ${slots} ticket(s) ready to start, starting them first; the rest are prepped next pass`));
       break;
     }
+    if (holdUntrusted(issue)) continue;
     const missing = missingBlockers(issue.body);
     if (missing.length > 0) {
       stuckOnMissing(issue, missing);

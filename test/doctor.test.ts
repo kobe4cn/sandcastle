@@ -52,7 +52,7 @@ function fakeGh(
     if (args[0] === "issue" && args[1] === "list") {
       if (tickets.listError) throw new Error("issue list 超时");
       return JSON.stringify(
-        (tickets.issues ?? []).map((i) => ({ ...i, title: `票 ${i.number}`, labels: [{ name: "Sandcastle" }], updatedAt: "2026-11-26T00:00:00Z" })),
+        (tickets.issues ?? []).map((i) => ({ ...i, title: `票 ${i.number}`, labels: [{ name: "Sandcastle" }], updatedAt: "2026-11-26T00:00:00Z", author: { login: "alice", is_bot: false } })),
       );
     }
     if (args[0] === "issue" && args[1] === "view") {

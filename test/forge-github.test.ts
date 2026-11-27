@@ -14,15 +14,29 @@ function fakeGh(...outputs: string[]) {
 }
 
 describe("githubForge 发给 gh 的参数", () => {
-  it("listOpenIssues 用 --label（实时接口），标签名摊平成字符串", () => {
-    const { forge, calls } = fakeGh(JSON.stringify([{ number: 7, title: "t", body: "b", labels: [{ name: "Sandcastle" }], updatedAt: "u" }]));
+  it("listOpenIssues 用 --label（实时接口），标签名摊平成字符串，作者归一成 login / bot", () => {
+    const { forge, calls } = fakeGh(
+      JSON.stringify([
+        { number: 7, title: "t", body: "b", labels: [{ name: "Sandcastle" }], updatedAt: "u", author: { id: "x", is_bot: false, login: "alice", name: "A" } },
+        { number: 8, title: "t", body: "b", labels: [], updatedAt: "u", author: { login: "app/sandcastle", is_bot: true } },
+        { number: 9, title: "t", body: "b", labels: [], updatedAt: "u", author: null },
+      ]),
+    );
     expect(forge.listOpenIssues(["Sandcastle", "sandcastle:prepped"])).toEqual([
-      { number: 7, title: "t", body: "b", labels: ["Sandcastle"], updatedAt: "u" },
+      { number: 7, title: "t", body: "b", labels: ["Sandcastle"], updatedAt: "u", author: { login: "alice", bot: false } },
+      { number: 8, title: "t", body: "b", labels: [], updatedAt: "u", author: { login: "app/sandcastle", bot: true } },
+      { number: 9, title: "t", body: "b", labels: [], updatedAt: "u", author: { login: "ghost", bot: false } },
     ]);
     expect(calls[0]).toEqual([
       "issue", "list", "--state", "open", "--limit", "200",
-      "--label", "Sandcastle", "--label", "sandcastle:prepped", "--json", "number,title,body,labels,updatedAt",
+      "--label", "Sandcastle", "--label", "sandcastle:prepped", "--json", "number,title,body,labels,updatedAt,author",
     ]);
+  });
+
+  it("repoPermission 查协作者权限接口", () => {
+    const { forge, calls } = fakeGh("write");
+    expect(forge.repoPermission("alice")).toBe("write");
+    expect(calls).toEqual([["api", "repos/{owner}/{repo}/collaborators/alice/permission", "--jq", ".permission"]]);
   });
 
   it("listClosedIssueNumbers / listSplitParents", () => {
