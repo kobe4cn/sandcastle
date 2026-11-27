@@ -28,8 +28,10 @@ export function protectedHits(changed: string[], rules: RegExp[]): ProtectedHit[
 
 /**
  * 票的实现指引（`## Implementation guide` 一节）里 `- **Protected**` 列表项允许改的路径：取项里每个反引号的内容（相对仓库根，`/` 结尾表示目录）。
+ * 内容可以带空格；开头的 `./`、`/` 去掉（diff 里的路径不带它们），去掉后为空的（如 `/`）丢弃，免得空前缀放行所有文件。
  * 只认这一项，不认正文其它地方的说法，免得 agent 或外部内容随口放行（docs/adr/0003-protected-paths.md）。
  * Paths the ticket's implementation guide (the `## Implementation guide` section) allows via the `- **Protected**` list item: the content of each backtick span in it (relative to the repo root; a trailing `/` means a directory).
+ * Spaces are allowed; a leading `./` or `/` is stripped (diff paths don't have them), and entries left empty (like `/`) are dropped so an empty prefix can't allow every file.
  * Only that item counts, not wording elsewhere in the body, so an agent or outside content can't wave changes through (docs/adr/0003-protected-paths.md).
  */
 export function allowedProtected(body: string): string[] {
@@ -37,11 +39,13 @@ export function allowedProtected(body: string): string[] {
   return guide
     .split("\n")
     .filter((line) => /^\s*[-*]\s*\*\*Protected\*\*/.test(line))
-    .flatMap((line) => [...line.matchAll(/`([^`\s]+)`/g)].map((m) => m[1]!));
+    .flatMap((line) => [...line.matchAll(/`([^`]+)`/g)].map((m) => m[1]!.trim().replace(/^(\.?\/)+/, "")))
+    .filter((p) => p !== "");
 }
 
 /** 文件是否被某条允许项覆盖：`/` 结尾按目录前缀，否则全等。 / Whether an allowed entry covers the file: a trailing `/` is a directory prefix, otherwise exact match. */
-const isAllowed = (file: string, allowed: string[]) => allowed.some((a) => (a.endsWith("/") ? file.startsWith(a) : file === a));
+const covers = (a: string, file: string) => (a.endsWith("/") ? file.startsWith(a) : file === a);
+const isAllowed = (file: string, allowed: string[]) => allowed.some((a) => covers(a, file));
 
 /**
  * 把命中分成票允许的和仍要挡的，各自保持原顺序。
@@ -56,23 +60,28 @@ export function splitAllowed(hits: ProtectedHit[], allowed: string[]): { blocked
 
 /**
  * 受保护路径挡不挡自动合并：没配规则 → undefined（不挡）；配了规则但 changed 为 undefined（取不到 diff）→ 按命中处理（fail-closed）；
- * 去掉票允许的（allowed，见 allowedProtected）后还有命中 → 逐条列出的原因；都没命中 → undefined。
+ * 去掉票允许的（allowed，见 allowedProtected）后还有命中 → 逐条列出的原因，有放行项一个命中都没覆盖时附上提示（多半是路径写错）；都没命中 → undefined。
  * Whether protected paths block auto-merge: no rules → undefined (no block); rules configured but changed is undefined (diff unreadable) → treated as a hit (fail-closed);
- * hits left after dropping the ones the ticket allows (allowed, see allowedProtected) → the reason listing each one; nothing left → undefined.
+ * hits left after dropping the ones the ticket allows (allowed, see allowedProtected) → the reason listing each one, plus a hint when some allowed entries cover no hit (most likely a mistyped path); nothing left → undefined.
  */
 export function protectedBlock(changed: string[] | undefined, rules: RegExp[], m: Messages, allowed: string[] = []): string | undefined {
   if (rules.length === 0) return undefined;
   if (changed === undefined) return m.reasonProtectedUnknown;
-  const { blocked } = splitAllowed(protectedHits(changed, rules), allowed);
-  return blocked.length > 0 ? m.reasonProtected(blocked) : undefined;
+  const hits = protectedHits(changed, rules);
+  const { blocked } = splitAllowed(hits, allowed);
+  if (blocked.length === 0) return undefined;
+  const unmatched = allowed.filter((a) => !hits.some((h) => covers(a, h.file)));
+  return m.reasonProtected(blocked) + (unmatched.length > 0 ? m.protectedAllowedUnmatched(unmatched) : "");
 }
 
 /**
  * PR 正文 `## Protected paths` 一节的内容：票允许的命中逐条「文件 — 规则（ticket allowed）」；没有（含没配规则、取不到 diff）时 undefined，不放这一节。
+ * except 里的文件不列：rebase 解冲突后只补报 rebase 前没有的那些（rebase 前的已在 PR 里标过）。
  * Content of the PR body's `## Protected paths` section: each ticket-allowed hit as "file — rule (ticket allowed)"; undefined when there are none (including no rules or an unreadable diff), so the section is omitted.
+ * Files in except are left out: after rebase conflict resolution only the ones not there before the rebase are reported (the earlier ones are already flagged in the PR).
  */
-export function allowedSection(changed: string[] | undefined, rules: RegExp[], allowed: string[], m: Messages): string | undefined {
+export function allowedSection(changed: string[] | undefined, rules: RegExp[], allowed: string[], m: Messages, except: string[] = []): string | undefined {
   if (changed === undefined) return undefined;
-  const hits = splitAllowed(protectedHits(changed, rules), allowed).allowed;
+  const hits = splitAllowed(protectedHits(changed, rules), allowed).allowed.filter((h) => !except.includes(h.file));
   return hits.length > 0 ? m.protectedAllowed(hits) : undefined;
 }

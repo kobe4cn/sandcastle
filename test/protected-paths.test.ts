@@ -75,6 +75,10 @@ describe("allowedProtected：票的实现指引里 `- **Protected**` 项允许�
     const body = "## What to build\n\n- **Protected**: `a.yml`\n\n## Implementation guide\n\n- **Change**: `src/a.ts`\n\n## Notes\n\n- **Protected**: `b.yml`\n";
     expect(allowedProtected(body)).toEqual([]);
   });
+  it("路径里可以有空格；开头的 ./ 和 / 去掉；去掉后为空的不算", () => {
+    const body = "## Implementation guide\n\n- **Protected**: `docs/my file.md`, `./migrations/`, `/.github/ci.yml`, `/`, `./`\n";
+    expect(allowedProtected(body)).toEqual(["docs/my file.md", "migrations/", ".github/ci.yml"]);
+  });
   it("别的列表项里提到 Protected 不算", () => {
     expect(allowedProtected("## Implementation guide\n\n- **Watch out**: **Protected** `a.yml` 不要改\n")).toEqual([]);
   });
@@ -104,6 +108,15 @@ describe("protectedBlock 带票允许的路径", () => {
       zh.reasonProtected([{ file: ".github/b.yml", rule: "/^\\.github\\//" }]),
     );
   });
+  it("挡住时提示没匹配上任何命中的放行项", () => {
+    const reason = protectedBlock([".github/b.yml"], rules, zh, ["github/", ".github/a.yml"]);
+    expect(reason).toBe(`${zh.reasonProtected([{ file: ".github/b.yml", rule: "/^\\.github\\//" }])}${zh.protectedAllowedUnmatched(["github/", ".github/a.yml"])}`);
+    expect(zh.protectedAllowedUnmatched(["github/"])).toContain("`github/`");
+    expect(messages("en").protectedAllowedUnmatched(["github/"])).toContain("`github/`");
+  });
+  it("放行项都匹配上了别的命中：不提示", () => {
+    expect(protectedBlock([".github/a.yml", ".github/b.yml"], rules, zh, [".github/a.yml"])).not.toContain(zh.protectedAllowedUnmatched([".github/a.yml"]));
+  });
   it("取不到 diff：允许了也按命中处理", () => {
     expect(protectedBlock(undefined, rules, zh, [".github/"])).toBe(zh.reasonProtectedUnknown);
   });
@@ -116,6 +129,12 @@ describe("allowedSection：PR 正文 Protected paths 一节", () => {
       "- `.github/a.yml` — `/^\\.github\\//`（ticket allowed）",
     );
     expect(allowedSection([".github/a.yml"], rules, [".github/"], messages("en"))).toBe("- `.github/a.yml` — `/^\\.github\\//` (ticket allowed)");
+  });
+  it("except 里的文件不再列（rebase 前已在 PR 里标过）", () => {
+    expect(allowedSection([".github/a.yml", ".github/b.yml"], rules, [".github/"], messages("zh"), [".github/a.yml"])).toBe(
+      "- `.github/b.yml` — `/^\\.github\\//`（ticket allowed）",
+    );
+    expect(allowedSection([".github/a.yml"], rules, [".github/"], messages("zh"), [".github/a.yml"])).toBeUndefined();
   });
   it("没有被允许的命中、没配规则或取不到 diff：undefined", () => {
     expect(allowedSection([".github/a.yml"], rules, [], messages("zh"))).toBeUndefined();

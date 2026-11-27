@@ -1228,6 +1228,10 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     const oldHead = await sandboxHead(sandbox);
     const mergeBase = await sandbox.exec(`git merge-base ${BASE_REF} HEAD`).catch(() => undefined);
     const oldBase = mergeBase?.exitCode === 0 ? mergeBase.stdout.trim() : "";
+    // rebase 前改了哪些文件：解冲突后只补报新出现的票放行命中，rebase 前的已在 PR 里标过（#76）。只在票有放行项时取。
+    // Which files changed before the rebase: after conflict resolution only newly appearing ticket-allowed hits are reported, the earlier ones are already flagged in the PR (#76). Only read when the ticket has allowed entries.
+    const allowProtected = issue.allowProtected ?? [];
+    const changedBefore = project.protectedPaths.length > 0 && allowProtected.length > 0 ? await ticketDiffFiles(sandbox) : undefined;
     const rebase = await sandbox.exec(`git rebase ${BASE_REF}`);
     const conflicted = rebase.exitCode !== 0;
     const chainBroken = !conflicted && (await sandbox.exec(INTEGRITY_OK)).exitCode !== 0;
@@ -1293,12 +1297,17 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     // 不起 agent 的快速路径不查：diff 的文件集合没变，land 已查过（docs/adr/0003-protected-paths.md）。
     // With protected paths configured: resolving conflicts may touch new files, so re-read the diff in the sandbox and check again before pushing; an unreadable diff counts as a hit (fail-closed).
     // The fast path without an agent isn't checked: the set of changed files is unchanged and land already checked it (docs/adr/0003-protected-paths.md).
+    // 票放行的命中不挡，但 rebase 前没有的那些在 push 后补一条 PR 评论（#76）。
+    // Ticket-allowed hits don't block, but the ones not there before the rebase get a PR comment after the push (#76).
+    let allowedAfterRebase: string | undefined;
     if ((conflicted || chainBroken) && project.protectedPaths.length > 0) {
-      const block = protectedBlock(await ticketDiffFiles(sandbox), project.protectedPaths, M, issue.allowProtected ?? []);
+      const changedAfter = await ticketDiffFiles(sandbox);
+      const block = protectedBlock(changedAfter, project.protectedPaths, M, allowProtected);
       if (block) {
         console.log(t(`  ◐ #${issue.id} rebase 后受保护路径检查没通过，不 push`, `  ◐ #${issue.id} protected-path check failed after the rebase; not pushing`));
         return { ok: false, reason: block };
       }
+      allowedAfterRebase = allowedSection(changedAfter, project.protectedPaths, allowProtected, M, changedBefore ?? []);
     }
 
     if (rebaseNeedsReReview({ conflicted, chainBroken, merge })) {
@@ -1317,6 +1326,12 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
 
     await host.reacquire();
     await gitRemoteOrThrow(["push", "--force-with-lease", REMOTE, issue.branch]);
+    // 评论发不出去不影响合并：放行项本来就不挡，只是少一条记录，打一行警告。
+    // A failed comment doesn't affect the merge: allowed entries never block, it only loses a record; print a warning.
+    if (allowedAfterRebase) {
+      const r = attempt(() => forge.commentPr(pr, M.protectedAllowedAfterRebase(allowedAfterRebase!)));
+      if (!r.ok) console.warn(t(`  ⚠ #${issue.id} rebase 后受保护路径的评论没发出去：${r.out}`, `  ⚠ #${issue.id}: couldn't post the post-rebase protected-path comment: ${r.out}`));
+    }
     // 等检查前先关沙箱、清测试库：等的时候空位已让出，新开的票不该和这张票的资源同时占着。
     // Close the sandbox and drop test resources before waiting for checks: the slot is freed meanwhile, so a newly started ticket shouldn't overlap this ticket's resources.
     if (opened) {

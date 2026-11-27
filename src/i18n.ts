@@ -102,6 +102,11 @@ const zh = {
     `改到了受保护路径（protectedPaths），需要人看过再合并：\n\n${hitLines(hits)}`,
   /** 票的实现指引允许改的受保护路径，PR 正文 Protected paths 一节逐条列出（#76）。 / Protected paths the ticket's implementation guide allows, listed in the PR body's Protected paths section (#76). */
   protectedAllowed: (hits: ProtectedHit[]) => hitLines(hits, "（ticket allowed）"),
+  /** 票的放行项一个命中都没覆盖，附在留 PR 的原因后（#76）。 / The ticket's allowed entries that cover no hit, appended to the leave-for-human reason (#76). */
+  protectedAllowedUnmatched: (entries: string[]) =>
+    `\n\n票的实现指引里这些 \`- **Protected**\` 放行项没匹配上任何命中的文件：${entries.map((e) => `\`${e}\``).join("、")}。路径要相对仓库根，目录以 \`/\` 结尾，文件要与 diff 里的完全相同。`,
+  /** rebase 解冲突后新改到了票放行的受保护路径，PR 补一条评论（#76）。 / Conflict resolution in the rebase touched new ticket-allowed protected paths; a PR comment reports them (#76). */
+  protectedAllowedAfterRebase: (section: string) => `rebase 解冲突后新改到了票放行的受保护路径：\n\n## Protected paths\n\n${section}`,
   /** 配了 protectedPaths 但取不到 diff，按命中处理（fail-closed）。 / protectedPaths is configured but the diff is unavailable; treated as a hit (fail-closed). */
   reasonProtectedUnknown: "取不到这张票的 diff，无法判断是否改了受保护路径（protectedPaths），需要人看过再合并。",
   reasonAutoMergeOff: "项目配置 autoMerge: false（试跑期），reviewer 和门槛都通过，等人合并。",
@@ -291,6 +296,9 @@ const en: Messages = {
   reasonProtected: (hits) =>
     `Protected paths (protectedPaths) were changed; a human needs to look before merging:\n\n${hitLines(hits)}`,
   protectedAllowed: (hits) => hitLines(hits, " (ticket allowed)"),
+  protectedAllowedUnmatched: (entries) =>
+    `\n\nThese \`- **Protected**\` entries in the ticket's implementation guide matched no hit: ${entries.map((e) => `\`${e}\``).join(", ")}. Paths are relative to the repo root, directories end with \`/\`, and files must equal the path in the diff exactly.`,
+  protectedAllowedAfterRebase: (section) => `Resolving the rebase conflicts touched more protected paths the ticket allows:\n\n## Protected paths\n\n${section}`,
   reasonProtectedUnknown: "Couldn't read this ticket's diff, so whether it changes protected paths (protectedPaths) is unknown; a human needs to look before merging.",
   reasonAutoMergeOff: "The project config has autoMerge: false (trial period). Reviewer and gate both passed; waiting for a human to merge.",
   reasonBrowser: (problems) => `Pages changed and the browser check doesn't meet the auto-merge conditions: ${problems} (see the Browser check section of the PR description).`,

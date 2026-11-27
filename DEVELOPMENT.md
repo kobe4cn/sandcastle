@@ -26,7 +26,7 @@
 | `src/forges/github.ts` | GitHub 实现（gh CLI） |
 | `src/merge-checks.ts` | 合并前等 forge 检查（CI）：检查结果归类、带超时的轮询 |
 | `src/browser-gate.ts` | 浏览器验收作为合并的硬条件：哪些改动算改了页面、验收缺什么、留不留 PR |
-| `src/protected-paths.ts` | 受保护路径作为合并关卡：票的 diff 里哪些文件命中 `protectedPaths`、各命中哪条规则、挡不挡合并（取不到 diff 时 fail-closed）；票实现指引 `- **Protected**` 允许的路径（`allowedProtected` / `splitAllowed`）和 PR 正文 Protected paths 一节（`allowedSection`） |
+| `src/protected-paths.ts` | 受保护路径作为合并关卡：票的 diff 里哪些文件命中 `protectedPaths`、各命中哪条规则、挡不挡合并（取不到 diff 时 fail-closed）；票实现指引 `- **Protected**` 允许的路径（`allowedProtected` / `splitAllowed`）和 PR 正文 Protected paths 一节（`allowedSection`，rebase 后补报新命中也用它） |
 | `src/merge-flow.ts` | 合并收尾的编排：等检查（不占空位、放开宿主机锁）→ 合并 → 分支保护 / rebase 补救 → 留 PR；依赖由 main.ts 注入 |
 | `src/profile.ts` | **ProjectProfile**：项目配置（测试隔离、门槛、安装、一致性检查、文案）与默认值 |
 | `src/isolation.ts` | 给 config 的 `isolation.env` / `cleanup` 用的辅助函数（从包入口导出）：读宿主机 env 文件、换宿主机地址、加库名后缀、跑回收脚本 |

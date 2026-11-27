@@ -40,6 +40,17 @@ describe("resolveProject", () => {
     expect(resolveProject({ ...minimal, protectedPaths: [/^\.github\//, /^migrations\//] }).protectedPaths).toEqual([/^\.github\//, /^migrations\//]);
   });
 
+  it("trustedAuthors 不写时为空、写了原样保留", () => {
+    expect(resolveProject(minimal).trustedAuthors).toEqual([]);
+    expect(resolveProject({ ...minimal, trustedAuthors: ["renovate-bot"] }).trustedAuthors).toEqual(["renovate-bot"]);
+  });
+
+  it("needsTriage / trusted 标签默认值，只覆盖一个时另一个取默认值", () => {
+    expect([DEFAULT_LABELS.needsTriage, DEFAULT_LABELS.trusted]).toEqual(["needs-triage", "sandcastle:trusted"]);
+    const p = resolveProject({ ...minimal, labels: { trusted: "ok-to-run" } });
+    expect([p.labels.needsTriage, p.labels.trusted]).toEqual(["needs-triage", "ok-to-run"]);
+  });
+
   it("mergeRequires 只给一个字段时另一个取默认值", () => {
     expect(resolveProject({ ...minimal, mergeRequires: { timeoutMinutes: 10 } }).mergeRequires).toEqual({ checks: "all", timeoutMinutes: 10 });
     expect(resolveProject({ ...minimal, mergeRequires: { checks: "required" } }).mergeRequires).toEqual({ checks: "required", timeoutMinutes: 30 });

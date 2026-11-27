@@ -238,6 +238,12 @@ export interface ProjectProfile {
   protectedPaths?: RegExp[];
 
   /**
+   * 额外视为可信的票作者登录名，例如没装成 GitHub App 的机器人账号。不写时为空。
+   * Extra ticket-author logins to treat as trusted, e.g. bot accounts not installed as a GitHub App. Empty when absent.
+   */
+  trustedAuthors?: string[];
+
+  /**
    * 自动开的票（偶发失败、main 坏了）与内联提示词的正文。不给时用通用版。
    * Bodies of auto-opened tickets (flaky, main broken) and inline prompts. Generic versions when not given.
    */
@@ -266,6 +272,8 @@ export type Labels = {
   mainBroken: string;
   readyForAgent: string;
   readyForHuman: string;
+  needsTriage: string;
+  trusted: string;
 };
 
 export const DEFAULT_LABELS: Labels = {
@@ -280,6 +288,8 @@ export const DEFAULT_LABELS: Labels = {
   mainBroken: "sandcastle:main-broken", // main 上的兜底完整测试失败，脚本自动开票；调度和 prep 时排最前
   readyForAgent: "ready-for-agent",
   readyForHuman: "ready-for-human",
+  needsTriage: "needs-triage", // 票作者没有写权限，等人确认（脚本自动建标签）
+  trusted: "sandcastle:trusted", // 有写权限的人确认过这张票可以做（脚本自动建标签）
 };
 
 /** 项目配置文件里用：只做类型检查，原样返回。 / For project config files: type checking only, returns its argument unchanged. */
@@ -307,6 +317,7 @@ export type Project = Required<
   acceptancePrep?(branch: string): string;
   browser: { pagePaths: RegExp[] };
   protectedPaths: RegExp[];
+  trustedAuthors: string[];
   texts: Required<NonNullable<ProjectProfile["texts"]>>;
 };
 
@@ -340,6 +351,7 @@ export function resolveProject(p: ProjectProfile): Project {
     acceptancePrep: p.acceptancePrep,
     browser: { pagePaths: p.browser?.pagePaths ?? [] },
     protectedPaths: p.protectedPaths ?? [],
+    trustedAuthors: p.trustedAuthors ?? [],
     texts: { ...defaultTexts(p.language), ...p.texts },
   };
 }
