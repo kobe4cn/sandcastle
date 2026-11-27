@@ -23,6 +23,7 @@ import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { StringDecoder } from "node:string_decoder";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { askChoice, type ClaudeResolution, type Decide, resolveClaudeFile } from "./claude-conflict.ts";
@@ -734,18 +735,21 @@ export function questionsOnlyPrecheck(root: string): string | null {
 const CLAUDE_PREFIX = "  [claude] ";
 // 失败信息里保留的 stderr 行数。 / How many stderr lines to keep in the failure message.
 const STDERR_TAIL = 5;
-// stdout 的上限，对齐原来 execFileSync 的 maxBuffer。 / stdout cap, matching the old execFileSync maxBuffer.
+// stdout 的上限（按字节），对齐原来 execFileSync 的 maxBuffer。 / stdout cap in bytes, matching the old execFileSync maxBuffer.
 const MAX_STDOUT = 16 * 1024 * 1024;
 
 /**
  * 按行加前缀的缓冲器：push 收 chunk，凑齐的完整行（前缀 + 换行）一次返回；半行留在缓冲里，flush 在结束时补出去。
+ * Buffer 按 UTF-8 流式解码，chunk 边界落在多字节字符中间也不会出乱码。
  * Line-prefixing buffer: push() takes a chunk and returns the lines completed so far (prefix + newline each); a partial line stays buffered until flush() emits it at the end.
+ * Buffers are decoded as streaming UTF-8, so a chunk boundary inside a multi-byte character doesn't garble it.
  */
-export function prefixLines(prefix: string): { push(chunk: string): string; flush(): string } {
+export function prefixLines(prefix: string): { push(chunk: string | Buffer): string; flush(): string } {
   let buffer = "";
+  const decoder = new StringDecoder("utf8");
   return {
-    push(chunk: string): string {
-      buffer += chunk;
+    push(chunk: string | Buffer): string {
+      buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
       const lines = buffer.split("\n");
       // 最后一段是半行，留到下一个 chunk 或 flush。
       // The last piece is a partial line, kept for the next chunk or the flush.
@@ -753,11 +757,29 @@ export function prefixLines(prefix: string): { push(chunk: string): string; flus
       return lines.map((line) => prefix + line + "\n").join("");
     },
     flush(): string {
+      buffer += decoder.end();
       if (!buffer) return "";
       const rest = prefix + buffer + "\n";
       buffer = "";
       return rest;
     },
+  };
+}
+
+/**
+ * 收 stdout 的 Buffer chunk：按字节数计上限，超了 push 返回 false；text 把收齐的字节整段按 UTF-8 解码，拆开的多字节字符能拼回来。
+ * Collects stdout Buffer chunks: the cap counts bytes and push() returns false once it's exceeded; text() decodes all collected bytes as UTF-8 at once, so split multi-byte characters come back whole.
+ */
+export function outputCollector(maxBytes: number): { push(chunk: Buffer): boolean; text(): string } {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  return {
+    push(chunk: Buffer): boolean {
+      chunks.push(chunk);
+      bytes += chunk.length;
+      return bytes <= maxBytes;
+    },
+    text: () => Buffer.concat(chunks).toString("utf8"),
   };
 }
 
@@ -820,17 +842,16 @@ function runAgent(root: string, prompt: string, model: string, writable: string[
         if (tail.length > STDERR_TAIL) tail.shift();
       }
     };
-    let stdout = "";
+    const stdout = outputCollector(MAX_STDOUT);
     child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk;
       // 超过上限就停，免得失控的输出把内存吃满。
       // Stop past the cap so runaway output can't eat memory.
-      if (stdout.length > MAX_STDOUT) {
+      if (!stdout.push(chunk)) {
         child.kill();
         fail(t(`claude 输出超过 ${MAX_STDOUT / 1024 / 1024}MB，已停止`, `claude produced more than ${MAX_STDOUT / 1024 / 1024}MB of output; stopped it`));
       }
     });
-    child.stderr?.on("data", (chunk: Buffer) => echo(prefixer.push(chunk.toString())));
+    child.stderr?.on("data", (chunk: Buffer) => echo(prefixer.push(chunk)));
     child.on("error", (e: NodeJS.ErrnoException) => {
       fail(
         e.code === "ENOENT"
@@ -846,7 +867,7 @@ function runAgent(root: string, prompt: string, model: string, writable: string[
       if (code === 0) {
         settled = true;
         clearTimeout(timer);
-        resolve(stdout);
+        resolve(stdout.text());
       } else fail(t(`claude 退出码 ${code}`, `claude exited with code ${code}`));
     });
   });
