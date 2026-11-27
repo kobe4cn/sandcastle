@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { PrCheck } from "../src/forge.ts";
 import { messages } from "../src/i18n.ts";
 import type { ChecksWait } from "../src/merge-checks.ts";
-import { type MergeFlowDeps, mergeAfterPush, mergeWhenReady, resetMergeFlowWarnings, waitChecksOffSlot } from "../src/merge-flow.ts";
+import { type MergeFlowDeps, mainBrokenBlocker, mergeAfterPush, mergeWhenReady, resetMergeFlowWarnings, waitChecksOffSlot } from "../src/merge-flow.ts";
 import { setTermLanguage } from "../src/term.ts";
 
 const M = messages("zh");
@@ -24,6 +24,8 @@ type Opts = {
   noPrChecks?: boolean;
   wait?: ChecksWait | Error;
   merges?: (true | string)[];
+  /** 合并前查 main-broken 票的假实现（main.ts 里是 forge.listOpenIssues），不给就不配 mainBrokenHold。 */
+  hold?: MergeFlowDeps["mainBrokenHold"];
 };
 
 /** 假依赖：所有调用按顺序记进 events。mergePr 按 merges 队列回放：true 成功，字符串当作 gh 报错抛出。 */
@@ -75,6 +77,7 @@ function fakeDeps(o: Opts = {}) {
     log: (m) => void logs.push(m),
     warn: (m) => void warns.push(m),
   };
+  if (o.hold) d.mainBrokenHold = o.hold;
   return { d, events, left, comments, logs, warns };
 }
 
@@ -88,6 +91,39 @@ const ok = { ok: true } as const;
 const order = ["ciWaiting.add 7", "signalSlotFreed", "release", "wait", "ciWaiting.delete 7", "reacquire"];
 const failList = "- ci（https://ci/1）";
 const timeoutList = "- lint";
+
+describe("mainBrokenBlocker", () => {
+  const issue = (number: number, body: string) => ({ number, body });
+
+  it("没有开着的 main-broken 票 → 不挡", () => {
+    expect(mainBrokenBlocker([], "7")).toBeUndefined();
+  });
+
+  it("有开着的 main-broken 票 → 挡，返回第一张的票号", () => {
+    expect(mainBrokenBlocker([issue(31, "")], "7")).toBe(31);
+    expect(mainBrokenBlocker([issue(31, ""), issue(35, "")], "7")).toBe(31);
+  });
+
+  it("本票就是 main-broken 票 → 不挡", () => {
+    expect(mainBrokenBlocker([issue(31, "")], "31")).toBeUndefined();
+  });
+
+  it("本票在某张 main-broken 票的 Split into 列表项里 → 不挡", () => {
+    expect(mainBrokenBlocker([issue(31, "## Split into\n\n- [ ] #32\n- #33")], "33")).toBeUndefined();
+  });
+
+  it("两张 main-broken 票互不挡（免得死锁），别的票被第一张挡", () => {
+    const open = [issue(31, ""), issue(35, "## Split into\n\n- #36")];
+    expect(mainBrokenBlocker(open, "31")).toBeUndefined();
+    expect(mainBrokenBlocker(open, "35")).toBeUndefined();
+    expect(mainBrokenBlocker(open, "36")).toBeUndefined();
+    expect(mainBrokenBlocker(open, "7")).toBe(31);
+  });
+
+  it("Split into 列表项之外的票号不算子票，照挡", () => {
+    expect(mainBrokenBlocker([issue(31, "## Split into\n\n- #32\n\n说明：另见 #40")], "40")).toBe(31);
+  });
+});
 
 describe("mergeWhenReady", () => {
   it.each<{
@@ -174,6 +210,52 @@ describe("mergeWhenReady", () => {
     await mergeWhenReady({ issueId: "7", pr: "42", chainOk: true, brokenOut: "", rebase: async () => ok }, f.d);
     expect(f.warns).toEqual([]);
   });
+
+  it("main-broken 票开着时不合并：留 PR、评论含「等 #n 修好」、终端打那行", async () => {
+    const f = fakeDeps({ hold: () => ({ blocker: 31 }) });
+    const r = await mergeWhenReady(
+      { issueId: "7", pr: "42", chainOk: true, brokenOut: "", rebase: async () => { throw new Error("不该走 rebase"); } },
+      f.d,
+    );
+    expect(r).toBe("left");
+    expect(f.events).not.toContain("mergePr 42 squash");
+    expect(f.left).toEqual([M.reasonMainBroken(31)]);
+    expect(f.left[0]).toContain("等 #31 修好");
+    expect(f.logs).toContain("  ◐ #7 main 兜底测试失败，等 #31 修好，留 PR #42");
+  });
+
+  it("查不到 main-broken 票时 fail-closed：留 PR、评论写明查不到、终端打那行", async () => {
+    const f = fakeDeps({ hold: () => ({ error: "gh: 500" }) });
+    const r = await mergeWhenReady(
+      { issueId: "7", pr: "42", chainOk: true, brokenOut: "", rebase: async () => { throw new Error("不该走 rebase"); } },
+      f.d,
+    );
+    expect(r).toBe("left");
+    expect(f.events).not.toContain("mergePr 42 squash");
+    expect(f.left).toEqual([M.reasonMainBrokenUnknown("gh: 500")]);
+    expect(f.logs).toContain("  ◐ #7 查不到开着的 main-broken 票，留 PR #42");
+  });
+
+  it("等检查期间才开出 main-broken 票：rebase 补救回来也被挡，打带 #n 的那行、不写「合并失败」", async () => {
+    let calls = 0;
+    const f = fakeDeps({ merges: [CONFLICT], hold: () => (calls++ === 0 ? undefined : { blocker: 31 }) });
+    const r = await mergeWhenReady(
+      {
+        issueId: "7",
+        pr: "42",
+        chainOk: true,
+        brokenOut: "",
+        // rebaseAndMerge 尾段（mergeAfterPush）查到 blocker 后带 held 返回的样子
+        rebase: async () => ({ ok: false as const, reason: M.reasonMainBroken(31), held: { line: "  ◐ #7 main 兜底测试失败，等 #31 修好，留 PR #42" } }),
+      },
+      f.d,
+    );
+    expect(r).toBe("left");
+    expect(f.events).toContain("mergePr 42 squash");
+    expect(f.left).toEqual([M.reasonMainBroken(31)]);
+    expect(f.logs).toContain("  ◐ #7 main 兜底测试失败，等 #31 修好，留 PR #42");
+    expect(f.logs.some((l) => l.includes("合并失败"))).toBe(false);
+  });
 });
 
 describe("waitChecksOffSlot", () => {
@@ -242,5 +324,39 @@ describe("mergeAfterPush", () => {
     expect(await mergeAfterPush("7", "42", f.d)).toEqual({ ok: false, reason: M.reasonBranchProtection(PROTECTED) });
     expect(f.events.filter((e) => e.startsWith("mergePr"))).toHaveLength(1);
     expect(f.comments).toEqual([]);
+  });
+
+  it("检查通过后有 main-broken blocker → 不调 mergePr，返回失败并带 held（终端那行）", async () => {
+    const f = fakeDeps({ hold: () => ({ blocker: 31 }) });
+    expect(await mergeAfterPush("7", "42", f.d)).toEqual({
+      ok: false,
+      reason: M.reasonMainBroken(31),
+      held: { line: "  ◐ #7 main 兜底测试失败，等 #31 修好，留 PR #42" },
+    });
+    expect(f.events.filter((e) => e.startsWith("mergePr") || e.startsWith("sleep"))).toEqual([]);
+  });
+
+  it("查不到 main-broken 票时 fail-closed，返回失败并带 held", async () => {
+    const f = fakeDeps({ hold: () => ({ error: "gh: 500" }) });
+    expect(await mergeAfterPush("7", "42", f.d)).toEqual({
+      ok: false,
+      reason: M.reasonMainBrokenUnknown("gh: 500"),
+      held: { line: "  ◐ #7 查不到开着的 main-broken 票，留 PR #42" },
+    });
+    expect(f.events.filter((e) => e.startsWith("mergePr") || e.startsWith("sleep"))).toEqual([]);
+  });
+});
+
+describe("英文文案", () => {
+  it("main-broken 挡合并：PR 评论的原因和终端那行都是英文", async () => {
+    setTermLanguage("en", {});
+    const en = messages("en");
+    const f = fakeDeps({ hold: () => ({ blocker: 31 }) });
+    f.d.M = en;
+    const r = await mergeWhenReady({ issueId: "7", pr: "42", chainOk: true, brokenOut: "", rebase: async () => { throw new Error("不该走 rebase"); } }, f.d);
+    expect(r).toBe("left");
+    expect(f.left).toEqual([en.reasonMainBroken(31)]);
+    expect(f.logs).toEqual([`  ⧗ #7 waiting for checks on PR #42 (up to 30 minutes, not holding a slot)`, "  ◐ #7 the fallback full test on main failed; waiting for #31 to be fixed; PR #42 left open"]);
+    expect(en.reasonMainBrokenUnknown("x")).not.toMatch(/[一-鿿]/);
   });
 });

@@ -128,7 +128,7 @@ onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-
 | `sandcastle:stuck` | 需要人介入，原因写在 issue 评论里 |
 | `sandcastle:decided` | agent 替人拍板过设计决定，等人事后确认，看过后去掉 |
 | `flaky` | 门槛里重跑才通过的测试，流水线自动开票 |
-| `sandcastle:main-broken` | main 上的兜底完整测试失败，流水线自动开票，排在最前 |
+| `sandcastle:main-broken` | main 上的兜底完整测试失败，流水线自动开票，排在最前；开着时其他票不自动合并、留 PR 等修好（ADR 0007） |
 | `ready-for-agent` / `ready-for-human` | 拆票后的分流 |
 | `needs-triage` | 票的作者没有写权限，等有写权限的人确认（`labels.needsTriage`）。流水线第一次用到时自己建 |
 | `sandcastle:trusted` | 有写权限的人确认过这张票可以交给 Sandcastle（`labels.trusted`；打标签至少要 triage 权限）。流水线第一次用到时自己建 |

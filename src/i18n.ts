@@ -114,6 +114,10 @@ const zh = {
   /** 配了 protectedPaths 但取不到 diff，按命中处理（fail-closed）。 / protectedPaths is configured but the diff is unavailable; treated as a hit (fail-closed). */
   reasonProtectedUnknown: "取不到这张票的 diff，无法判断是否改了受保护路径（protectedPaths），需要人看过再合并。",
   reasonAutoMergeOff: "项目配置 autoMerge: false（试跑期），reviewer 和门槛都通过，等人合并。",
+  /** 有开着的 main-broken 票，其他票留 PR（ADR 0007）。 / An open main-broken ticket holds other tickets' PRs open (ADR 0007). */
+  reasonMainBroken: (n: number) => `main 上的兜底完整测试失败，等 #${n} 修好后再合并。`,
+  /** 列不出开着的 main-broken 票时按有票处理（fail-closed，ADR 0007）。 / When open main-broken tickets can't be listed, one is assumed (fail-closed, ADR 0007). */
+  reasonMainBrokenUnknown: (err: string) => `查不到开着的 main-broken 票（${err}），为安全起见不自动合并。`,
   reasonBrowser: (problems: string) => `改了页面，浏览器验收不满足自动合并的条件：${problems}（见 PR 正文的 Browser check 一节）。`,
   reasonNoBrowserConfig:
     "改了页面、本项目没配浏览器验收，不能自动合并。补法：重跑 onboard 让它写「浏览器验收」一节，或者在 `.sandcastle/PROJECT.md` 里手动加 `## 浏览器验收`（怎么准备数据、在后台起 dev server、登录、查日志），再按需配 `browser.pagePaths`；改完重启 Sandcastle。",
@@ -319,6 +323,8 @@ const en: Messages = {
   protectedAllowedAfterRebase: (section) => `Resolving the rebase conflicts touched more protected paths the ticket allows:\n\n## Protected paths\n\n${section}`,
   reasonProtectedUnknown: "Couldn't read this ticket's diff, so whether it changes protected paths (protectedPaths) is unknown; a human needs to look before merging.",
   reasonAutoMergeOff: "The project config has autoMerge: false (trial period). Reviewer and gate both passed; waiting for a human to merge.",
+  reasonMainBroken: (n) => `The fallback full test run on main failed; waiting for #${n} to be fixed before merging.`,
+  reasonMainBrokenUnknown: (err) => `Couldn't list the open main-broken tickets (${err}); not auto-merging to be safe.`,
   reasonBrowser: (problems) => `Pages changed and the browser check doesn't meet the auto-merge conditions: ${problems} (see the Browser check section of the PR description).`,
   reasonNoBrowserConfig:
     "Pages changed but this project has no browser check configured, so it can't auto-merge. To fix: rerun onboard so it writes the “Browser check” section, or add `## Browser check` to `.sandcastle/PROJECT.md` yourself (how to prepare data, start the dev server in the background, log in, check the logs), and set `browser.pagePaths` if needed; restart Sandcastle afterwards.",
