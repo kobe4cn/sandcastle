@@ -68,6 +68,11 @@ export interface GateConfig {
    * a service it depends on is treated as unreachable: no fix session, not counted as a failure, the whole step reruns later, and once retries run out the ticket names that line.
    */
   envErrorPattern?: RegExp;
+  /**
+   * 门槛依赖的服务（数据库、缓存等）。sandpipe run 启动时逐个用 TCP 连一次，有连不上的就报错退出；doctor 也查。host 写宿主机能直连的地址（比如 localhost）。
+   * Services the gate depends on (database, cache, …). sandpipe run connects to each over TCP once at startup and exits with an error if any is unreachable; doctor checks them too. host is an address the host machine reaches directly (e.g. localhost).
+   */
+  services?: readonly GateService[];
   /** 留给人审的 PR rebase 后只跑这个（不跑测试）。 / The only thing run after rebasing a PR left for review (no tests). */
   typecheck: string;
   /**
@@ -76,6 +81,9 @@ export interface GateConfig {
    */
   selectedDescription?: string;
 }
+
+/** gate.services 里的一项：报错里用的名字和宿主机上的地址。 / One gate.services entry: the name used in errors and the address on the host. */
+export type GateService = { name: string; host: string; port: number };
 
 /**
  * 合并前的额外一致性检查（比如数据库迁移链没分叉）：rebase 没有文本冲突也可能坏。

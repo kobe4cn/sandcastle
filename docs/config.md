@@ -42,6 +42,7 @@ export default defineProject({
 | `gate.script({ baseRef })` | The merge gate, run in the sandbox with `sh -c`; exit code 0 means pass |
 | `gate.testFile` | Regex for test file paths, used to pick failing files out of the gate output |
 | `gate.typecheck` | The only command run after rebasing a PR that is waiting for review |
+| `gate.services` | Optional. Services the gate depends on, `[{ name, host, port }]` (e.g. `[{ name: "postgres", host: "localhost", port: 5432 }]`). `sandpipe run` connects to each over TCP once at startup and exits with an error naming the service and `host:port` if any is unreachable; `sandpipe doctor` prints one ok / fail line per service. `host` is an address the host machine reaches directly |
 
 Gate script output conventions (optional; used to select tests by dependency and detect flaky failures):
 

@@ -36,6 +36,7 @@
 | `src/guide.ts` `src/pr-body.ts` `src/models.ts` | 票正文解析、空转退出原因、PR 正文、模型档案 |
 | `src/limit-wait.ts` | 撞用量限额后等到重置、醒来重读 models.json 再重跑 |
 | `src/resume-state.ts` | 评审已过的状态（#49）：标记评论的写 / 解析、重启后是否直接跑门槛 |
+| `src/preflight.ts` | 启动预检（#55）：用 TCP 探测 `gate.services` 声明的门槛依赖服务，`sandpipe run` 启动时和 doctor 共用 |
 | `templates/.sandcastle/` | 装到新项目的 PROJECT.md 模板、配置模板、Containerfile、models.json |
 | `claude/` | 上下文预算 hook、screenshot-checker 子代理、prep-ticket 和 fill-project-docs skill（后者附 NOTICE，改编自 mattpocock/skills，MIT） |
 | `examples/duckdb_crm/` | 第一个接入方的完整配置 |

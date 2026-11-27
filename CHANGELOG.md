@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 门槛依赖的服务可以在配置里声明了：`gate.services: [{ name, host, port }]`（可选）。`sandpipe run` 启动时（运行锁和 podman 检查之后）逐个用 TCP 连一次（超时 3 秒），有连不上的就报错退出，写明服务名、`host:port`、错误和「先把服务起来」，不再等第一张票跑到门槛才发现；`sandpipe doctor` 每个声明的服务输出一行「门槛服务 <name>」，连上 ok、连不上 fail 并附修复提示。`host` 写宿主机能直连的地址（新模块 `src/preflight.ts`：`probeTcp`、`checkServices`）（closes #55）
 - 门槛依赖的服务连不上时不再开 fix 会话、算作失败：门槛退出码非 0 且输出某一行命中 `ECONNREFUSED`、`getaddrinfo ENOTFOUND` / `EAI_AGAIN`、`Cannot connect to the Docker daemon` / `Cannot connect to Podman`（或项目配置的 `gate.envErrorPattern`）时，终端打「⚠ #n 门槛依赖的服务连不上（那一行），不算失败，稍后重试」，和 podman 断开一样整步按临时错误定时重跑（不等 podman）；重试用完仍连不上就打 stuck，评论写明那一行，不再写成通用的沙箱错误。`No test files found` 和普通断言失败不算。测试本身断言 ECONNREFUSED 又真失败时会被误判，靠重试用完转 stuck 兜底（纯函数 `gateEnvError`，`src/lifecycle.ts`）（closes #54）
 - 运行中改了 `.sandcastle/PROJECT.md` 终端会提醒了：提示词只在启动时渲染，改它要重启 sandpipe 才生效，之前没有任何提示，容易以为已经生效（`models.json` 是每轮热加载的）。现在主循环每轮比一次 PROJECT.md 的内容哈希，变了打一行「⚠ .sandcastle/PROJECT.md 已变更，需重启 sandpipe 才生效」（路径按实际读的那份写，设了 `SANDCASTLE_PROJECT_DIR` 时跟着变），同一次修改只打一次，改回原样或文件被删不打。不做热加载（纯函数 `projectDocWatcher`，`src/project-doc.ts`）（closes #52）
 - 门槛失败后的 fix 会话不再自己跑完整门槛：提示词改成只单独跑失败的测试文件和类型检查确认变绿，完整门槛由编排器在会话结束后跑。之前 agent 按提示自己跑一遍完整门槛（长项目近一小时），编排器再跑一遍，门槛时间翻倍；一条阻塞命令跑完整门槛还可能超过 agent 空闲超时，会话被杀、票打成 stuck。这次只改提示词，空闲超时本身没有加兜底（closes #51）

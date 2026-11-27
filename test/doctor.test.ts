@@ -275,6 +275,38 @@ describe("diagnose：合并条件", () => {
   });
 });
 
+describe("diagnose：门槛依赖的服务", () => {
+  const run = async (services: string | null, down: number[] = []) => {
+    const root = readyRepo();
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    if (services !== null) writeFileSync(config, readFileSync(config, "utf8").replace("  gate: {", `  gate: {\n    services: ${services},`));
+    const probed: string[] = [];
+    const checks = await diagnose({
+      cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []),
+      probe: async (host, port) => (probed.push(`${host}:${port}`), down.includes(port) ? "connect ECONNREFUSED" : null),
+    });
+    return { checks, probed };
+  };
+  const two = '[{ name: "postgres", host: "localhost", port: 5432 }, { name: "redis", host: "127.0.0.1", port: 6379 }]';
+
+  it("每个服务一行：连上 ok，连不上 fail 并附修复提示", async () => {
+    const { checks, probed } = await run(two, [6379]);
+    expect(probed).toEqual(["localhost:5432", "127.0.0.1:6379"]);
+    expect(check(checks, "门槛服务 postgres")).toMatchObject({ level: "ok", detail: "localhost:5432" });
+    expect(check(checks, "门槛服务 redis")).toMatchObject({
+      level: "fail",
+      detail: expect.stringMatching(/127\.0\.0\.1:6379[\s\S]*ECONNREFUSED/),
+      fix: expect.stringContaining("先把服务起来"),
+    });
+  });
+
+  it("没声明 gate.services：不探测，也没有这类检查项", async () => {
+    const { checks, probed } = await run(null);
+    expect(probed).toEqual([]);
+    expect(checks.filter((c) => c.name.startsWith("门槛服务"))).toEqual([]);
+  });
+});
+
 describe("diagnose：Blocked by", () => {
   const run = (tickets: Parameters<typeof fakeGh>[3]) =>
     diagnose({ cwd: readyRepo(), env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, [], true, tickets) });

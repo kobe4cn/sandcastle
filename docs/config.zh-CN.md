@@ -42,6 +42,7 @@ export default defineProject({
 | `gate.script({ baseRef })` | 合并门槛，在沙箱里用 `sh -c` 跑，退出码 0 算通过 |
 | `gate.testFile` | 测试文件路径的正则，用来从门槛输出里认出失败的文件 |
 | `gate.typecheck` | 等人审的 PR rebase 之后只跑这条命令 |
+| `gate.services` | 可选。门槛依赖的服务，`[{ name, host, port }]`（比如 `[{ name: "postgres", host: "localhost", port: 5432 }]`）。`sandpipe run` 启动时逐个用 TCP 连一次，有连不上的就报错退出，写明服务名和 `host:port`；`sandpipe doctor` 每个服务输出一行 ok / fail。`host` 写宿主机能直连的地址 |
 
 门槛脚本的输出约定（可选，用来按依赖选测试、识别偶发失败）：
 

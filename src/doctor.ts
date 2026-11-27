@@ -1,10 +1,10 @@
 // doctor：跑流水线之前把能在宿主机上查的都查一遍，每项给出结论和修法。
 // 查：仓库根目录、配置能加载、宿主机依赖与 env 文件、PROJECT.md 与提示词能渲染、浏览器验收、合并条件（有 CI workflow 却不等检查时警告）、项目知识（缺口清单）、models.json、.env 的 token、平台登录与权限、
-// 标签（--fix 时补建）、Sandcastle 票的 Blocked by 引用、远端基础分支、沙箱镜像、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
+// 标签（--fix 时补建）、Sandcastle 票的 Blocked by 引用、远端基础分支、沙箱镜像、门槛依赖的服务、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
 // 有一项 ✗ 退出码就是 1。
 // doctor: before running the pipeline, check everything that can be checked on the host, giving a verdict and a fix for each.
 // Checks: repository root, config loads, host dependencies and env files, PROJECT.md and prompts render, browser check, merge requirements (warns when there are CI workflows but checks aren't awaited), project knowledge (open questions list), models.json, .env tokens, forge login and permissions,
-// labels (created with --fix), Blocked by references in Sandcastle tickets, remote base branch, sandbox image, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
+// labels (created with --fix), Blocked by references in Sandcastle tickets, remote base branch, sandbox image, gate services, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
 // Exit code 1 if any check is ✗.
 
 import { existsSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -20,6 +20,7 @@ import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { CLAUDE_FILES, fillDocsHint, manual, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
 import { OPEN_QUESTIONS, readOpenQuestions } from "./open-questions.ts";
 import { CONFIG_FILE, configDir, loadProject, type Labels, type Project } from "./profile.ts";
+import { probeTcp, type Probe } from "./preflight.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { trySh, type TryResult } from "./shell.ts";
 import { latestVersion, newer, VERSION } from "./version.ts";
@@ -83,6 +84,8 @@ export async function diagnose(opts: {
   fix?: boolean;
   /** 查最新发布的版本；不给就不查（测试里不连网） / Looks up the latest release; not checked when absent (no network in tests) */
   latest?: () => Promise<string | undefined>;
+  /** 连门槛依赖的服务；测试里换成假实现，默认 probeTcp / Connects to the gate's services; a fake in tests, probeTcp by default */
+  probe?: Probe;
 }): Promise<Check[]> {
   const cwd = opts.cwd ?? process.cwd();
   const env = opts.env ?? process.env;
@@ -396,6 +399,23 @@ export async function diagnose(opts: {
     if (!info.ok) add(S, "fail", t("podman 用不了：", "podman isn't usable: ") + firstLine(info.out), t("装 podman；macOS 上 podman machine start", "Install podman; on macOS, podman machine start"));
     else if (!run("podman", ["image", "exists", image]).ok) add(S, "fail", t(`没有镜像 ${image}`, `No image ${image}`), build);
     else add(S, "ok", t(`${image}（改了 Containerfile 要重建：${build}）`, `${image} (rebuild after changing the Containerfile: ${build})`));
+  }
+
+  // ---- 门槛依赖的服务 ---- / Gate services
+  // 每个声明的服务一行；地址是宿主机上的（sandpipe run 启动时也这样连）。 / One line per declared service; the address is the host's (sandpipe run connects the same way at startup).
+  const probe = opts.probe ?? probeTcp;
+  for (const s of project?.gate.services ?? []) {
+    const addr = `${s.host}:${s.port}`;
+    const error = await probe(s.host, s.port);
+    const name = t(`门槛服务 ${s.name}`, `Gate service ${s.name}`);
+    if (error === null) add(name, "ok", addr);
+    else
+      add(
+        name,
+        "fail",
+        t(`${addr} 连不上：${error}`, `${addr} is unreachable: ${error}`),
+        t("先把服务起来（sandpipe run 启动时也会检查）；地址不对就改配置里的 gate.services", "Start the service first (sandpipe run checks it at startup too); if the address is wrong, fix gate.services in the config"),
+      );
   }
 
   // ---- 上下文预算 hook ---- / Context budget hook
