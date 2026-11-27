@@ -345,13 +345,13 @@ describe("diagnose：Blocked by", () => {
   });
 
   it("引用都存在：通过，写明查了几张票", async () => {
-    const c = check(await run({ issues: [{ number: 5, body: "## Blocked by\n#3\n" }, { number: 6, body: "无" }] }), "Blocked by");
+    const c = check(await run({ issues: [{ number: 5, body: "## Blocked by\n- #3\n" }, { number: 6, body: "无" }] }), "Blocked by");
     expect(c).toMatchObject({ level: "ok", detail: expect.stringContaining("2") });
   });
 
   it("引用了不存在的票：警告，列出 #n → #m，提示改正", async () => {
     const issues = [
-      { number: 5, body: "## Blocked by\n#3\n#99\n" },
+      { number: 5, body: "## Blocked by\n- #3\n- #99\n" },
       { number: 7, body: "## Blocked by\n- #99、#4\n" },
     ];
     const c = check(await run({ issues, missing: [99] }), "Blocked by");
@@ -362,7 +362,7 @@ describe("diagnose：Blocked by", () => {
   });
 
   it("单个 blocker 查询出错（不是 missing）：跳过这个 blocker", async () => {
-    const c = check(await run({ issues: [{ number: 5, body: "## Blocked by\n#8\n" }], failing: [8] }), "Blocked by");
+    const c = check(await run({ issues: [{ number: 5, body: "## Blocked by\n- #8\n" }], failing: [8] }), "Blocked by");
     expect(c?.level).toBe("ok");
   });
 
