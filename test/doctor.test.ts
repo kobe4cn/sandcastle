@@ -28,13 +28,14 @@ const runner =
 
 /**
  * tokenOk=false 时用 .env 的 token 调 gh api 返回 403（模拟 token 没给 Pull requests 权限）。
- * issues 是 issue list 返回的 open 票；missing 里的编号 issue view 报不存在，failing 里的报网络错误，其他返回 OPEN。
+ * issues 是 issue list 按接入标签（Sandcastle）返回的 open 票，mainBroken 是按 sandcastle:main-broken 返回的票号；
+ * missing 里的编号 issue view 报不存在，failing 里的报网络错误，其他返回 OPEN。
  */
 function fakeGh(
   labels: string[],
   created: string[][],
   tokenOk = true,
-  tickets: { issues?: { number: number; body: string }[]; missing?: number[]; failing?: number[]; listError?: boolean } = {},
+  tickets: { issues?: { number: number; body: string }[]; mainBroken?: number[]; missing?: number[]; failing?: number[]; listError?: boolean } = {},
 ) {
   return githubForge((args, env) => {
     if (args[0] === "auth") return "";
@@ -51,8 +52,11 @@ function fakeGh(
     }
     if (args[0] === "issue" && args[1] === "list") {
       if (tickets.listError) throw new Error("issue list 超时");
+      // doctor 只按 --label 查 open 票：接入标签走 issues，sandcastle:main-broken 走 mainBroken，两边互不串
+      const label = args[args.indexOf("--label") + 1];
+      const list = label === "sandcastle:main-broken" ? (tickets.mainBroken ?? []).map((n) => ({ number: n, body: "无" })) : (tickets.issues ?? []);
       return JSON.stringify(
-        (tickets.issues ?? []).map((i) => ({ ...i, title: `票 ${i.number}`, labels: [{ name: "Sandcastle" }], updatedAt: "2026-11-26T00:00:00Z", author: { login: "alice", is_bot: false } })),
+        list.map((i) => ({ ...i, title: `票 ${i.number}`, labels: [{ name: label }], updatedAt: "2026-11-26T00:00:00Z", author: { login: "alice", is_bot: false } })),
       );
     }
     if (args[0] === "issue" && args[1] === "view") {
@@ -94,6 +98,8 @@ describe("diagnose", () => {
       "平台（github）": "ok",
       标签: "fail",
       "Blocked by": "ok",
+      // 刚 onboard 的项目没有开着的 main-broken 票
+      "main 兜底测试": "ok",
       远端分支: "ok",
       沙箱镜像: "fail",
       编辑器类型: "ok",
@@ -369,6 +375,36 @@ describe("diagnose：Blocked by", () => {
   it("列票失败：整项警告并附错误", async () => {
     const c = check(await run({ listError: true }), "Blocked by");
     expect(c).toMatchObject({ level: "warn", detail: expect.stringContaining("issue list 超时") });
+  });
+});
+
+describe("diagnose：main 兜底测试", () => {
+  const run = (tickets: Parameters<typeof fakeGh>[3]) =>
+    diagnose({ cwd: readyRepo(), env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, [], true, tickets) });
+
+  it("有开着的 main-broken 票：警告，列出票号，提示期间不自动合并", async () => {
+    const c = check(await run({ mainBroken: [12, 15] }), "main 兜底测试");
+    expect(c).toMatchObject({ level: "warn" });
+    expect(c?.detail).toContain("#12、#15");
+    expect(c?.fix).toContain("不自动合并");
+  });
+
+  it("没有开着的 main-broken 票：通过（Sandcastle 票不算）", async () => {
+    expect(check(await run({ issues: [{ number: 5, body: "## Blocked by\n- #3\n" }] }), "main 兜底测试")?.level).toBe("ok");
+  });
+
+  it("列票失败：整项警告并附错误", async () => {
+    const c = check(await run({ listError: true }), "main 兜底测试");
+    expect(c).toMatchObject({ level: "warn", detail: expect.stringContaining("issue list 超时") });
+  });
+
+  it("有票（英文项目）：文案是英文，票号用逗号连接", async () => {
+    const root = pythonRepo();
+    installFiles(root, detectProject(root));
+    writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=y\n");
+    writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "");
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, [], true, { mainBroken: [12] }) });
+    expect(check(checks, "Main fallback test")).toMatchObject({ level: "warn", detail: expect.stringContaining("#12") });
   });
 });
 
