@@ -374,7 +374,8 @@ function saveLimits() {
  * Every profile for this phase is waiting for a limit reset; untilAfterLimit recognizes it and reruns from the start after until.
  */
 export class AllProfilesLimited extends Error {
-  constructor(readonly phase: Phase, readonly until: number) {
+  /** profiles：这个阶段在等的档案名（按配置顺序）。 / profiles: the names of this phase's waiting profiles (in config order). */
+  constructor(readonly phase: Phase, readonly until: number, readonly profiles: readonly string[]) {
     super(t(`阶段 ${phase} 的档案都撞上了用量限额，最早 ${new Date(until).toLocaleString()} 恢复`, `every profile for phase ${phase} hit its usage limit; the earliest resets at ${new Date(until).toLocaleString()}`));
   }
 }
@@ -453,7 +454,7 @@ export async function runWithProfile<T extends AgentRun>(
     const now = Date.now();
     const names = config.phases[phase];
     const name = names.find((n) => (blockedUntil.get(n) ?? 0) <= now);
-    if (name === undefined) throw new AllProfilesLimited(phase, Math.min(...names.map((n) => blockedUntil.get(n)!)));
+    if (name === undefined) throw new AllProfilesLimited(phase, Math.min(...names.map((n) => blockedUntil.get(n)!)), [...names]);
     const profile = config.profiles.get(name)!;
     let message: string | undefined;
     let limitedRun: T | undefined;

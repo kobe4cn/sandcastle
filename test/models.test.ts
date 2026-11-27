@@ -195,6 +195,7 @@ describe("N1b 撞限额换档案", () => {
     expect(err).toBeInstanceOf(m.AllProfilesLimited);
     const limited = err as InstanceType<Models["AllProfilesLimited"]>;
     expect(limited.phase).toBe("implement");
+    expect(limited.profiles).toEqual(["opus", "glm"]);
     expect(limited.until).toBe(Date.UTC(2026, 10, 26, 3, 0) + SLACK);
     expect(limited.message).toContain("阶段 implement 的档案都撞上了用量限额");
 

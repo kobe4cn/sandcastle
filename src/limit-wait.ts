@@ -21,20 +21,24 @@ export async function sleepUntil(at: number) {
  * fn 要能从头重跑：prep 本来就幂等；build 重跑时在原分支上接着做（implementer 先看已有提交）。
  * onLimit 在等之前调用，比如把分支推到远端。
  * 醒来后先重读 models.json 再重跑（#43）：等待期间补上的新档案马上能用。配置是模块级的，所有票共用。
- * deps 给测试注入假的 sleepUntil / reload。
+ * deps 给测试注入假的 sleepUntil / reload。deps.comment 在抛 AllProfilesLimited 进入等待时调（#48），同一次调用里只调一次；
+ * 普通限额报错不调（没有档案列表）。comment 自己兜住错误（main.ts 用 attempt 只警告）。
  * Run fn; on a usage limit wait for the reset and rerun it; other errors are rethrown.
  * fn must be rerunnable from the start: prep is idempotent anyway; build continues on the same branch when rerun (the implementer looks at existing commits first).
  * onLimit is called before waiting, e.g. to push the branch to the remote.
  * After waking, models.json is reread before rerunning (#43): profiles added while waiting are usable right away. The config is module-level and shared by all tickets.
- * deps lets tests inject a fake sleepUntil / reload.
+ * deps lets tests inject a fake sleepUntil / reload. deps.comment is called when an AllProfilesLimited starts a wait (#48), at most once per call;
+ * plain limit errors don't call it (no profile list). comment handles its own errors (main.ts wraps it in attempt and only warns).
  */
 export async function untilAfterLimit<T>(
   what: string,
   fn: () => Promise<T>,
   onLimit?: () => void | Promise<void>,
-  deps: { sleepUntil?: (at: number) => Promise<void>; reload?: () => void } = {},
+  deps: { sleepUntil?: (at: number) => Promise<void>; reload?: () => void; comment?: (limited: AllProfilesLimited) => void } = {},
 ): Promise<T> {
-  const { sleepUntil: sleepFor = sleepUntil, reload = reloadModels } = deps;
+  const { sleepUntil: sleepFor = sleepUntil, reload = reloadModels, comment } = deps;
+  // 醒来再撞、认不出重置时间每 30 分钟重来都算同一次等待，只评论一次。 / Hitting it again on waking, or retrying every 30 minutes, is the same wait: comment once.
+  let commented = false;
   for (;;) {
     try {
       return await fn();
@@ -42,6 +46,10 @@ export async function untilAfterLimit<T>(
       const limit = limitWait(e);
       if (!limit) throw e;
       await onLimit?.();
+      if (e instanceof AllProfilesLimited && comment && !commented) {
+        commented = true;
+        comment(e);
+      }
       const until = new Date(limit.until).toLocaleString();
       console.log(t(`  ⏸ ${what} 撞上用量限额，${limit.why}等到 ${until} 再接着跑`, `  ⏸ ${what} hit the usage limit; ${limit.why}resuming at ${until}`));
       await sleepFor(limit.until);

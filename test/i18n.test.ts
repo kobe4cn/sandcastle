@@ -116,3 +116,17 @@ describe("标签描述长度", () => {
     for (const [k, v] of descs) expect([...(v as string)].length, k).toBeLessThanOrEqual(100);
   });
 });
+
+describe("limitedWaiting（#48）", () => {
+  it("中英文正文写明阶段、档案、恢复时间，末尾是标记", () => {
+    const mark = "<!-- sandcastle:limited -->";
+    for (const lang of ["zh", "en"] as const) {
+      const body = messages(lang).limitedWaiting("implement", ["opus", "glm"], "2026/11/26 11:02:00", mark);
+      expect(body).toContain("implement");
+      expect(body).toContain("`opus`");
+      expect(body).toContain("`glm`");
+      expect(body).toContain("2026/11/26 11:02:00");
+      expect(body.endsWith(mark)).toBe(true);
+    }
+  });
+});

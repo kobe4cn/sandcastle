@@ -83,4 +83,45 @@ describe("untilAfterLimit 醒来重试前重读配置", () => {
     expect(sleepUntil).not.toHaveBeenCalled();
     expect(reload).not.toHaveBeenCalled();
   });
+
+  it("全部档案撞限额：同一次等待只评论一次，带阶段和档案名；成功后不再评论", async () => {
+    project({ profiles: { opus: { model: "claude-opus-4-5" }, glm: { model: "glm-5" } }, phases: phasesAll(["opus", "glm"]) });
+    m.reloadModels();
+    let calls = 0;
+    const comment = vi.fn();
+    const result = await lw.untilAfterLimit(
+      "#48",
+      () =>
+        m.runWithProfile("implement", "#48", async () => {
+          calls++;
+          // 前两轮（每轮两个档案）都撞限额，第三轮成功
+          if (calls <= 4) throw new Error(LIMIT);
+          return done("干完了");
+        }),
+      undefined,
+      { sleepUntil: async (at) => void vi.setSystemTime(at), reload: () => {}, comment },
+    );
+    expect(result.run.stdout).toBe("干完了");
+    expect(comment).toHaveBeenCalledTimes(1);
+    const [limited] = comment.mock.calls[0]!;
+    expect(limited).toBeInstanceOf(m.AllProfilesLimited);
+    expect(limited.phase).toBe("implement");
+    expect(limited.profiles).toEqual(["opus", "glm"]);
+  });
+
+  it("普通限额报错（不是 AllProfilesLimited）不评论", async () => {
+    let calls = 0;
+    const comment = vi.fn();
+    await lw.untilAfterLimit(
+      "#48",
+      async () => {
+        if (calls++ < 2) throw new Error(LIMIT);
+        return "ok";
+      },
+      undefined,
+      { sleepUntil: async () => {}, reload: () => {}, comment },
+    );
+    expect(calls).toBe(3);
+    expect(comment).not.toHaveBeenCalled();
+  });
 });

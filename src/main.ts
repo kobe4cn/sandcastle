@@ -83,7 +83,7 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import type { SandboxExecOptions } from "@ai-hero/sandcastle";
 import {
   CLAUDE_CREDENTIALS_CLEARED, agentFor, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
-  type AgentRun, type Phase, type UsageRecord,
+  type AgentRun, type AllProfilesLimited, type Phase, type UsageRecord,
 } from "./models.ts";
 import { limitWait, sleepUntil, untilAfterLimit } from "./limit-wait.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
@@ -139,6 +139,11 @@ const NEEDS_DECISION = "<promise>NEEDS_DECISION</promise>";
  * First line of the issue comment when the agent decides on a human's behalf (the prompt's "design decisions"); on landing the script labels sandcastle:decided and copies the comments to the PR.
  */
 const DECIDED_MARK = "<!-- sandcastle:decided -->";
+/**
+ * 全部档案撞限额进入等待时票上评论的标记（#48）；最后一条评论已经是它就不再发（重启后不重复）。
+ * Marker on the issue comment posted when every profile hit its limit and the ticket starts waiting (#48); not posted again while it's the last comment (no repeats after a restart).
+ */
+const LIMITED_MARK = "<!-- sandcastle:limited -->";
 const REVISE_MAX = project.reviseMax; // reviewer 给 revise 时最多打回几次；之后仍不行就留 PR 给人 / maximum send-backs when the reviewer says revise; after that the PR is left for a human
 const CONTEXT_BUDGET = project.contextBudget; // 单个会话的上下文预算 / context budget per session
 const REMOTE = project.remote;
@@ -1154,6 +1159,21 @@ function issueClosed(id: string) {
 }
 
 /**
+ * 给 untilAfterLimit 的 deps.comment：全部档案撞限额时在票上评论一次。已关的票不发；最后一条评论已经带 LIMITED_MARK 不发；失败只警告。
+ * deps.comment for untilAfterLimit: comment once on the ticket when every profile hit its limit. Not on closed tickets, not when the last comment already has LIMITED_MARK; failures only warn.
+ */
+function limitedComment(issueId: string) {
+  return (limited: AllProfilesLimited) => {
+    const r = attempt(() => {
+      if (issueClosed(issueId)) return;
+      if (forge.issueComments(issueId).at(-1)?.includes(LIMITED_MARK)) return;
+      forge.commentIssue(issueId, M.limitedWaiting(limited.phase, limited.profiles, new Date(limited.until).toLocaleString(), LIMITED_MARK));
+    });
+    if (!r.ok) console.warn(t(`  ⚠ #${issueId} 限额等待的评论没发出去：${r.out}`, `  ⚠ #${issueId}: couldn't post the limit-wait comment: ${r.out}`));
+  };
+}
+
+/**
  * Phase 3：一张票的落地。在宿主机上做，用宿主机的 git / 平台凭据，沙箱没有写仓库的权限。
  * Phase 3: landing one ticket. Done on the host with the host's git / forge credentials; the sandbox has no write access to the repo.
  */
@@ -1169,7 +1189,7 @@ async function rebaseIfConflicting(issue: Issue, pr: string, host: HostGap): Pro
   const chainOk = trySh("sh", ["-c", integrityOk(issue.branch)]).ok;
   if (clean && chainOk) return "";
   console.log(t(`  ↻ #${issue.id} 和最新的 ${BASE_REF} 冲突，rebase 后再留给人审`, `  ↻ #${issue.id} conflicts with the latest ${BASE_REF}; rebasing before leaving it for review`));
-  const r = await untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host, false));
+  const r = await untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host, false), undefined, { comment: limitedComment(issue.id) });
   return r.ok
     ? M.rebasedForHuman(BASE_REF)
     : M.rebaseForHumanFailed(BASE_REF, r.reason);
@@ -1437,7 +1457,7 @@ async function finishMerge(issue: Issue, pr: string, host: HostGap, tier: GateTi
   // 等检查 → 合并 → 分支保护 / rebase 补救 → 留 PR（merge-flow.ts）。
   // Wait for checks → merge → branch protection / rebase recovery → leave the PR (merge-flow.ts).
   const r = await mergeWhenReady(
-    { issueId: issue.id, pr, chainOk, brokenOut: `${integrityBroken()}。`, rebase: () => untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host)) },
+    { issueId: issue.id, pr, chainOk, brokenOut: `${integrityBroken()}。`, rebase: () => untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host), undefined, { comment: limitedComment(issue.id) }) },
     mergeDeps(issue, pr, host),
   );
   if (r === "left") return;
@@ -1719,7 +1739,7 @@ function start(issue: Issue, resume = false) {
     const [outcome] = resume
       ? [undefined]
       : await Promise.allSettled([
-          untilAfterLimit(`#${issue.id}`, () => retryTransient(`#${issue.id}`, () => build(issue)), () => pushIfAhead(issue)),
+          untilAfterLimit(`#${issue.id}`, () => retryTransient(`#${issue.id}`, () => build(issue)), () => pushIfAhead(issue), { comment: limitedComment(issue.id) }),
         ]);
     // 落地在宿主机上做：用宿主机的 git / 平台凭据，沙箱没有写仓库的权限。
     // 每张票单独兜底：一张票落地出错（网络、人在运行中途合并或删了分支等）不让整个运行崩掉。

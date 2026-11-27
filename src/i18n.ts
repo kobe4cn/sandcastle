@@ -136,6 +136,8 @@ const zh = {
   reprepNotPushed: "\n\n（分支没能推到远端，下一轮会在本地的同名分支上接着做。）",
   landError: (branch: string, reason: string, stuckLabel: string) =>
     `Sandcastle 停下了：落地（push / 开 PR / 合并）出错，本地分支 \`${branch}\` 保留。\n\n\`\`\`\n${reason}\n\`\`\`\n\n处理后去掉 ${stuckLabel} 再运行。`,
+  limitedWaiting: (phase: string, profiles: readonly string[], until: string, mark: string) =>
+    `⏸ 阶段 ${phase} 的档案（${profiles.map((p) => `\`${p}\``).join("、")}）都撞上了用量限额，预计 ${until}（运行 Sandcastle 那台机器的本地时间）恢复后接着跑，不用处理。\n\n${mark}`,
 
   // —— 偶发失败与 main 兜底 —— / Flaky failures and the fallback run on main
   flakyLabelDesc: "偶发失败的测试（Sandcastle 门槛自动开票）",
@@ -303,6 +305,8 @@ const en: Messages = {
   reprepNotPushed: "\n\n(The branch could not be pushed; the next round continues on the local branch of the same name.)",
   landError: (branch, reason, stuckLabel) =>
     `Sandcastle stopped: landing (push / open PR / merge) failed; the local branch \`${branch}\` is kept.\n\n\`\`\`\n${reason}\n\`\`\`\n\nFix it, then remove ${stuckLabel} and run again.`,
+  limitedWaiting: (phase, profiles, until, mark) =>
+    `⏸ Every profile for phase ${phase} (${profiles.map((p) => `\`${p}\``).join(", ")}) hit its usage limit; resuming around ${until} (local time on the machine running Sandcastle). Nothing to do.\n\n${mark}`,
 
   flakyLabelDesc: "Flaky tests (opened automatically by the Sandcastle gate)",
   mergingLabelDesc: "Gate passed, PR open; Sandcastle is waiting for checks / merging (resumes after a restart)",
