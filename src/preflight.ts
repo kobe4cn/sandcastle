@@ -3,6 +3,7 @@
 
 import { connect } from "node:net";
 import type { GateService } from "./profile.ts";
+import { t } from "./term.ts";
 
 /** 探测一个地址：连得上返回 null，连不上返回错误文本。 / Probe one address: null when reachable, the error text otherwise. */
 export type Probe = (host: string, port: number) => Promise<string | null>;
@@ -39,4 +40,17 @@ export async function checkServices(list: readonly GateService[], probe: Probe):
     if (error !== null) failed.push({ name: s.name, addr: `${s.host}:${s.port}`, error });
   }
   return failed;
+}
+
+/**
+ * sandpipe run 启动时的检查：有连不上的服务就返回报错文字（列出每一个的名字、host:port 和错误，提示先起服务），都连上或没声明返回 null。
+ * The check at sandpipe run startup: when any service is unreachable, return the error text (each one's name, host:port and error, plus a hint to start them); null when all connect or none are declared.
+ */
+export async function servicesProblem(list: readonly GateService[], probe: Probe): Promise<string | null> {
+  const down = await checkServices(list, probe);
+  if (down.length === 0) return null;
+  return t(
+    `门槛依赖的服务连不上：${down.map((s) => `${s.name}（${s.addr}）：${s.error}`).join("；")}。先把服务起来，然后重试（sandpipe doctor 可以检查）`,
+    `Services the gate depends on are unreachable: ${down.map((s) => `${s.name} (${s.addr}): ${s.error}`).join("; ")}. Start them first, then retry (sandpipe doctor can check)`,
+  );
 }

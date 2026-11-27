@@ -103,7 +103,7 @@ import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { loadProjectDoc, projectDocPath, projectDocWatcher, renderPrompts } from "./project-doc.ts";
 import { type BrowserCheck, browserSetupWarning, browserVerdict, pageFiles, ticketHasBrowserCheck } from "./browser-gate.ts";
 import { detectProject } from "./detect.ts";
-import { checkServices, probeTcp } from "./preflight.ts";
+import { probeTcp, servicesProblem } from "./preflight.ts";
 import { manual } from "./onboard.ts";
 import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
 
@@ -2080,14 +2080,8 @@ if (!project.customSandbox) {
 // 门槛依赖的服务（gate.services）：启动时逐个连一次，连不上直接退出，不等第一张票跑到门槛才发现（#55）。
 // Services the gate depends on (gate.services): connect to each once at startup and exit if any is unreachable, instead of finding out when the first ticket reaches the gate (#55).
 {
-  const down = await checkServices(project.gate.services ?? [], probeTcp);
-  if (down.length > 0)
-    throw new Error(
-      t(
-        `门槛依赖的服务连不上：${down.map((s) => `${s.name}（${s.addr}）：${s.error}`).join("；")}。先把服务起来，然后重试（sandpipe doctor 可以检查）`,
-        `Services the gate depends on are unreachable: ${down.map((s) => `${s.name} (${s.addr}): ${s.error}`).join("; ")}. Start them first, then retry (sandpipe doctor can check)`,
-      ),
-    );
+  const problem = await servicesProblem(project.gate.services ?? [], probeTcp);
+  if (problem) throw new Error(problem);
 }
 // 项目有页面（探测到网页界面或配了 browser.pagePaths）却没配浏览器验收：启动就警告，不等改页面的票留 PR 才发现。
 // The project has pages (a detected web UI or browser.pagePaths set) but no browser check configured: warn at startup rather than when a page-changing ticket's PR is left open.

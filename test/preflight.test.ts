@@ -1,6 +1,7 @@
 import { createServer, type Server } from "node:net";
 import { describe, expect, it } from "vitest";
-import { checkServices, probeTcp } from "../src/preflight.ts";
+import { checkServices, probeTcp, servicesProblem } from "../src/preflight.ts";
+import { setTermLanguage } from "../src/term.ts";
 
 const listen = () =>
   new Promise<{ server: Server; port: number }>((done) => {
@@ -51,5 +52,37 @@ describe("checkServices", () => {
 
   it("没有声明服务：空数组", async () => {
     expect(await checkServices([], async () => "never")).toEqual([]);
+  });
+});
+
+describe("servicesProblem（sandpipe run 启动时的报错）", () => {
+  const services = [
+    { name: "postgres", host: "localhost", port: 5432 },
+    { name: "redis", host: "127.0.0.1", port: 6379 },
+    { name: "mongo", host: "localhost", port: 27017 },
+  ];
+  const down = (...ports: number[]) => async (_host: string, port: number) => (ports.includes(port) ? "connect ECONNREFUSED" : null);
+
+  it("都连得上 / 没声明：null（照常启动）", async () => {
+    expect(await servicesProblem(services, down())).toBeNull();
+    expect(await servicesProblem([], down(5432))).toBeNull();
+  });
+
+  it("中文：列出每一个连不上的服务（名字、host:port、错误），提示先把服务起来", async () => {
+    setTermLanguage("zh", {});
+    expect(await servicesProblem(services, down(5432, 27017))).toBe(
+      "门槛依赖的服务连不上：postgres（localhost:5432）：connect ECONNREFUSED；mongo（localhost:27017）：connect ECONNREFUSED。先把服务起来，然后重试（sandpipe doctor 可以检查）",
+    );
+  });
+
+  it("英文", async () => {
+    setTermLanguage("en", {});
+    try {
+      expect(await servicesProblem(services, down(6379))).toBe(
+        "Services the gate depends on are unreachable: redis (127.0.0.1:6379): connect ECONNREFUSED. Start them first, then retry (sandpipe doctor can check)",
+      );
+    } finally {
+      setTermLanguage("zh", {});
+    }
   });
 });
