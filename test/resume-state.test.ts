@@ -6,7 +6,7 @@ import { parseReviewed, REVIEWED_MARK_PREFIX, resumeDecision, reviewedComment } 
 
 const zh = messages("zh");
 const en = messages("en");
-const data = { summary: "看过了，<b>没问题</b>\n第二行 --> 也没事", revisions: ["改一下 A", "再改 B"], browserTag: "changed" };
+const data = { summary: "看过了，<b>没问题</b>\n第二行 --> 也没事", revisions: ["改一下 A", "再改 B"], browserTag: "changed", browserVerdict: "- ✅ 列表：<b>三行</b> --> 正常\n- ❌ 删除：报错" };
 
 describe("resume-state", () => {
   it.each([zh, en])("reviewedComment → parseReviewed 往返一致，首行是带 sha 的标记", (m) => {
@@ -16,8 +16,18 @@ describe("resume-state", () => {
   });
 
   it("browserTag 没有时往返也是 undefined", () => {
-    const body = reviewedComment("abc", { summary: "s", revisions: [], browserTag: undefined }, zh);
-    expect(parseReviewed([body])).toEqual({ sha: "abc", summary: "s", revisions: [], browserTag: undefined });
+    const body = reviewedComment("abc", { summary: "s", revisions: [], browserTag: undefined, browserVerdict: undefined }, zh);
+    expect(parseReviewed([body])).toEqual({ sha: "abc", summary: "s", revisions: [], browserTag: undefined, browserVerdict: undefined });
+  });
+
+  it("旧评论没有 browserVerdict 字段：照常解析，browserVerdict 为 undefined（门槛按缺失挡）", () => {
+    const old = `${REVIEWED_MARK_PREFIX}abc -->\n说明\n\n<!-- sandcastle:reviewed-data {"summary":"s","revisions":[],"browserTag":"done"} -->`;
+    expect(parseReviewed([old])).toEqual({ sha: "abc", summary: "s", revisions: [], browserTag: "done", browserVerdict: undefined });
+  });
+
+  it("browserVerdict 不是字符串：解析失败", () => {
+    const bad = `${REVIEWED_MARK_PREFIX}abc -->\n<!-- sandcastle:reviewed-data {"summary":"s","revisions":[],"browserTag":null,"browserVerdict":1} -->`;
+    expect(parseReviewed([bad])).toBeNull();
   });
 
   it("有多条评论时取最后一条带标记的", () => {

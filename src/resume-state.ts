@@ -8,7 +8,7 @@ export const REVIEWED_MARK_PREFIX = "<!-- sandcastle:reviewed@";
 const DATA_PREFIX = "<!-- sandcastle:reviewed-data ";
 
 /** 恢复时 PR 正文要用的评审结果。 / Review results the PR body needs on resume. */
-export type ReviewedData = { summary: string; revisions: string[]; browserTag: string | undefined };
+export type ReviewedData = { summary: string; revisions: string[]; browserTag: string | undefined; browserVerdict: string | undefined };
 export type ReviewedState = ReviewedData & { sha: string };
 
 /**
@@ -18,7 +18,7 @@ export type ReviewedState = ReviewedData & { sha: string };
  * `<` and `>` in the JSON become `\u003c` / `\u003e` so a `-->` in the summary can't end the comment early.
  */
 export function reviewedComment(sha: string, data: ReviewedData, m: Messages): string {
-  const json = JSON.stringify({ summary: data.summary, revisions: data.revisions, browserTag: data.browserTag ?? null })
+  const json = JSON.stringify({ summary: data.summary, revisions: data.revisions, browserTag: data.browserTag ?? null, browserVerdict: data.browserVerdict ?? null })
     .replace(/</g, "\\u003c")
     .replace(/>/g, "\\u003e");
   return `${REVIEWED_MARK_PREFIX}${sha} -->\n${m.reviewedNote(sha)}\n\n${DATA_PREFIX}${json} -->`;
@@ -40,7 +40,10 @@ export function parseReviewed(comments: readonly string[]): ReviewedState | null
     if (typeof d?.summary !== "string") return null;
     if (!Array.isArray(d.revisions) || !d.revisions.every((r: unknown) => typeof r === "string")) return null;
     if (d.browserTag !== null && typeof d.browserTag !== "string") return null;
-    return { sha, summary: d.summary, revisions: d.revisions, browserTag: d.browserTag ?? undefined };
+    // 旧评论没有 browserVerdict 字段：当成缺失，门槛按 browserNoVerdict 挡（fail-closed，#84）。
+    // Old comments have no browserVerdict field: treated as missing, and the gate blocks with browserNoVerdict (fail-closed, #84).
+    if (d.browserVerdict != null && typeof d.browserVerdict !== "string") return null;
+    return { sha, summary: d.summary, revisions: d.revisions, browserTag: d.browserTag ?? undefined, browserVerdict: d.browserVerdict ?? undefined };
   } catch {
     return null;
   }

@@ -1037,7 +1037,7 @@ async function build(issue: Issue) {
     // Persist before the gate: when the gate hits a transient error and retryTransient reruns build, it also continues from the gate.
     if (r.reviewed.verdict === "merge") {
       const head = (await sandbox.exec("git rev-parse HEAD")).stdout.trim();
-      if (head) markReviewed(issue, { sha: head, summary: r.reviewed.summary, revisions: r.reviewed.revisions, browserTag: r.reviewed.browserTag });
+      if (head) markReviewed(issue, { sha: head, summary: r.reviewed.summary, revisions: r.reviewed.revisions, browserTag: r.reviewed.browserTag, browserVerdict: r.reviewed.browserVerdict });
     }
     return { ...(await gateAndCollect(issue, sandbox, run, env, r.implement, r.reviewed, usage)), budget: undefined };
   } finally {
@@ -1081,7 +1081,7 @@ async function resumeReviewed(issue: Issue, sandbox: Sandbox): Promise<Reviewed 
   const state = parseReviewed(comments.value);
   if (resumeDecision(state, head) === "resume" && state) {
     console.log(t(`  ↻ 接着上次：#${issue.id} 评审已过，直接跑门槛`, `  ↻ Resuming: #${issue.id} already passed review; going straight to the gate`));
-    return { runs: [], revisions: state.revisions, verdict: "merge", summary: state.summary, browserTag: state.browserTag, browserVerdict: undefined };
+    return { runs: [], revisions: state.revisions, verdict: "merge", summary: state.summary, browserTag: state.browserTag, browserVerdict: state.browserVerdict };
   }
   clearReviewed(issue);
   return undefined;
@@ -1755,7 +1755,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   // 改了页面的票，浏览器验收是自动合并的硬条件（src/browser-gate.ts）；不满足时同样附进每条留给人的原因。
   // For tickets that change pages, the browser check is a hard condition for auto-merge (src/browser-gate.ts); when unmet it's likewise added to every leave-for-human reason.
   const { block: browserBlock } = browserVerdict(
-    { pages: pageChanged, hasBrowser: DOC.hasBrowser, browser: result.browser, tag: result.browserTag, stale: result.browserStale },
+    { pages: pageChanged, hasBrowser: DOC.hasBrowser, browser: result.browser, tag: result.browserTag, stale: result.browserStale, verdict: result.browserVerdict },
     M,
   );
   const browserNote = browserBlock ? `\n\n${browserBlock}` : "";

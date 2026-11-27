@@ -13,7 +13,7 @@
 | 选中 | `Sandcastle` + `ready-for-agent` | 人 | 下次调度 prep |
 | 已准备 | + `sandcastle:prepped` | prep agent（指引新鲜、≤3 条验收标准、blocker 都已关闭） | plan 选中后实现 |
 | 已拆分 | 父票去掉 `Sandcastle`；子票带 `Sandcastle` + `ready-for-agent` | prep agent | 子票马上各自 prep；子票全关后，脚本在下次调度开头勾上 `## Split into` 清单并关掉父票（子票只认列表项开头的票号） |
-| 评审已过 | + `sandcastle:reviewed`，issue 上留 `<!-- sandcastle:reviewed@<sha> -->` 评论（末尾 JSON 存 summary、修改轮次、browser-check） | 脚本（review 给出 merge 后、跑门槛前；落地开头不论成败都去掉标签） | 进程中断重启后票照常被 plan 选中；build 里 worktree HEAD 还是这个 sha 就打「接着上次：#n 评审已过，直接跑门槛」，跳过 implement / review，PR 用量表和预算取 `usage.jsonl` 里的 implement / review / revise 记录；HEAD 变了就去掉标签正常重做（#49） |
+| 评审已过 | + `sandcastle:reviewed`，issue 上留 `<!-- sandcastle:reviewed@<sha> -->` 评论（末尾 JSON 存 summary、修改轮次、browser-check、评审逐条的 browser-verdict；旧评论没有 browser-verdict 时按缺失，门槛挡下） | 脚本（review 给出 merge 后、跑门槛前；落地开头不论成败都去掉标签） | 进程中断重启后票照常被 plan 选中；build 里 worktree HEAD 还是这个 sha 就打「接着上次：#n 评审已过，直接跑门槛」，跳过 implement / review，PR 用量表和预算取 `usage.jsonl` 里的 implement / review / revise 记录；HEAD 变了就去掉标签正常重做（#49） |
 | 已合并 | issue 关闭（PR 正文 `Closes #n`） | 脚本 | 依赖它的票下次调度开工 |
 | 等人审 | + `sandcastle:pr-open` | 脚本（没能自动合并时，含 forge 检查失败或超时） | 人审 PR：没问题就合并（issue 自动关闭）；要改就在 PR 上发 `/sandcastle` 开头的评论或 review |
 | 打回 | 去掉 `sandcastle:pr-open` | 脚本（每次调度开头看到打回信号时） | 这次调度重新 plan，implementer 在原分支上先处理 PR 意见 |

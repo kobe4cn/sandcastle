@@ -12,6 +12,7 @@ const en = messages("en");
 
 const result = ["# 浏览器验收", "", "图例：✅ 通过 ❌ 没过 ⚠ 有疑问", "", "- ✅ 登录后看到客户列表（list.png）", "- ✅ 新建客户成功（new.png）"].join("\n");
 const ok = { result, shots: ["/tmp/x/list.png", "/tmp/x/new.png"] };
+const pass = ["- ✅ 登录后看到客户列表：list.png 里有三行客户", "- ✅ 新建客户成功：new.png 顶部有成功提示"].join("\n");
 
 describe("pageFiles：diff 里命中 browser.pagePaths 的文件", () => {
   it("挑出命中任一正则的文件", () => {
@@ -61,35 +62,57 @@ describe("rebasePageHits：rebase 解冲突改到的页面", () => {
 
 describe("browserProblems：浏览器验收缺什么", () => {
   it("全部满足：无问题", () => {
-    expect(browserProblems(ok, "done", zh)).toEqual([]);
+    expect(browserProblems(ok, "done", zh, undefined, pass)).toEqual([]);
   });
   it("没有 .browser-check/：说清是改了页面但没做浏览器验收", () => {
     expect(browserProblems(undefined, "missing", zh)).toEqual(["改了页面但没做浏览器验收（worktree 里没有 `.browser-check/`）"]);
   });
   it("没有截图", () => {
-    expect(browserProblems({ result: "- ✅ 页面正常", shots: [] }, "done", zh)).toEqual(["没有截图"]);
+    expect(browserProblems({ result: "- ✅ 页面正常", shots: [] }, "done", zh, undefined, pass)).toEqual(["没有截图"]);
   });
   it("RESULT.md 缺失", () => {
-    expect(browserProblems({ shots: ok.shots }, "done", zh)).toEqual(["没有 RESULT.md"]);
+    expect(browserProblems({ shots: ok.shots }, "done", zh, undefined, pass)).toEqual(["没有 RESULT.md"]);
   });
   it("列表行有 ❌（图例行不算）", () => {
     const md = `${result}\n- ❌ 删除客户报错`;
-    expect(browserProblems({ ...ok, result: md }, "done", zh)).toEqual(["RESULT.md 有没通过的项（❌ / ⚠）：「- ❌ 删除客户报错」"]);
+    expect(browserProblems({ ...ok, result: md }, "done", zh, undefined, pass)).toEqual(["RESULT.md 有没通过的项（❌ / ⚠）：「- ❌ 删除客户报错」"]);
   });
   it("表格行有 ⚠（带 U+FE0F 的也算）", () => {
     const md = `${result}\n| 导出 | ⚠️ 文件名乱码 |`;
-    expect(browserProblems({ ...ok, result: md }, "done", zh)).toEqual(["RESULT.md 有没通过的项（❌ / ⚠）：「| 导出 | ⚠️ 文件名乱码 |」"]);
+    expect(browserProblems({ ...ok, result: md }, "done", zh, undefined, pass)).toEqual(["RESULT.md 有没通过的项（❌ / ⚠）：「| 导出 | ⚠️ 文件名乱码 |」"]);
   });
   it("编号列表行有 ❌", () => {
-    expect(browserProblems({ ...ok, result: `${result}\n1. ❌ 保存失败` }, "done", zh)).toHaveLength(1);
+    expect(browserProblems({ ...ok, result: `${result}\n1. ❌ 保存失败` }, "done", zh, undefined, pass)).toHaveLength(1);
   });
   it("引用的截图不存在", () => {
     const md = `${result}\n- ✅ 编辑客户（edit.png、EDIT2.JPG）`;
-    expect(browserProblems({ ...ok, result: md }, "done", zh)).toEqual(["RESULT.md 引用的截图不存在：edit.png、EDIT2.JPG"]);
+    expect(browserProblems({ ...ok, result: md }, "done", zh, undefined, pass)).toEqual(["RESULT.md 引用的截图不存在：edit.png、EDIT2.JPG"]);
   });
   it("review 的 browser-check 不是 done", () => {
     expect(browserProblems(ok, "missing", zh)).toEqual(["review 的 browser-check 是 `missing`，不是 done"]);
     expect(browserProblems(ok, undefined, zh)).toEqual(["review 没有给出 browser-check（要求是 done）"]);
+  });
+  it("review 给了 done 但没有逐条的 browser-verdict（缺失或空白）", () => {
+    expect(browserProblems(ok, "done", zh)).toEqual(["review 给了 browser-check done，但没有逐条的 browser-verdict"]);
+    expect(browserProblems(ok, "done", zh, undefined, "  \n ")).toEqual(["review 给了 browser-check done，但没有逐条的 browser-verdict"]);
+  });
+  it("评审逐条结论里有 ❌ / ❓：即使 RESULT.md 全 ✅ 也报，列出这些行", () => {
+    expect(browserProblems(ok, "done", zh, undefined, `${pass}\n- ❌ 删除客户：del.png 里还是旧数据`)).toEqual([
+      "评审自己看截图有没通过的步骤：「- ❌ 删除客户：del.png 里还是旧数据」",
+    ]);
+    expect(browserProblems(ok, "done", zh, undefined, `${pass}\n  ❓ 导出：没有截图`)).toEqual([
+      "评审自己看截图有没通过的步骤：「❓ 导出：没有截图」",
+    ]);
+    expect(browserProblems(ok, "done", zh, undefined, `* ❌ 甲\n2. ❓ 乙\n- ✅ 丙（之前有 ❌，已修好）`)).toEqual([
+      "评审自己看截图有没通过的步骤：「* ❌ 甲」、「2. ❓ 乙」",
+    ]);
+  });
+  it("逐条结论全 ✅：无问题", () => {
+    expect(browserProblems(ok, "done", zh, undefined, pass)).toEqual([]);
+  });
+  it("browser-check 不是 done 时不另报 verdict", () => {
+    expect(browserProblems(ok, "missing", zh)).toEqual(["review 的 browser-check 是 `missing`，不是 done"]);
+    expect(browserProblems(ok, "missing", zh, undefined, "- ❌ 没过")).toHaveLength(1);
   });
   it("几个问题同时出现时逐条报", () => {
     expect(browserProblems({ shots: [] }, "none", zh)).toHaveLength(3);
@@ -102,7 +125,12 @@ describe("browserVerdict：合并前的结论", () => {
     expect(browserVerdict({ pages: false, hasBrowser: true }, zh)).toEqual({});
   });
   it("改了页面、全部满足：不挡", () => {
-    expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done" }, zh)).toEqual({});
+    expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", verdict: pass }, zh)).toEqual({});
+  });
+  it("透传评审的逐条结论：有 ❌ 时挡", () => {
+    const { block } = browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", verdict: "- ❌ 保存：报错" }, zh);
+    expect(block).toContain("评审自己看截图有没通过的步骤：「- ❌ 保存：报错」");
+    expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done" }, zh).block).toContain("没有逐条的 browser-verdict");
   });
   it("改了页面、有问题：原因逐条写缺什么", () => {
     const { block } = browserVerdict({ pages: true, hasBrowser: true, browser: { result: "- ✅ 页面正常", shots: [] }, tag: "missing" }, zh);
@@ -110,23 +138,23 @@ describe("browserVerdict：合并前的结论", () => {
     expect(block).toMatch(/^改了页面，浏览器验收不满足自动合并的条件/);
   });
   it("验收之后又改了页面：挡，原因里带文件名", () => {
-    const { block } = browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", stale: ["src/app/page.tsx", "src/b.tsx"] }, zh);
+    const { block } = browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", verdict: pass, stale: ["src/app/page.tsx", "src/b.tsx"] }, zh);
     expect(block).toContain("验收之后 revise / fix 改了页面，截图已过期");
     expect(block).toContain("src/app/page.tsx、src/b.tsx");
   });
   it("取不到验收时的提交或之后的 diff：按过期挡", () => {
-    const { block } = browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", stale: "unknown" }, zh);
+    const { block } = browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", verdict: pass, stale: "unknown" }, zh);
     expect(block).toContain("无法判断截图是否过期");
   });
   it("验收之后的改动没碰页面：照常有效", () => {
-    expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", stale: [] }, zh)).toEqual({});
+    expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", verdict: pass, stale: [] }, zh)).toEqual({});
   });
   it("没有 .browser-check/ 时 stale 不另报", () => {
-    const { block } = browserVerdict({ pages: true, hasBrowser: true, tag: "done", stale: "unknown" }, zh);
+    const { block } = browserVerdict({ pages: true, hasBrowser: true, tag: "done", verdict: pass, stale: "unknown" }, zh);
     expect(block).not.toContain("过期");
   });
   it("改了页面但没配浏览器验收：留 PR 并给补法", () => {
-    const { block } = browserVerdict({ pages: true, hasBrowser: false, browser: ok, tag: "done" }, zh);
+    const { block } = browserVerdict({ pages: true, hasBrowser: false, browser: ok, tag: "done", verdict: pass }, zh);
     expect(block).toContain("改了页面、本项目没配浏览器验收");
     expect(block).toContain("onboard");
     expect(block).toContain("## 浏览器验收");
@@ -136,11 +164,13 @@ describe("browserVerdict：合并前的结论", () => {
 describe("英文文案", () => {
   it("问题与原因都是英文", () => {
     expect(browserProblems(undefined, "missing", en)).toEqual(["pages changed but no browser check was done (no `.browser-check/` in the worktree)"]);
-    expect(browserProblems({ shots: [] }, "done", en)).toEqual(["no screenshots", "no RESULT.md"]);
+    expect(browserProblems({ shots: [] }, "done", en, undefined, pass)).toEqual(["no screenshots", "no RESULT.md"]);
     expect(browserVerdict({ pages: true, hasBrowser: false }, en).block).toContain("## Browser check");
     expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "none" }, en).block).toMatch(/^Pages changed/);
-    expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", stale: ["a.tsx"] }, en).block).toContain("screenshots are out of date: a.tsx");
-    expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", stale: "unknown" }, en).block).toContain("can't tell whether the screenshots are out of date");
+    expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", verdict: pass, stale: ["a.tsx"] }, en).block).toContain("screenshots are out of date: a.tsx");
+    expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", verdict: pass, stale: "unknown" }, en).block).toContain("can't tell whether the screenshots are out of date");
+    expect(browserProblems(ok, "done", en)).toEqual(["the review said browser-check done but gave no per-step browser-verdict"]);
+    expect(browserProblems(ok, "done", en, undefined, "- ❓ export")).toEqual(["the reviewer's own look at the screenshots found failing steps: “- ❓ export”"]);
     expect(en.reasonBrowserStaleAfterRebase("`a.tsx`")).toContain("`a.tsx`");
     expect(en.reasonBrowserStaleAfterRebase(undefined)).toContain("couldn't read the diff");
     expect(zh.reasonBrowserStaleAfterRebase(undefined)).toContain("取不到");

@@ -28,6 +28,8 @@ const ITEM_LINE = /^\s*([-*]|\d+\.|\|)/;
 const FAILED = /❌|⚠/;
 const SHOT_REF = /[\w.-]+\.(png|jpe?g)/gi;
 const basename = (p: string) => p.split(/[\\/]/).at(-1) ?? p;
+// 评审逐条结论里没通过的行：行首（去掉 `-` / `*` / `1.` 列表符号后）是 ❌ 或 ❓。 / Failing rows in the reviewer's per-step verdict: ❌ or ❓ at the start of the line (after any `-` / `*` / `1.` list marker).
+const VERDICT_FAILED = /^([-*]|\d+\.)?\s*(❌|❓)/;
 
 /**
  * 验收之后（browserAt..HEAD）的改动里命中页面的文件；取不到 diff 时为 "unknown"，按过期处理（fail-closed，#58）。
@@ -52,12 +54,13 @@ export function rebasePageHits(
 
 /**
  * 浏览器验收缺什么（空数组就是都满足）：至少一张截图；RESULT.md 存在、列表行没有 ❌ / ⚠、引用的截图都在；review 标签是 done；
- * 验收之后没再改页面（stale 为空或不传）。
+ * 验收之后没再改页面（stale 为空或不传）；标签是 done 时，评审有逐条的 browser-verdict 且没有 ❌ / ❓ 行（#84）。
  * What the browser check is missing (empty means all satisfied): at least one screenshot; RESULT.md exists, its list rows have no ❌ / ⚠,
- * and the screenshots it references exist; the review tag is done; no page changed after the check (stale empty or omitted).
+ * and the screenshots it references exist; the review tag is done; no page changed after the check (stale empty or omitted);
+ * when the tag is done, the reviewer gave a per-step browser-verdict with no ❌ / ❓ rows (#84).
  */
 export function browserProblems(
-  b: BrowserCheck | undefined, tag: string | undefined, m: Messages, stale?: string[] | "unknown",
+  b: BrowserCheck | undefined, tag: string | undefined, m: Messages, stale?: string[] | "unknown", verdict?: string,
 ): string[] {
   if (!b) return [m.browserNotDone];
   const problems: string[] = [];
@@ -75,6 +78,13 @@ export function browserProblems(
   }
   const value = tag?.trim();
   if (value !== "done") problems.push(value ? m.browserTagNotDone(value) : m.browserNoTag);
+  // done 必须基于评审自己看截图的结论（#84）；不比对 RESULT.md 的步骤，那交给评审。
+  // done must rest on the reviewer's own look at the screenshots (#84); RESULT.md's steps aren't compared here, that's the reviewer's job.
+  else if (!verdict?.trim()) problems.push(m.browserNoVerdict);
+  else {
+    const failed = verdict.split("\n").map((l) => l.trim()).filter((l) => VERDICT_FAILED.test(l));
+    if (failed.length) problems.push(m.browserVerdictFailed(failed));
+  }
   return problems;
 }
 
@@ -83,12 +93,12 @@ export function browserProblems(
  * The pre-merge verdict: no page changes, no block; pages changed but the project has no browser check configured, or the check falls short, gives a reason `block` for leaving the PR.
  */
 export function browserVerdict(
-  x: { pages: boolean; hasBrowser: boolean; browser?: BrowserCheck; tag?: string; stale?: string[] | "unknown" },
+  x: { pages: boolean; hasBrowser: boolean; browser?: BrowserCheck; tag?: string; stale?: string[] | "unknown"; verdict?: string },
   m: Messages,
 ): { block?: string } {
   if (!x.pages) return {};
   if (!x.hasBrowser) return { block: m.reasonNoBrowserConfig };
-  const problems = browserProblems(x.browser, x.tag, m, x.stale);
+  const problems = browserProblems(x.browser, x.tag, m, x.stale, x.verdict);
   return problems.length ? { block: m.reasonBrowser(problems.join(m.sep)) } : {};
 }
 

@@ -125,6 +125,8 @@ const zh = {
   browserMissingShots: (names: string) => `RESULT.md 引用的截图不存在：${names}`,
   browserTagNotDone: (tag: string) => `review 的 browser-check 是 \`${tag}\`，不是 done`,
   browserNoTag: "review 没有给出 browser-check（要求是 done）",
+  browserNoVerdict: "review 给了 browser-check done，但没有逐条的 browser-verdict",
+  browserVerdictFailed: (lines: string[]) => `评审自己看截图有没通过的步骤：${lines.map((l) => `「${l}」`).join("、")}`,
   browserStale: (files: string) => `验收之后 revise / fix 改了页面，截图已过期：${files}`,
   browserStaleUnknown: "取不到浏览器验收时的提交或之后的 diff，无法判断截图是否过期",
   /** rebase 解冲突改到了页面，不 push、留 PR（#58）。 / Resolving rebase conflicts touched pages; not pushed, PR left open (#58). */
@@ -327,6 +329,8 @@ const en: Messages = {
   browserMissingShots: (names) => `screenshots referenced in RESULT.md don't exist: ${names}`,
   browserTagNotDone: (tag) => `the review's browser-check is \`${tag}\`, not done`,
   browserNoTag: "the review gave no browser-check (done is required)",
+  browserNoVerdict: "the review said browser-check done but gave no per-step browser-verdict",
+  browserVerdictFailed: (lines) => `the reviewer's own look at the screenshots found failing steps: ${lines.map((l) => `“${l}”`).join(", ")}`,
   browserStale: (files) => `pages changed by revise / fix after the browser check, so the screenshots are out of date: ${files}`,
   browserStaleUnknown: "couldn't read the commit at the browser check or the diff since, so can't tell whether the screenshots are out of date",
   reasonBrowserStaleAfterRebase: (files) =>
