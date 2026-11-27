@@ -103,6 +103,7 @@ import { createGateQueue, type GatePriority } from "./gate-queue.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { loadProjectDoc, projectDocPath, projectDocWatcher, renderPrompts } from "./project-doc.ts";
 import { type BrowserCheck, browserSetupWarning, browserVerdict, pageFiles, ticketHasBrowserCheck } from "./browser-gate.ts";
+import { protectedBlock } from "./protected-paths.ts";
 import { detectProject } from "./detect.ts";
 import { probeTcp, servicesProblem } from "./preflight.ts";
 import { manual } from "./onboard.ts";
@@ -975,6 +976,15 @@ const sandboxHead = async (sandbox: Sandbox) =>
   (await sandbox.exec("git rev-parse HEAD").catch(() => undefined))?.stdout.trim() ?? "";
 
 /**
+ * 票相对 BASE_REF 改了哪些文件（git diff --name-only，相对仓库根）；取不到时返回 undefined。
+ * Files the ticket changed against BASE_REF (git diff --name-only, relative to the repo root); undefined when it can't be read.
+ */
+const ticketDiffFiles = async (sandbox: Sandbox): Promise<string[] | undefined> => {
+  const diff = await sandbox.exec(`git diff --name-only ${BASE_REF}...HEAD`).catch(() => undefined);
+  return diff?.exitCode === 0 ? diff.stdout.split("\n").map((l) => l.trim()).filter(Boolean) : undefined;
+};
+
+/**
  * 票带 reviewed 时读票上的标记评论，和 worktree 的 HEAD 比：一致返回评审结果；不一致或读不出来就清掉状态，返回 undefined 正常重做。
  * When the ticket is labelled reviewed, read its marker comment and compare with the worktree HEAD: return the review results when they match; otherwise clear the state and return undefined to redo normally.
  */
@@ -1136,11 +1146,11 @@ async function gateAndCollect(
       }
     }
   }
-  // 改了哪些文件（判断改没改页面用）：在 review / 修改 / 修门槛之后取，算上所有提交。取不到就当空的，退回原有判断，不挡合并。
-  // Which files changed (to judge page changes): taken after review / revisions / gate fixes so every commit counts. If it fails, treat it as empty and fall back to the existing judgement without blocking the merge.
-  const diff = await sandbox.exec(`git diff --name-only ${BASE_REF}...HEAD`).catch(() => undefined);
-  const changed = diff?.exitCode === 0 ? diff.stdout.split("\n").map((l) => l.trim()).filter(Boolean) : [];
-
+  // 改了哪些文件（判断改没改页面、改没改受保护路径用）：在 review / 修改 / 修门槛之后取，算上所有提交。
+  // 取不到时为 undefined：页面判断当空的，退回原有判断不挡合并；配了 protectedPaths 时 land 按命中处理（fail-closed）。
+  // Which files changed (to judge page changes and protected paths): taken after review / revisions / gate fixes so every commit counts.
+  // undefined if unreadable: the page judgement treats it as empty and falls back without blocking; with protectedPaths configured, land treats it as a hit (fail-closed).
+  const changed = await ticketDiffFiles(sandbox);
   return {
     done: true as const,
     implement,
@@ -1276,6 +1286,18 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     // 这时宿主机锁还放开着，复审只在沙箱里跑；不通过就不 push，远端分支保持原样，由调用方留 PR。
     // The agent resolved conflicts (or rebuilt the integrity chain) and the gate passed: re-review once before pushing, looking only at what the rebase changed (#71).
     // The host lock is still released here, so the re-review stays in the sandbox; on failure nothing is pushed, the remote branch stays as it was, and the caller leaves the PR open.
+    // 配了受保护路径：agent 解冲突可能改到新文件，push 前在沙箱重取 diff 再查一次；取不到按命中处理（fail-closed）。
+    // 不起 agent 的快速路径不查：diff 的文件集合没变，land 已查过（docs/adr/0003-protected-paths.md）。
+    // With protected paths configured: resolving conflicts may touch new files, so re-read the diff in the sandbox and check again before pushing; an unreadable diff counts as a hit (fail-closed).
+    // The fast path without an agent isn't checked: the set of changed files is unchanged and land already checked it (docs/adr/0003-protected-paths.md).
+    if ((conflicted || chainBroken) && project.protectedPaths.length > 0) {
+      const block = protectedBlock(await ticketDiffFiles(sandbox), project.protectedPaths, M);
+      if (block) {
+        console.log(t(`  ◐ #${issue.id} rebase 后受保护路径检查没通过，不 push`, `  ◐ #${issue.id} protected-path check failed after the rebase; not pushing`));
+        return { ok: false, reason: block };
+      }
+    }
+
     if (rebaseNeedsReReview({ conflicted, chainBroken, merge })) {
       const usage: UsageRecord[] = [];
       // 取不到 rebase 前的范围时 range-diff 没法对比：按不通过处理（fail-closed），不白起会话。
@@ -1538,7 +1560,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   const notesProblems = checkAcceptanceNotes(result.notes, M);
   // 改了页面：diff 命中 browser.pagePaths，或有 .browser-check/，或 review 说改了。 / Pages changed: the diff hits browser.pagePaths, or there's a .browser-check/, or the review says so.
   const pageChanged =
-    pageFiles(result.changed, project.browser.pagePaths).length > 0 || result.browser !== undefined || pageChangedByReview(result.browserTag);
+    pageFiles(result.changed ?? [], project.browser.pagePaths).length > 0 || result.browser !== undefined || pageChangedByReview(result.browserTag);
   // 改了页面但票里没有 Browser check：PR 正文的 Browser check 一节写提示（没有 .browser-check/ 也写），另发一条评论。
   // Pages changed but the ticket has no Browser check: the PR body's Browser check section carries a notice (even without .browser-check/), plus a separate comment.
   const noTicketCheck = pageChanged && issue.browserCheck === false;
@@ -1641,6 +1663,15 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   if (result.fixHeadUnknown) {
     leaveForHuman(issue, pr, `${M.reasonHeadUnknown}${notesNote}${browserNote}`);
     console.log(t(`  ◐ #${issue.id} 取不到 fix 前后的 HEAD，未复审，留 PR #${pr}`, `  ◐ #${issue.id} couldn't read HEAD before/after the fix; not re-reviewed, PR #${pr} left open`));
+    logBrowserBlock();
+    return;
+  }
+  // 票的最终 diff 改到了受保护路径，或配了规则却取不到 diff（fail-closed）：不自动合并（docs/adr/0003-protected-paths.md）。
+  // The ticket's final diff touches protected paths, or rules are configured but the diff is unreadable (fail-closed): no auto-merge (docs/adr/0003-protected-paths.md).
+  const protectedReason = protectedBlock(result.changed, project.protectedPaths, M);
+  if (protectedReason) {
+    leaveForHuman(issue, pr, `${protectedReason}${notesNote}${browserNote}`);
+    console.log(t(`  ◐ #${issue.id} 受保护路径检查没通过，留 PR #${pr}`, `  ◐ #${issue.id} protected-path check failed; PR #${pr} left open`));
     logBrowserBlock();
     return;
   }

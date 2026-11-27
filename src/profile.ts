@@ -229,6 +229,15 @@ export interface ProjectProfile {
   browser?: { pagePaths?: RegExp[] };
 
   /**
+   * 受保护路径：文件路径（相对仓库根，不带前导 /，和 git diff --name-only 的输出一致）的正则。票的最终 diff 改到命中的文件就不自动合并，留 PR，
+   * 评论逐条列出「文件 — 命中的规则」；配了规则但取不到 diff 时也留 PR。不写时为空，即不按路径挡合并（见 docs/adr/0003-protected-paths.md）。
+   * Protected paths: regexes for file paths (relative to the repo root, no leading /, matching git diff --name-only output). If a ticket's final diff touches a matching file
+   * it isn't auto-merged and the PR is left open, with each "file — rule matched" listed in the comment; with rules configured, an unavailable diff also leaves the PR open.
+   * Empty when absent, i.e. no path-based merge blocking (see docs/adr/0003-protected-paths.md).
+   */
+  protectedPaths?: RegExp[];
+
+  /**
    * 自动开的票（偶发失败、main 坏了）与内联提示词的正文。不给时用通用版。
    * Bodies of auto-opened tickets (flaky, main broken) and inline prompts. Generic versions when not given.
    */
@@ -297,6 +306,7 @@ export type Project = Required<
   beforeSchedule(): void;
   acceptancePrep?(branch: string): string;
   browser: { pagePaths: RegExp[] };
+  protectedPaths: RegExp[];
   texts: Required<NonNullable<ProjectProfile["texts"]>>;
 };
 
@@ -329,6 +339,7 @@ export function resolveProject(p: ProjectProfile): Project {
     appendOnlyFiles: p.appendOnlyFiles ?? [],
     acceptancePrep: p.acceptancePrep,
     browser: { pagePaths: p.browser?.pagePaths ?? [] },
+    protectedPaths: p.protectedPaths ?? [],
     texts: { ...defaultTexts(p.language), ...p.texts },
   };
 }

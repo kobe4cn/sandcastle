@@ -35,6 +35,11 @@ describe("resolveProject", () => {
     expect(resolveProject({ ...minimal, browser: {} }).browser.pagePaths).toEqual([]);
   });
 
+  it("protectedPaths 不写时为空、写了原样保留", () => {
+    expect(resolveProject(minimal).protectedPaths).toEqual([]);
+    expect(resolveProject({ ...minimal, protectedPaths: [/^\.github\//, /^migrations\//] }).protectedPaths).toEqual([/^\.github\//, /^migrations\//]);
+  });
+
   it("mergeRequires 只给一个字段时另一个取默认值", () => {
     expect(resolveProject({ ...minimal, mergeRequires: { timeoutMinutes: 10 } }).mergeRequires).toEqual({ checks: "all", timeoutMinutes: 10 });
     expect(resolveProject({ ...minimal, mergeRequires: { checks: "required" } }).mergeRequires).toEqual({ checks: "required", timeoutMinutes: 30 });
