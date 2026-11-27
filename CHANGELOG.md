@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 撞限额换档案看得出来了：档案撞上用量限额的那次会话也往 `.sandcastle/logs/usage.jsonl` 记一条，带 `limited: true`（拿得到 run 就照常算 token，报错是抛出来的则 token 记 0、会话数 0），PR 的 Usage 表里显示为一行「撞限额，换下一个档案」（英文 `hit usage limit, switched to next profile`），其余数值格写 `—`。全部档案都撞限额、build 整次重跑时，那几行只留在 `usage.jsonl`。老记录读回和渲染不变（closes #47）
 - 档案撞限额后的恢复时间（含 2 分钟余量）写进 `.sandcastle/logs/limits.json`（`{档案名: epoch 毫秒}`，先写临时文件再 rename），重启后在恢复时间之前照样跳过这个档案，不再把刚撞过限额的档案再试一次；读写时丢掉已过期的条目，文件不存在或损坏当作空（closes #46）
 - `models.json` 改坏时的提示不再带多余的 `Error: ` 前缀，英文下用半角冒号：`⚠ .sandcastle/models.json: invalid JSON …; keeping the previously loaded config`。别家档案的 model 写的是 `opus` / `sonnet` / `haiku`（可带 `[1m]`）、env 里设了对应的 `ANTHROPIC_DEFAULT_*_MODEL` 时，`usage.jsonl` 和 PR 用量表的 model 记成 `opus→glm-5.3[1m]`，不再只记 `opus`、看起来像用了 Claude Opus；值是 `${VAR}` 时照旧记别名（closes #45）
 - 空位全满时改 `models.json` 也生效了：之前只在有空位、开调度时才重读，一张票只配了一个会撞限额的档案、在限额里循环等待时，往配置里补上新档案也没用，只能重启。现在主循环每轮都读（不管有没有空位），限额等待醒来、重跑前也重读一次，等待期间补上的档案马上能用。限额等待的逻辑搬到 `src/limit-wait.ts`（closes #43）

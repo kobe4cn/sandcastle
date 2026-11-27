@@ -139,6 +139,25 @@ describe("N1b 撞限额换档案", () => {
     expect(after).toEqual(["opus"]);
   });
 
+  it("撞限额时调 onLimited：抛错的不带 run，作为输出返回的带 run；没撞不调", async () => {
+    const limited: [string, AgentRun | undefined][] = [];
+    const onLimited = (p: Profile, r?: AgentRun) => limited.push([p.name, r]);
+    await m.runWithProfile("review", "#7", async (p) => {
+      if (p.name === "sonnet") throw new Error(LIMIT);
+      return done();
+    }, onLimited);
+    expect(limited).toEqual([["sonnet", undefined]]);
+
+    limited.length = 0;
+    const quota: AgentRun = { iterations: [{}], stdout: LIMIT };
+    await m.runWithProfile("implement", "#8", async (p) => (p.name === "opus" ? quota : done()), onLimited);
+    expect(limited).toEqual([["opus", quota]]);
+
+    limited.length = 0;
+    await m.runWithProfile("implement", "#9", async () => done(), onLimited);
+    expect(limited).toEqual([]);
+  });
+
   it("限额文本作为最后的输出、不带完成信号返回：也换档案；带完成信号的不算", async () => {
     const tried: string[] = [];
     const { profile } = await m.runWithProfile("implement", "#7", async (p) => {
@@ -718,5 +737,33 @@ describe("N1f 用量记录", () => {
     expect(en).toContain("| Session | Profile |");
     expect(en).toContain("p1 (claude-opus-4-5)");
     expect(m.usageTable([], messages("en"))).toBe("(no usage recorded)");
+  });
+
+  it("recordUsage 撞限额的记录：带 limited: true，没有 run 时 token 0、sessions 0；没撞的不写 limited", () => {
+    const p = profile();
+    const rec = m.recordUsage("#3", "implement", undefined, "implement", p, true);
+    expect(rec).toMatchObject({
+      issue: "#3", phase: "implement", run: "implement", profile: "p1", model: "claude-opus-4-5",
+      sessions: 0, input: 0, cacheCreation: 0, cacheRead: 0, output: 0, peak: 0, limited: true,
+    });
+    const withRun = m.recordUsage("#3", "implement", { stdout: "", iterations: [{ usage: { inputTokens: 1, cacheCreationInputTokens: 2, cacheReadInputTokens: 3, outputTokens: 4 } }] }, "implement", p, true);
+    expect(withRun).toMatchObject({ sessions: 1, input: 1, output: 4, limited: true });
+    m.recordUsage("#3", "implement", { stdout: "", iterations: [] }, "implement", p);
+    const lines = readFileSync(".sandcastle/logs/usage.jsonl", "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.map((l) => l.limited)).toEqual([true, true, undefined]);
+    expect("limited" in lines[2]).toBe(false);
+    expect(m.readUsage("#3").map((r) => r.limited)).toEqual([true, true, undefined]);
+  });
+
+  it("usageTable：limited 的行次数格写「撞限额，换下一个档案」，数值格 —，列数不变；老记录不变", () => {
+    const rec = { at: "", issue: "#1", phase: "implement" as const, run: "implement", profile: "p1", model: "claude-opus-4-5", sessions: 3, input: 15, cacheCreation: 152, cacheRead: 4000, output: 67, peak: 3054 };
+    const cols = (line: string) => line.split("|").length;
+    const zh = m.usageTable([{ ...rec, limited: true }, rec]).split("\n");
+    expect(zh[2]).toBe("| implement | p1（claude-opus-4-5） | 撞限额，换下一个档案 | — | — | — | — | — |");
+    expect(zh[3]).toBe("| implement | p1（claude-opus-4-5） | 3 | 0.0k | 0.2k | 4.0k | 0.1k | 3.1k |");
+    expect(cols(zh[2]!)).toBe(cols(zh[3]!));
+    expect(cols(zh[2]!)).toBe(cols(zh[0]!));
+    const en = m.usageTable([{ ...rec, limited: true }], messages("en")).split("\n");
+    expect(en[2]).toBe("| implement | p1 (claude-opus-4-5) | hit usage limit, switched to next profile | — | — | — | — | — |");
   });
 });

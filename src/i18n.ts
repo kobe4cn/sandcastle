@@ -33,6 +33,7 @@ const zh = {
   usageNone: "（没有记录到用量）",
   usageHeader: "| 会话 | 档案 | 次数 | 输入 | 缓存写 | 缓存读 | 输出 | 上下文峰值 |",
   usageProfile: (profile: string, model: string) => `${profile}（${model}）`,
+  usageLimited: "撞限额，换下一个档案",
   budgetNote: (peakK: number, budgetK: number, sessions: number) =>
     `上下文峰值约 ${peakK}k / ${budgetK}k，implement 用了 ${sessions} 次会话。`,
   overBudget: "\n\n⚠️ 超过上下文预算，考虑把同类票切得更小。",
@@ -206,6 +207,7 @@ const en: Messages = {
   usageNone: "(no usage recorded)",
   usageHeader: "| Session | Profile | Runs | Input | Cache write | Cache read | Output | Peak context |",
   usageProfile: (profile, model) => `${profile} (${model})`,
+  usageLimited: "hit usage limit, switched to next profile",
   budgetNote: (peakK, budgetK, sessions) => `Peak context about ${peakK}k / ${budgetK}k; implement used ${sessions} session(s).`,
   overBudget: "\n\n⚠️ Over the context budget; consider splitting similar tickets smaller.",
   tierFull: "full tests",

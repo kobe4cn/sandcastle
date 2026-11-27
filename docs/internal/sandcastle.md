@@ -139,7 +139,7 @@ Sandcastle 处理期间，PR 作者不要往这个分支推提交。本地和远
 - 换档案以一次会话为单位：implement 的每次会话单独挑档案，档案名经环境变量 `SANDCASTLE_PROFILE` 给 implementer，进度评论第一行写明。不用 promptArgs：运行中的旧进程也会读到新提示词，多出的占位符会让它报错。撞上限额（Claude 档案认 `hit your … limit`，别家认 `limitPattern`）就记下这个档案的重置时间（存在 `.sandcastle/logs/limits.json`，重启后照样跳过），重置前所有票都跳过它，用列表里的下一个；认不出重置时间就跳过 1 小时。重置时间认「resets 6:20am (UTC)」和「2026-11-07 15:30:00」两种，后一种按 `resetTimeZone` 解析。列表里的都在等时，分支推到远端，等最早恢复的那个，不打 stuck。其他报错照常走临时错误重试。
 - 智谱 coding plan 撞限额的错误码是 1308（5 小时额度）和 1310（周 / 月额度），报错是「已达到…的使用上限。您的限额将在 … 重置」；1302 是并发过高，1113 多半是 Key 或 Base URL 配错，都不算限额。
 
-用量：每次 run 结束把档案、模型、会话数和输入 / 缓存写 / 缓存读 / 输出的 token 数追加到 `.sandcastle/logs/usage.jsonl`（每条会话 JSONL 里 assistant 消息的 usage 按消息 id 去重后相加；别家档案的 model 是 `opus` / `sonnet` / `haiku`（可带 `[1m]`）、env 里对应的 `ANTHROPIC_DEFAULT_*_MODEL` 有值时，model 记成 `opus→glm-5.3[1m]` 这样的「别名→实际名」，值是 `${VAR}` 或其余情况原样记），PR 正文的 **Usage** 一节是每次 run 一行的表：先列这张票的 prep（reprep 时有多次，落地时从 `usage.jsonl` 读回），再列 build 的各次 run，不含 rebase（发生在 PR 开出之后）；票关掉重开重做时旧的 prep 也会算进来。只记 token，不记费用：别家档案的费用是 Claude Code 按 Claude 单价算的，没有意义。
+用量：每次 run 结束把档案、模型、会话数和输入 / 缓存写 / 缓存读 / 输出的 token 数追加到 `.sandcastle/logs/usage.jsonl`（每条会话 JSONL 里 assistant 消息的 usage 按消息 id 去重后相加；别家档案的 model 是 `opus` / `sonnet` / `haiku`（可带 `[1m]`）、env 里对应的 `ANTHROPIC_DEFAULT_*_MODEL` 有值时，model 记成 `opus→glm-5.3[1m]` 这样的「别名→实际名」，值是 `${VAR}` 或其余情况原样记；撞限额、换下一个档案的那次会话也记一条，带 `limited: true`，拿得到 run 就照常算 token，拿不到（报错是抛出来的）token 记 0、会话数 0；老记录没有这个字段），PR 正文的 **Usage** 一节是每次 run 一行的表（`limited` 的行「次数」格写「撞限额，换下一个档案」，其余数值格写 `—`；全部档案都撞限额、整次 build 重跑时，那几行只留在 `usage.jsonl`，不进表）：先列这张票的 prep（reprep 时有多次，落地时从 `usage.jsonl` 读回），再列 build 的各次 run，不含 rebase（发生在 PR 开出之后）；票关掉重开重做时旧的 prep 也会算进来。只记 token，不记费用：别家档案的费用是 Claude Code 按 Claude 单价算的，没有意义。
 
 ## 运行前提
 

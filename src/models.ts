@@ -437,14 +437,15 @@ const limitText = (run: AgentRun, p: Profile) =>
 
 /**
  * 用这个阶段第一个没在等限额的档案跑一次会话。撞上限额就记下重置时间（认不出跳过 1 小时）、换下一个；
- * 都在等时抛 AllProfilesLimited。其他错误照抛。
+ * 都在等时抛 AllProfilesLimited。其他错误照抛。撞限额时先调 onLimited（限额文本作为输出返回的带上那次 run，抛错的不带）。
  * Run one session with this phase's first profile that isn't waiting on a limit. On a limit, record the reset time (skip 1 hour if unreadable) and try the next;
- * throw AllProfilesLimited when all are waiting. Other errors are rethrown.
+ * throw AllProfilesLimited when all are waiting. Other errors are rethrown. On a limit, onLimited is called first (with the run when the limit text came back as output, without when it was thrown).
  */
 export async function runWithProfile<T extends AgentRun>(
   phase: Phase,
   what: string,
   fn: (profile: Profile) => Promise<T>,
+  onLimited?: (profile: Profile, run?: T) => void,
 ): Promise<{ run: T; profile: Profile }> {
   if (!config) throw new Error(t("先调用 reloadModels()", "call reloadModels() first"));
   loadLimits();
@@ -455,14 +456,17 @@ export async function runWithProfile<T extends AgentRun>(
     if (name === undefined) throw new AllProfilesLimited(phase, Math.min(...names.map((n) => blockedUntil.get(n)!)));
     const profile = config.profiles.get(name)!;
     let message: string | undefined;
+    let limitedRun: T | undefined;
     try {
       const run = await fn(profile);
       message = limitText(run, profile);
       if (message === undefined) return { run, profile };
+      limitedRun = run;
     } catch (e) {
       message = String(e);
       if (!profile.limitPattern.test(message)) throw e;
     }
+    onLimited?.(profile, limitedRun);
     const resetAt = limitResetAt(message, profile.resetTimeZone);
     const until = resetAt === null ? now + UNKNOWN_RESET_SKIP_MS : resetAt + RESET_SLACK_MS;
     blockedUntil.set(name, until);
@@ -495,6 +499,11 @@ export interface UsageRecord {
    * Largest context of a single message in this run (input + cache write + cache read), which is what the budget measures; much larger than the final size when the session was compacted midway.
    */
   readonly peak: number;
+  /**
+   * 这次会话撞上了用量限额、换了下一个档案；没撞限额的记录（包括老记录）没有这个字段。
+   * This session hit a usage limit and switched to the next profile; records that didn't (including older ones) lack this field.
+   */
+  readonly limited?: boolean;
 }
 
 /**
@@ -557,8 +566,9 @@ function usageModel(p: Profile): string {
  * 记一次 run 的用量：追加到 .sandcastle/logs/usage.jsonl 并返回；build 收集返回值写进 PR，prep 的落地时用 readUsage 读回。写不进只警告。
  * Record one run's usage: append to .sandcastle/logs/usage.jsonl and return it; build collects the result for the PR, prep's is read back with readUsage on landing. Write failures only warn.
  */
-export function recordUsage(issue: string, phase: Phase, run: AgentRun, name: string, profile: Profile): UsageRecord {
-  const totals = run.iterations.map(sessionTotals).reduce(
+export function recordUsage(issue: string, phase: Phase, run: AgentRun | undefined, name: string, profile: Profile, limited = false): UsageRecord {
+  const iterations = run?.iterations ?? [];
+  const totals = iterations.map(sessionTotals).reduce(
     (a, b) => ({
       input: a.input + b.input, cacheCreation: a.cacheCreation + b.cacheCreation, cacheRead: a.cacheRead + b.cacheRead, output: a.output + b.output,
       peak: Math.max(a.peak, b.peak),
@@ -567,7 +577,7 @@ export function recordUsage(issue: string, phase: Phase, run: AgentRun, name: st
   );
   const record: UsageRecord = {
     at: new Date().toISOString(), issue, phase, run: name, profile: profile.name, model: usageModel(profile),
-    sessions: run.iterations.length, ...totals,
+    sessions: iterations.length, ...totals, ...(limited ? { limited: true } : {}),
   };
   try {
     mkdirSync(".sandcastle/logs", { recursive: true });
@@ -614,6 +624,11 @@ const k = (n: number) => `${(n / 1000).toFixed(1)}k`;
  */
 export function usageTable(records: readonly UsageRecord[], m: Messages = messages()): string {
   if (records.length === 0) return m.usageNone;
-  const rows = records.map((r) => `| ${r.run} | ${m.usageProfile(r.profile, r.model)} | ${r.sessions} | ${k(r.input)} | ${k(r.cacheCreation)} | ${k(r.cacheRead)} | ${k(r.output)} | ${k(r.peak)} |`);
+  const rows = records.map((r) => {
+    const cells = r.limited
+      ? [m.usageLimited, "—", "—", "—", "—", "—"]
+      : [r.sessions, k(r.input), k(r.cacheCreation), k(r.cacheRead), k(r.output), k(r.peak)];
+    return `| ${[r.run, m.usageProfile(r.profile, r.model), ...cells].join(" | ")} |`;
+  });
   return [m.usageHeader, "|---|---|---|---|---|---|---|---|", ...rows].join("\n");
 }

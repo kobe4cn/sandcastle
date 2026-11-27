@@ -100,7 +100,7 @@
 - [x] N1c 重置时间解析：Claude 的写法、别家不带时区按 resetTimeZone 解析
 - [x] N1d 别家档案（设了 ANTHROPIC_BASE_URL）清掉 CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY；`${VAR}` 从 .sandcastle/.env 取；档案不能覆盖 CLAUDE_CODE_AUTO_COMPACT_WINDOW；没设 ANTHROPIC_DEFAULT_HAIKU_MODEL 有警告
 - [x] N1e 热重载：改 models.json 后 reloadModels() 生效；改坏了保留旧配置并提示
-- [x] N1f 用量记录：usage.jsonl 每条带 issue / phase / profile / model / peak，usageTable 按会话汇总
+- [x] N1f 用量记录：usage.jsonl 每条带 issue / phase / profile / model / peak，usageTable 按会话汇总；撞限额换档案的那次也记一条 `limited: true`，表里显示「撞限额，换下一个档案」（#47）
 
 e2e 实跑（sandcastle-e2e）：
 - [x] N2 （✓ 990acaf：启动行与配置一致；usage.jsonl 22 条 prep/review=opus、其余=sonnet 全对；PR #95/#96/#100/#101 用量表一致。小问题：「Models:」每轮调度都打一遍；PR 用量表没有 prep 行）phases 配成 prep/review=opus，implement/revise/fix/rebase=sonnet：启动行「模型：」照配置打印；usage.jsonl 里每个阶段的 profile/model 与配置一致；PR 用量表一致

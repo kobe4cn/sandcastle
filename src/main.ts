@@ -173,9 +173,9 @@ const claudeEnv = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(CONTEXT_BUDGET) };
 
 /**
  * 跑一次 agent 会话：阶段用哪个档案（模型、厂商）由 .sandcastle/models.json 决定，撞限额换下一个（models.ts）。
- * 用量追加到 .sandcastle/logs/usage.jsonl，也放进 usage；build 收集的会进 PR 的用量表，prep 的落地时从 usage.jsonl 读回，rebase 的不进表。
+ * 用量追加到 .sandcastle/logs/usage.jsonl，也放进 usage（撞限额换档案的那次也记一条 limited）；build 收集的会进 PR 的用量表，prep 的落地时从 usage.jsonl 读回，rebase 的不进表。
  * Run one agent session: which profile (model, vendor) a phase uses comes from .sandcastle/models.json, switching to the next on limits (models.ts).
- * Usage is appended to .sandcastle/logs/usage.jsonl and also pushed onto usage; build's collected records go into the PR's usage table, prep's are read back from usage.jsonl on landing, rebase's stay out of the table.
+ * Usage is appended to .sandcastle/logs/usage.jsonl and also pushed onto usage (a session that hit a limit and switched profiles gets a limited record too); build's collected records go into the PR's usage table, prep's are read back from usage.jsonl on landing, rebase's stay out of the table.
  */
 async function runAgent<T extends AgentRun>(
   phase: Phase,
@@ -185,7 +185,12 @@ async function runAgent<T extends AgentRun>(
   usage: UsageRecord[],
   fn: (agent: sandcastle.AgentProvider) => Promise<T>,
 ): Promise<T> {
-  const { run, profile } = await runWithProfile(phase, name, (p) => fn(agentFor(p, { ...claudeEnv, ...env }, phase)));
+  const { run, profile } = await runWithProfile(
+    phase,
+    name,
+    (p) => fn(agentFor(p, { ...claudeEnv, ...env }, phase)),
+    (p, r) => usage.push(recordUsage(issue, phase, r, name, p, true)),
+  );
   usage.push(recordUsage(issue, phase, run, name, profile));
   return run;
 }
