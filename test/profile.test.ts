@@ -24,6 +24,12 @@ describe("resolveProject", () => {
     expect(p.texts.revisePrompt({ issueId: "1", branch: "b", title: "t", viewIssue: "gh issue view 1", items: "- x" })).toContain("gh issue view 1");
   });
 
+  it("fixPrompt 让 agent 只跑失败的测试文件和类型检查，不跑完整门槛", () => {
+    const prompt = resolveProject(minimal).texts.fixPrompt({ issueId: "1", branch: "b", title: "t", viewIssue: "gh issue view 1", gateOutput: "x", rerunMax: 3 });
+    expect(prompt).toContain("单独跑失败的测试文件和类型检查");
+    expect(prompt).toContain("不要跑完整门槛");
+  });
+
   it("browser.pagePaths 原样保留", () => {
     expect(resolveProject({ ...minimal, browser: { pagePaths: [/^app\/routes\//] } }).browser.pagePaths).toEqual([/^app\/routes\//]);
     expect(resolveProject({ ...minimal, browser: {} }).browser.pagePaths).toEqual([]);

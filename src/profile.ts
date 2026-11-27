@@ -396,7 +396,7 @@ const ZH_PROMPTS: Pick<Project["texts"], "revisePrompt" | "fixPrompt"> = {
     [
       `分支 ${branch}（issue #${issueId}）在合并门槛上失败，摘要如下；完整日志在 /tmp/gate-*.log（用 grep 看，不要整读）。测试失败的文件不超过 ${rerunMax} 个时已经单独重跑过一次，仍失败才到你这里。`,
       "```", gateOutput, "```",
-      `只修这些失败：单独跑失败的文件确认变绿，提交信息末尾 (#${issueId})。`,
+      `只修这些失败：单独跑失败的测试文件和类型检查确认变绿，不要跑完整门槛（完整门槛由编排器在你结束后跑）；提交信息末尾 (#${issueId})。`,
       "如果失败与本票改动无关（偶发、环境问题）或不能确定怎么修，不要改代码，在输出里说明原因。",
       CROSS_ISSUE_RULE(issueId),
       "最后输出 <promise>COMPLETE</promise>。",
