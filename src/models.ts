@@ -351,7 +351,7 @@ export function agentFor(
   const envPrefix = (unset: readonly string[]) => `env ${[...unset.map((k) => `-u ${k}`), ...assignments].join(" ")} `;
   return {
     ...base,
-    // 每行都会调 parseStreamLine：result 行的 modelUsage（按模型分的用量，含子代理）先回调再交给 base，用法量记录（#53）。
+    // 每行都会调 parseStreamLine：result 行的 modelUsage（按模型分的用量，含子代理）先回调再交给 base，供用量记录（#53）。
     // 解析失败、不是 result 行、没有 modelUsage 都不回调；回调抛错会让 sandcastle 把这行当坏行，这里只收集、不做别的。
     // parseStreamLine is called for every line: a result line's modelUsage (per-model usage, subagents included) is handed to the callback
     // before base sees the line, feeding the usage record (#53). Parse failures, non-result lines, and lines without modelUsage don't call back;
