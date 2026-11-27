@@ -90,6 +90,13 @@ describe("N1a 按阶段挑档案", () => {
     ["resetTimeZone 不合法", { profiles: { a: claude("x", { resetTimeZone: "Mars/Base" }) }, phases: phasesAll(["a"]) }, "profiles.a.resetTimeZone 不是合法的时区"],
     ["不是 JSON", "{ profiles: ", "不是合法的 JSON"],
   ];
+  it.each(bad)("%s：报错并指明位置", (_name, models, message) => {
+    project(models);
+    expect(() => m.inspectModels()).toThrow(`.sandcastle/models.json：`);
+    expect(() => m.inspectModels()).toThrow(message);
+    expect(() => m.reloadModels()).toThrow(message);
+  });
+
   it("没写 re-review：不报错，沿用 review 的档案列表", async () => {
     project({
       profiles: { opus: claude(), sonnet: claude("claude-sonnet-4-5") },
@@ -106,13 +113,6 @@ describe("N1a 按阶段挑档案", () => {
     m.reloadModels();
     const { profile } = await m.runWithProfile("re-review", "#1", async () => done());
     expect(profile.name).toBe("sonnet");
-  });
-
-  it.each(bad)("%s：报错并指明位置", (_name, models, message) => {
-    project(models);
-    expect(() => m.inspectModels()).toThrow(`.sandcastle/models.json：`);
-    expect(() => m.inspectModels()).toThrow(message);
-    expect(() => m.reloadModels()).toThrow(message);
   });
 });
 
@@ -681,12 +681,14 @@ describe("N1f 用量记录", () => {
       sessions: 3, input: 15, cacheCreation: 152, cacheRead: 4000, output: 67, peak: 3054,
     });
     expect(Number.isNaN(Date.parse(rec.at))).toBe(false);
-    m.recordUsage("#12", "re-review", { stdout: "", iterations: [{ sessionFilePath: "/nonexistent/x.jsonl" }] }, "re-review", p);
+    m.recordUsage("#12", "review", { stdout: "", iterations: [{ sessionFilePath: "/nonexistent/x.jsonl" }] }, "review", p);
+    m.recordUsage("#12", "re-review", { stdout: "", iterations: [] }, "re-review", p);
 
     const lines = readFileSync(".sandcastle/logs/usage.jsonl", "utf8").trim().split("\n").map((l) => JSON.parse(l));
-    expect(lines).toHaveLength(2);
+    expect(lines).toHaveLength(3);
     expect(lines[0]).toEqual(rec);
-    expect(lines[1]).toMatchObject({ issue: "#12", phase: "re-review", profile: "p1", model: "claude-opus-4-5", sessions: 1, peak: 0 });
+    expect(lines[1]).toMatchObject({ issue: "#12", phase: "review", profile: "p1", model: "claude-opus-4-5", sessions: 1, peak: 0 });
+    expect(lines[2]).toMatchObject({ issue: "#12", phase: "re-review", run: "re-review", sessions: 0 });
     for (const l of lines) expect(Object.keys(l)).toEqual(expect.arrayContaining(["issue", "phase", "profile", "model", "peak"]));
   });
 
