@@ -1083,8 +1083,10 @@ async function reReviewSession(issue: Issue, sandbox: Sandbox, run: RunAgent, ki
 /**
  * 门槛（失败时给一次 fix 机会再跑）、改了哪些文件、浏览器验收和验收说明，拼成 land 要的结果。门槛不管 verdict 都跑。
  * fix 有新提交且门槛重跑通过时，再起一次 re-review 会话只看 fix 的提交（#70），结论进 reReview，不通过由 land 留 PR。
+ * fix 前或 fix 后的 HEAD 取不到时不复审，fixHeadUnknown 为 true，由 land 留 PR（#73）。
  * The gate (with one fix chance and a rerun on failure), changed files, browser check and acceptance notes, assembled into the result land needs. The gate runs whatever the verdict.
  * When the fix committed and the gate rerun passed, a re-review session looks only at the fix's commits (#70); the verdict goes into reReview, and land leaves the PR open if it fails.
+ * When the HEAD before or after the fix can't be read, no re-review runs; fixHeadUnknown is true and land leaves the PR open (#73).
  */
 async function gateAndCollect(
   issue: Issue, sandbox: Sandbox, run: RunAgent, env: Record<string, string>, implement: Sessions, reviewed: Reviewed, usage: UsageRecord[],
@@ -1094,9 +1096,10 @@ async function gateAndCollect(
   let fix: sandcastle.SandboxRunResult | undefined;
   let reReview: ReReview | undefined;
   let reReviewRun: sandcastle.SandboxRunResult | undefined;
+  let fixHeadUnknown = false;
   if (gateResult.exitCode !== 0) {
-    // fix 前的 HEAD：fix 有没有新提交、复审看哪段 diff，都以它为起点。取不到就是空串，不复审。
-    // The pre-fix HEAD: the start point for whether the fix committed and which diff the re-review sees. Empty when unreadable, which skips the re-review.
+    // fix 前的 HEAD：fix 有没有新提交、复审看哪段 diff，都以它为起点。取不到就是空串，不复审也不自动合并（#73）。
+    // The pre-fix HEAD: the start point for whether the fix committed and which diff the re-review sees. Empty when unreadable: no re-review and no auto-merge (#73).
     const before = await sandboxHead(sandbox);
     // 给 implementer 一次修的机会（新会话），再跑一次门槛。 / Give the implementer one chance to fix (new session), then run the gate again.
     fix = await run("fix", `fix-${issue.id}`, (agent) => sandbox.run({
@@ -1112,8 +1115,14 @@ async function gateAndCollect(
     gateResult = await gate();
     const after = await sandboxHead(sandbox);
     // reviewer 本来就没给 merge 时 land 反正留 PR，不白跑复审。 / When the reviewer didn't say merge, land leaves the PR anyway; skip the re-review.
-    if (gateResult.exitCode === 0 && reviewed.verdict === "merge" && needsReReview(before, after)) {
-      ({ run: reReviewRun, verdict: reReview } = await reReviewSession(issue, sandbox, run, "fix", fixDiffCmd(before)));
+    if (gateResult.exitCode === 0 && reviewed.verdict === "merge") {
+      const need = needsReReview(before, after);
+      if (need === "review") {
+        ({ run: reReviewRun, verdict: reReview } = await reReviewSession(issue, sandbox, run, "fix", fixDiffCmd(before)));
+      } else if (need === "unknown") {
+        console.warn(t(`  ⚠ #${issue.id} 取不到 fix 前后的 HEAD，未复审，留 PR`, `  ⚠ #${issue.id} couldn't read HEAD before/after the fix; not re-reviewed, leaving the PR open`));
+        fixHeadUnknown = true;
+      }
     }
   }
   // 改了哪些文件（判断改没改页面用）：在 review / 修改 / 修门槛之后取，算上所有提交。取不到就当空的，退回原有判断，不挡合并。
@@ -1130,6 +1139,7 @@ async function gateAndCollect(
     summary: reviewed.summary,
     gate: { ok: gateResult.exitCode === 0, output: gateResult.stdout.slice(-3000), tier: gateTier(gateResult.stdout) },
     reReview,
+    fixHeadUnknown,
     browser: collectBrowserCheck(sandbox.worktreePath, issue.id),
     browserTag: reviewed.browserTag,
     notes: readAcceptanceNotes(sandbox.worktreePath),
@@ -1612,6 +1622,14 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   if (result.reReview && !result.reReview.pass) {
     leaveForHuman(issue, pr, `${M.reasonReReview("fix", result.reReview.summary)}${notesNote}${browserNote}`);
     console.log(t(`  ◐ #${issue.id} fix 之后的复审没通过，留 PR #${pr}`, `  ◐ #${issue.id} re-review after the fix failed; PR #${pr} left open`));
+    logBrowserBlock();
+    return;
+  }
+  // fix 跑过、门槛重跑过了，但 fix 前或 fix 后的 HEAD 取不到，没法确定 fix 改了什么、没复审（#73）：不自动合并。
+  // The fix ran and the gate rerun passed, but the HEAD before or after the fix was unreadable, so the fix wasn't re-reviewed (#73): no auto-merge.
+  if (result.fixHeadUnknown) {
+    leaveForHuman(issue, pr, `${M.reasonHeadUnknown}${notesNote}${browserNote}`);
+    console.log(t(`  ◐ #${issue.id} 取不到 fix 前后的 HEAD，未复审，留 PR #${pr}`, `  ◐ #${issue.id} couldn't read HEAD before/after the fix; not re-reviewed, PR #${pr} left open`));
     logBrowserBlock();
     return;
   }

@@ -10,11 +10,14 @@ export const tagged = (stdout: string, tag: string) =>
   new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(stdout)?.[1]?.trim();
 
 /**
- * fix 前后的 HEAD 都取到了、且不同（fix 有新提交）才复审。取不到（空串）时不复审：没法确定 diff 的起点。
- * Re-review only when both HEADs (before / after the fix) were read and differ (the fix committed). An empty one means no re-review: the diff's start is unknown.
+ * fix 前后的 HEAD 不同（fix 有新提交）时 review，相同时 skip。任一取不到（空串）时 unknown：没法确定 fix 改了什么，
+ * 不再静默跳过复审，由调用方留 PR（#73）。
+ * "review" when the HEADs before / after the fix differ (the fix committed), "skip" when equal. "unknown" when either is unreadable (empty):
+ * what the fix changed can't be determined, so the re-review is no longer silently skipped; the caller leaves the PR open (#73).
  */
-export function needsReReview(before: string, after: string): boolean {
-  return before !== "" && after !== "" && before !== after;
+export function needsReReview(before: string, after: string): "skip" | "review" | "unknown" {
+  if (before === "" || after === "") return "unknown";
+  return before === after ? "skip" : "review";
 }
 
 /** 复审看的 diff：fix 前 HEAD 之后的提交和改动。 / The diff the re-review looks at: commits and changes after the pre-fix HEAD. */

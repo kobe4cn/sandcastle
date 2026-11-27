@@ -8,12 +8,14 @@ const zh = messages("zh");
 const en = messages("en");
 
 describe("re-review", () => {
-  it("needsReReview：前后 HEAD 都非空且不同才复审", () => {
-    expect(needsReReview("abc", "def")).toBe(true);
-    expect(needsReReview("abc", "abc")).toBe(false);
-    expect(needsReReview("", "def")).toBe(false);
-    expect(needsReReview("abc", "")).toBe(false);
-    expect(needsReReview("", "")).toBe(false);
+  it.each([
+    ["", "b", "unknown"],
+    ["a", "", "unknown"],
+    ["", "", "unknown"],
+    ["a", "a", "skip"],
+    ["a", "b", "review"],
+  ] as const)("needsReReview(%j, %j) → %s（任一 HEAD 取不到时 unknown，不静默跳过，#73）", (before, after, want) => {
+    expect(needsReReview(before, after)).toBe(want);
   });
 
   it("fixDiffCmd：只看 fix 前 HEAD 之后的提交", () => {

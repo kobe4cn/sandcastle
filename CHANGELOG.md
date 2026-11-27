@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix 前或 fix 后取不到沙箱 HEAD 时不再静默跳过复审：之前 `git rev-parse HEAD` 失败返回空串时直接不复审，fix 的改动可能没经任何复审就自动合并，和复审没结论按不通过处理（fail-closed）不一致。现在 fix 跑过、门槛重跑通过、reviewer 给了 `merge`，但 fix 前或 fix 后 HEAD 为空时不自动合并：留 PR，评论写明「取不到 fix 前后的 HEAD，没法确定 fix 改了什么，未复审」，终端打「⚠ #n 取不到 fix 前后的 HEAD，未复审，留 PR」（中英文案）。fix 前后 HEAD 相同时照常不复审、合并，不同时照旧复审（纯函数 `needsReReview` 改为返回 `"skip" | "review" | "unknown"`，`src/re-review.ts`）（closes #73）
 - rebase 补救里 agent 解冲突后合并前要再复审：自动合并前 rebase 有冲突或迁移链分叉、起了解冲突 agent 且门槛重跑通过时，push 前起一次复审会话（阶段 `re-review`，run 名 `re-review-<id>-rebase`），只看 rebase 前后的 `git range-diff`，对照验收标准、重点查解冲突时丢掉或改动的测试。结论不是 `merge`（含没输出结论）时不 push、不合并，留 PR，评论写明「rebase 解冲突之后的复审没通过」、复审摘要和这次复审的用量表；取不到 rebase 前的分支范围时直接按不通过处理。fix 和 rebase 的复审会话共用一个 helper。复审用量记进 `usage.jsonl`（phase `re-review`）。干净 rebase 和只 typecheck 留给人审的 rebase 不复审（新增 `rebaseNeedsReReview`、`rebaseDiffCmd`，closes #71）
 - fix 改了代码后合并前要再复审：门槛失败后 fix 会话有新提交、门槛重跑通过时，起一次复审会话（阶段 `re-review`，run 名 `re-review-<id>-fix`，新提示词 `prompts/re-review.md`），只看 fix 前 HEAD 之后的提交，对照票的验收标准，重点查删测试、跳过测试（skip / only / todo）、放宽断言，只评不改。结论不是 `merge`（含没输出结论）时留 PR、不自动合并，PR 评论写明「fix 之后的复审没通过」和复审摘要（中英文案）。复审用量记进 `usage.jsonl`（phase `re-review`）和 PR 的 Usage 表。没跑 fix、fix 前后 HEAD 相同、或 reviewer 本来就没给 `merge`（反正留 PR）时不复审。之前 fix 的改动不经任何评审就能自动合并，可能靠删测试或放宽断言过门槛（纯函数在新文件 `src/re-review.ts`）（closes #70）
 - `models.json` 的 `phases` 新增阶段 `re-review`（fix / rebase 之后的复审会话用），`usage.jsonl` 的记录可带 `phase: "re-review"`。没写时沿用 `phases.review` 的档案列表，老项目升级不用改配置；写了但为空列表或档案不存在时照其他阶段一样报错。模板 `models.json` 列出了它，上下文预算 hook 的阶段列表也加上了（closes #69）
