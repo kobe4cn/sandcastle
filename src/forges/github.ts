@@ -7,6 +7,7 @@ import { basename } from "node:path";
 import type { Forge, ForgePr, ForgeIssue, MergeMethod, PrCheck } from "../forge.ts";
 import { sh } from "../shell.ts";
 import { t } from "../term.ts";
+import type { Author } from "../trust.ts";
 
 /**
  * 跑一次 gh，返回 trim 过的 stdout；失败抛错。env 给了就整个替换环境变量。测试里换成记录 argv 的假实现。
@@ -19,19 +20,35 @@ type GhPr = {
   state: string;
   headRefName: string;
   isCrossRepository: boolean;
-  reviews: { state: string; body: string; submittedAt: string }[];
-  comments: { body: string; createdAt: string }[];
+  reviews: { state: string; body: string; submittedAt: string; author: GhAuthor }[];
+  comments: { body: string; createdAt: string; author: GhAuthor }[];
   commits: { committedDate: string }[];
 };
+type GhAuthor = { login?: string } | null;
 const PR_FIELDS = "number,state,headRefName,isCrossRepository,reviews,comments,commits";
+
+/**
+ * 归一成 Author：账号删了时登录名为空，按 GitHub 的写法当成 ghost（查权限 404 → 不可信）。
+ * Normalize to an Author: a deleted account leaves the login empty; treat it as ghost, as GitHub does (permission lookup 404s → untrusted).
+ */
+const toAuthor = (login: string | null | undefined, bot: boolean | undefined): Author => ({ login: login || "ghost", bot: bot === true });
+
+/**
+ * PR 字段里的作者没有 is_bot：按登录名判断（`xxx[bot]` 或 `app/xxx`）。
+ * Authors in PR fields have no is_bot, so judge by login (`xxx[bot]` or `app/xxx`).
+ */
+const prAuthor = (a: GhAuthor): Author => {
+  const login = a?.login ?? "";
+  return toAuthor(login, login.endsWith("[bot]") || login.startsWith("app/"));
+};
 
 const toPr = (pr: GhPr): ForgePr => ({
   id: String(pr.number),
   open: pr.state === "OPEN",
   branch: pr.headRefName,
   fromFork: pr.isCrossRepository,
-  reviews: pr.reviews.map((r) => ({ changesRequested: r.state === "CHANGES_REQUESTED", body: r.body, at: r.submittedAt })),
-  comments: pr.comments.map((c) => ({ body: c.body, at: c.createdAt })),
+  reviews: pr.reviews.map((r) => ({ changesRequested: r.state === "CHANGES_REQUESTED", body: r.body, at: r.submittedAt, author: prAuthor(r.author) })),
+  comments: pr.comments.map((c) => ({ body: c.body, at: c.createdAt, author: prAuthor(c.author) })),
   lastCommitAt: pr.commits.map((c) => c.committedDate).sort().at(-1) ?? "",
 });
 
@@ -114,13 +131,7 @@ export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefin
           ...labels.flatMap((label) => ["--label", label]), "--json", "number,title,body,labels,updatedAt,author",
         ]),
       ) as (Omit<ForgeIssue, "labels" | "author"> & { labels: { name: string }[]; author: { login?: string; is_bot?: boolean } | null })[];
-      // 作者账号删了时 author 为空：按 GitHub 的写法当成 ghost（查权限 404 → 不可信）
-      // A deleted author's account leaves author empty: treat it as ghost, as GitHub does (permission lookup 404s → untrusted)
-      return raw.map((i) => ({
-        ...i,
-        labels: i.labels.map((l) => l.name),
-        author: { login: i.author?.login || "ghost", bot: i.author?.is_bot === true },
-      }));
+      return raw.map((i) => ({ ...i, labels: i.labels.map((l) => l.name), author: toAuthor(i.author?.login, i.author?.is_bot) }));
     },
     repoPermission(login) {
       return gh(["api", `repos/{owner}/{repo}/collaborators/${login}/permission`, "--jq", ".permission"]);
@@ -149,7 +160,16 @@ export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefin
       return gh(["issue", "view", id, "--json", "updatedAt", "--jq", ".updatedAt"]);
     },
     issueComments(id) {
-      return lines(gh(["issue", "view", id, "--json", "comments", "--jq", ".comments[].body | @json"])).map((l) => JSON.parse(l) as string);
+      // REST 接口按创建时间升序；--paginate 配 --jq 时每页单独输出，按行拆即可。字段是 user，不是 GraphQL 的 author。
+      // The REST endpoint is oldest first; with --paginate and --jq each page prints separately, so splitting by line works. The field is user, not GraphQL's author.
+      const out = gh([
+        "api", `repos/{owner}/{repo}/issues/${id}/comments`, "--paginate",
+        "--jq", '.[] | {body, login: .user.login, bot: (.user.type == "Bot")} | @json',
+      ]);
+      return lines(out).map((l) => {
+        const c = JSON.parse(l) as { body: string | null; login: string | null; bot: boolean };
+        return { body: c.body ?? "", author: toAuthor(c.login, c.bot) };
+      });
     },
     createIssue({ title, body, labels }) {
       const url = gh(["issue", "create", "--title", title, "--body", body, ...labels.flatMap((l) => ["--label", l])]);

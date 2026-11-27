@@ -24,6 +24,9 @@ export type ForgeIssue = {
   author: Author;
 };
 
+/** 一条评论：正文与作者。 / One comment: body and author. */
+export type ForgeComment = { body: string; author: Author };
+
 /** 一个 PR / MR 在 Sandcastle 里需要知道的东西。 / What Sandcastle needs to know about a PR / MR. */
 export type ForgePr = {
   id: string;
@@ -36,8 +39,12 @@ export type ForgePr = {
    * 审查：changesRequested 是平台上的「Request changes」（GitLab 没有时恒为 false，只认 /sandcastle 评论）
    * Review: changesRequested is the host's "Request changes" (always false on GitLab, which only honours /sandcastle comments)
    */
-  reviews: { changesRequested: boolean; body: string; at: string }[];
-  comments: { body: string; at: string }[];
+  reviews: { changesRequested: boolean; body: string; at: string; author: Author }[];
+  /**
+   * 评论与审查都带作者：编排器只认可信作者的 `/sandcastle` 和 Request changes（#80）。
+   * Comments and reviews carry their author: the pipeline honours `/sandcastle` and Request changes only from trusted authors (#80).
+   */
+  comments: (ForgeComment & { at: string })[];
   /** 分支上最新提交的时间（ISO），没有提交时为空串 / Time of the branch's latest commit (ISO); empty when there are no commits */
   lastCommitAt: string;
 };
@@ -91,8 +98,11 @@ export interface Forge {
    */
   issueState(id: string): IssueState;
   issueUpdatedAt(id: string): string;
-  /** 全部评论正文，按时间先后。 / All comment bodies, oldest first. */
-  issueComments(id: string): string[];
+  /**
+   * 全部评论（正文与作者），按时间先后。调用方按作者过滤，只认可信作者写的标记（#80）。
+   * All comments (body and author), oldest first. Callers filter by author and honour markers only from trusted authors (#80).
+   */
+  issueComments(id: string): ForgeComment[];
   createIssue(issue: { title: string; body: string; labels: string[] }): string;
   editIssueBody(id: string, body: string): void;
   commentIssue(id: string, body: string): void;

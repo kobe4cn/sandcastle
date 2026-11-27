@@ -88,7 +88,7 @@ import {
 import { limitWait, sleepUntil, untilAfterLimit } from "./limit-wait.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
 import { acceptanceSection, browserSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from "./pr-body.ts";
-import type { ForgeIssue, ForgePr, IssueState } from "./forge.ts";
+import type { ForgeComment, ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { type MergeFlowDeps, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
 import { loadProject } from "./profile.ts";
 import {
@@ -448,6 +448,12 @@ const listIssues = (include: string[], exclude: string[] = []): ListedIssue[] =>
 /** 票作者可不可信（查权限按登录名缓存 1 小时，见 trust.ts）。 / Whether a ticket's author is trusted (permission lookups cached per login for an hour; see trust.ts). */
 const isTrustedAuthor = createTrust({ permission: (l) => forge.repoPermission(l), trustedAuthors: project.trustedAuthors });
 
+/**
+ * 只留可信作者写的评论正文：外部用户能在评论里伪造 sandcastle 的标记（#80）。查权限出错照旧抛出，调用方用 attempt 接住。
+ * Keep only comment bodies written by trusted authors: outside users could forge sandcastle's markers in comments (#80). Permission lookup errors propagate; callers catch them with attempt.
+ */
+const trustedBodies = (comments: ForgeComment[]) => comments.filter((c) => isTrustedAuthor(c.author)).map((c) => c.body);
+
 // ---------------------------------------------------------------------------
 // Plan：确定性计算，不交给 agent（planner agent 曾把「同文件只留编号小的」比反）
 // Plan: deterministic, not left to an agent (a planner agent once inverted "keep the lower number when files clash")
@@ -758,9 +764,11 @@ function pushBranch(issue: Issue) {
  * 这张票的 open PR：先按 issue 关联（PR 正文的关闭写法），同时有自己的分支时用自己的；
  * 关联里只有一个本仓库的外部 PR 时用它；有多个外部 PR 时不猜，返回 null 并打日志。
  * 关联查不到（接口出错、没有关联）时退回按分支名 `sandcastle/issue-n` 查。
+ * fork 来的 PR 一律排除：接手的分支都在本仓库，推分支的人必然有写权限，所以外部 PR 不用另查作者（#80）。
  * This ticket's open PR: first by issue link (the closing keyword in the PR body), preferring our own branch when both exist;
  * if the links contain exactly one external PR from this repo, use it; with several external PRs, don't guess: return null and log.
  * If the link lookup fails (API error, no links), fall back to the branch name `sandcastle/issue-n`.
+ * PRs from forks are always excluded: every branch taken over lives in this repo, and whoever pushed it has write access, so external PRs need no author check (#80).
  */
 function prFor(issueId: string | number): ForgePr | null {
   const view = (ref: string): ForgePr | null => {
@@ -849,7 +857,7 @@ function leaveForHuman(issue: Issue, pr: string, reason: string) {
  * Tickets where the agent made decisions: label sandcastle:decided and copy those comments to the PR for a human to confirm later. Forge errors only warn and don't block landing.
  */
 function reportDecisions(issueId: string, pr: string) {
-  const r = attempt(() => forge.issueComments(issueId));
+  const r = attempt(() => trustedBodies(forge.issueComments(issueId)));
   if (!r.ok) return console.warn(t(`  ⚠ 读 #${issueId} 的代拍板评论失败：`, `  ⚠ Reading #${issueId}'s decision comments failed: `) + r.out.slice(0, 200));
   const decisions = r.value.filter((body) => body.startsWith(DECIDED_MARK)).map((body) => body.slice(DECIDED_MARK.length).trim());
   if (!decisions.length) return;
@@ -881,11 +889,19 @@ function reopenRequestedRevisions() {
     const pr = prFor(issueId);
     if (!pr) continue;
     const lastCommit = pr.lastCommitAt;
-    const signals = [
-      ...pr.reviews.filter((r) => r.changesRequested || r.body.trim().startsWith(REVISE_COMMAND)).map((r) => r.at),
-      ...pr.comments.filter((c) => c.body.trim().startsWith(REVISE_COMMAND)).map((c) => c.at),
-    ];
-    if (!signals.some((at) => at > lastCommit)) continue;
+    // 只认可信作者的打回：外部用户的 /sandcastle 和 Request changes 不让票回流（#80）。查权限出错只警告，这一轮跳过。
+    // Only trusted authors can send a ticket back: outside users' /sandcastle and Request changes don't requeue it (#80). Permission lookup errors only warn and skip this pass.
+    // 先按时间筛，只对晚于最新提交的信号查权限。 / Filter by time first, so only signals newer than the latest commit need a permission lookup.
+    const fresh = [
+      ...pr.reviews.filter((r) => r.changesRequested || r.body.trim().startsWith(REVISE_COMMAND)),
+      ...pr.comments.filter((c) => c.body.trim().startsWith(REVISE_COMMAND)),
+    ].filter((s) => s.at > lastCommit);
+    const sentBack = attempt(() => fresh.some((s) => isTrustedAuthor(s.author)));
+    if (!sentBack.ok) {
+      console.warn(t(`  ⚠ #${issueId} 查打回人的权限失败，这一轮跳过：`, `  ⚠ #${issueId}: checking who sent it back failed; skipping this pass: `) + sentBack.out.slice(0, 200));
+      continue;
+    }
+    if (!sentBack.value) continue;
     forge.removeLabel(String(issueId), LABEL.prOpen);
     forge.commentPr(pr.id, M.reopened);
     console.log(t(`  ↺ #${issueId} 收到打回（PR #${pr.id}），重新排队`, `  ↺ #${issueId} was sent back (PR #${pr.id}); requeued`));
@@ -1053,7 +1069,8 @@ const diffNames = async (sandbox: Sandbox, range: string): Promise<string[] | un
 async function resumeReviewed(issue: Issue, sandbox: Sandbox): Promise<Reviewed | undefined> {
   // 读评论或取 HEAD 失败时不清状态，这次照常重做：一次网络抖动不该让下次重启也没法恢复。
   // If reading comments or HEAD fails, keep the state and just redo this time: one network blip shouldn't stop the next restart from resuming too.
-  const comments = attempt(() => forge.issueComments(issue.id));
+  // 只认可信作者的标记：外部用户伪造的「评审已过」会让重启跳过评审（#80）。 / Only trusted authors' markers count: a forged "review passed" would skip review on restart (#80).
+  const comments = attempt(() => trustedBodies(forge.issueComments(issue.id)));
   const head = await sandboxHead(sandbox);
   if (!comments.ok || !head) return undefined;
   const state = parseReviewed(comments.value);
@@ -1462,14 +1479,15 @@ function issueClosed(id: string) {
 }
 
 /**
- * 给 untilAfterLimit 的 deps.comment：全部档案撞限额时在票上评论一次。已关的票不发；最后一条评论已经带 LIMITED_MARK 不发；失败只警告。
- * deps.comment for untilAfterLimit: comment once on the ticket when every profile hit its limit. Not on closed tickets, not when the last comment already has LIMITED_MARK; failures only warn.
+ * 给 untilAfterLimit 的 deps.comment：全部档案撞限额时在票上评论一次。已关的票不发；可信作者的最后一条评论已经带 LIMITED_MARK 不发（#80）；失败只警告。
+ * deps.comment for untilAfterLimit: comment once on the ticket when every profile hit its limit. Not on closed tickets, not when the last trusted author's comment already has LIMITED_MARK (#80); failures only warn.
  */
 function limitedComment(issueId: string) {
   return (limited: AllProfilesLimited) => {
     const r = attempt(() => {
       if (issueClosed(issueId)) return;
-      if (forge.issueComments(issueId).at(-1)?.includes(LIMITED_MARK)) return;
+      // 看可信作者的最后一条（#80） / Look at the last trusted comment (#80)
+      if (trustedBodies(forge.issueComments(issueId)).at(-1)?.includes(LIMITED_MARK)) return;
       forge.commentIssue(issueId, M.limitedWaiting(limited.phase, limited.profiles, new Date(limited.until).toLocaleString(), LIMITED_MARK));
     });
     if (!r.ok) console.warn(t(`  ⚠ #${issueId} 限额等待的评论没发出去：${r.out}`, `  ⚠ #${issueId}: couldn't post the limit-wait comment: ${r.out}`));
@@ -1620,7 +1638,8 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
       console.log(t(`  ✋ #${issue.id} 要人拍板，打 ${LABEL.stuck}`, `  ✋ #${issue.id} needs a human decision; labelled ${LABEL.stuck}`));
       return;
     }
-    const comments = forge.issueComments(issue.id).join("\n");
+    // 只认可信作者写的 REPREP_MARK（#80） / Only a REPREP_MARK written by a trusted author counts (#80)
+    const comments = trustedBodies(forge.issueComments(issue.id)).join("\n");
     if (comments.includes(REPREP_MARK)) {
       markStuck(
         issue.id,

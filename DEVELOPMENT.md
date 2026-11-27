@@ -26,7 +26,7 @@
 | `src/forges/github.ts` | GitHub 实现（gh CLI） |
 | `src/merge-checks.ts` | 合并前等 forge 检查（CI）：检查结果归类、带超时的轮询 |
 | `src/browser-gate.ts` | 浏览器验收作为合并的硬条件：哪些改动算改了页面、验收缺什么、验收之后（revise / fix / rebase 解冲突）改了页面算截图过期、留不留 PR |
-| `src/trust.ts` | 票作者可不可信：机器人、`trustedAuthors` 白名单、仓库权限 admin / write（`createTrust`，按登录名缓存 1 小时，404 算 none）；带 `sandcastle:trusted` 的票不查作者（`needsHold`）。main.ts 的 `holdUntrusted` 在 prep / plan 里用它挡票 |
+| `src/trust.ts` | 票作者可不可信：机器人、`trustedAuthors` 白名单、仓库权限 admin / write（`createTrust`，按登录名缓存 1 小时，404 算 none）；带 `sandcastle:trusted` 的票不查作者（`needsHold`）。main.ts 的 `holdUntrusted` 在 prep / plan 里用它挡票；`trustedBodies` 与 `reopenRequestedRevisions` 用它过滤评论，只认可信作者写的标记（代拍板、评审已过、reprep、限额等待）和 PR 上的 `/sandcastle`、Request changes |
 | `src/protected-paths.ts` | 受保护路径作为合并关卡：票的 diff 里哪些文件命中 `protectedPaths`、各命中哪条规则、挡不挡合并（取不到 diff 时 fail-closed）；票实现指引 `- **Protected**` 允许的路径（`allowedProtected` / `splitAllowed`）和 PR 正文 Protected paths 一节（`allowedSection`，rebase 后补报新命中也用它） |
 | `src/merge-flow.ts` | 合并收尾的编排：等检查（不占空位、放开宿主机锁）→ 合并 → 分支保护 / rebase 补救 → 留 PR；依赖由 main.ts 注入 |
 | `src/profile.ts` | **ProjectProfile**：项目配置（测试隔离、门槛、安装、一致性检查、文案）与默认值 |

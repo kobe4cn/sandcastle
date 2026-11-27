@@ -118,10 +118,21 @@ describe("githubForge 发给 gh 的参数", () => {
     expect(() => forge.prMergeable!("13")).toThrow();
   });
 
-  it("issueComments 每条评论一行 JSON，多行评论不被拆开", () => {
-    const { forge, calls } = fakeGh(`${JSON.stringify("第一行\n第二行")}\n${JSON.stringify("b")}`);
-    expect(forge.issueComments("4")).toEqual(["第一行\n第二行", "b"]);
-    expect(calls[0]).toEqual(["issue", "view", "4", "--json", "comments", "--jq", ".comments[].body | @json"]);
+  it("issueComments 走 REST 分页，每条评论一行 JSON，多行评论不被拆开，带作者（bot 按 user.type）", () => {
+    const row = (body: string, login: string | null, bot: boolean) => JSON.stringify({ body, login, bot });
+    // --paginate 配 --jq 时每页单独输出，拼起来就是逐行 / With --paginate and --jq each page prints separately; concatenated it's one per line
+    const { forge, calls } = fakeGh(
+      [row("第一行\n第二行", "alice", false), row("b", "github-actions[bot]", true), row("c", null, false)].join("\n"),
+    );
+    expect(forge.issueComments("4")).toEqual([
+      { body: "第一行\n第二行", author: { login: "alice", bot: false } },
+      { body: "b", author: { login: "github-actions[bot]", bot: true } },
+      { body: "c", author: { login: "ghost", bot: false } },
+    ]);
+    expect(calls[0]).toEqual([
+      "api", "repos/{owner}/{repo}/issues/4/comments", "--paginate",
+      "--jq", ".[] | {body, login: .user.login, bot: (.user.type == \"Bot\")} | @json",
+    ]);
   });
 
   it("issue 的增改与标签", () => {
@@ -172,15 +183,27 @@ describe("githubForge 发给 gh 的参数", () => {
     const { forge, calls } = fakeGh(
       JSON.stringify({
         number: 5, state: "OPEN", headRefName: "feat/x", isCrossRepository: false,
-        reviews: [{ state: "CHANGES_REQUESTED", body: "", submittedAt: "2026-01-02" }, { state: "COMMENTED", body: "/sandcastle 改一下", submittedAt: "2026-01-03" }],
-        comments: [{ body: "hi", createdAt: "2026-01-01" }],
+        reviews: [
+          { state: "CHANGES_REQUESTED", body: "", submittedAt: "2026-01-02", author: { login: "alice" } },
+          { state: "COMMENTED", body: "/sandcastle 改一下", submittedAt: "2026-01-03", author: { login: "app/sandcastle" } },
+        ],
+        comments: [
+          { body: "hi", createdAt: "2026-01-01", author: { login: "dependabot[bot]" } },
+          { body: "gone", createdAt: "2026-01-01", author: null },
+        ],
         commits: [{ committedDate: "2026-01-02T10:00:00Z" }, { committedDate: "2026-01-01T00:00:00Z" }],
       }),
     );
     expect(forge.viewPr("5")).toEqual({
       id: "5", open: true, branch: "feat/x", fromFork: false,
-      reviews: [{ changesRequested: true, body: "", at: "2026-01-02" }, { changesRequested: false, body: "/sandcastle 改一下", at: "2026-01-03" }],
-      comments: [{ body: "hi", at: "2026-01-01" }],
+      reviews: [
+        { changesRequested: true, body: "", at: "2026-01-02", author: { login: "alice", bot: false } },
+        { changesRequested: false, body: "/sandcastle 改一下", at: "2026-01-03", author: { login: "app/sandcastle", bot: true } },
+      ],
+      comments: [
+        { body: "hi", at: "2026-01-01", author: { login: "dependabot[bot]", bot: true } },
+        { body: "gone", at: "2026-01-01", author: { login: "ghost", bot: false } },
+      ],
       lastCommitAt: "2026-01-02T10:00:00Z",
     });
     expect(calls[0]).toEqual(["pr", "view", "5", "--json", "number,state,headRefName,isCrossRepository,reviews,comments,commits"]);
