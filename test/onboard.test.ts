@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { agentDoneLine, agentFailureMessage, agentStartHint, agentWritable, applyLangArg, assertRepoRoot, configSource, containerfileSource, detectSummary, envStepHint, filesSummary, hasGlobalSkill, installFiles, installGlobalSkill, outputCollector, prefixLines, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles, validationSummary } from "../src/onboard.ts";
+import { agentDoneLine, agentFailureMessage, agentStartHint, agentWritable, applyLangArg, assertRepoRoot, configSource, containerfileSource, detectSummary, envStepHint, filesSummary, hasGlobalSkill, installFiles, installGlobalSkill, languageLine, languageSource, outputCollector, prefixLines, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles, validationSummary } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { OPEN_QUESTIONS } from "../src/open-questions.ts";
 import { setTermLanguage } from "../src/term.ts";
@@ -869,6 +869,27 @@ describe("起 agent 的提示和 .env 那一步", () => {
     }
   });
 
+  it("「下一步」每步一行：最后一步只给上线清单的链接，不再展开 baseline → 金丝雀 → 小票 → 自动合并", async () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    writeFileSync(join(root, ".sandcastle/PROJECT.md"), "人改过");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await onboard(["--no-agent"], root, async () => "keep");
+      const out = log.mock.calls.flat().join("\n");
+      expect(out).toContain("上线清单：https://github.com/kobe4cn/sandcastle-releases/blob/HEAD/docs/onboarding-checklist.zh-CN.md");
+      expect(out).not.toContain("金丝雀");
+      expect(out).not.toContain("自动合并");
+      // 每步一行带编号，清单链接那步也在编号里
+      // One numbered line per step, the checklist-link step included
+      expect(out).toMatch(/^  \d+\. 上线清单：https:\/\/github\.com\//m);
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it("onboard 的「下一步」里有带 token 说明的 .env 一步", async () => {
     const root = nodeRepo();
     installFiles(root, detectProject(root));
@@ -884,6 +905,94 @@ describe("起 agent 的提示和 .env 那一步", () => {
     } finally {
       log.mockRestore();
       warn.mockRestore();
+    }
+  });
+
+  it("--lang en（且没设 SANDPIPE_LANG）时整段终端输出都是英文，有语言行和清单链接", async () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    writeFileSync(join(root, ".sandcastle/PROJECT.md"), "human edit");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // vitest 固定 SANDPIPE_LANG=zh：空串算没设，终端才能跟着 --lang 走
+    // vitest pins SANDPIPE_LANG=zh: an empty string counts as unset, letting the terminal follow --lang
+    vi.stubEnv("SANDPIPE_LANG", "");
+    try {
+      await onboard(["--no-agent", "--lang", "en"], root, async () => "keep");
+      const out = [...log.mock.calls.flat(), ...warn.mock.calls.flat()].join("\n");
+      expect(out).not.toMatch(/[一-鿿]/);
+      expect(out).toMatch(/^Language  English \(from --lang/m);
+      expect(out).toContain("Launch checklist: https://github.com/kobe4cn/sandcastle-releases/blob/HEAD/docs/onboarding-checklist.md");
+    } finally {
+      vi.unstubAllEnvs();
+      // onboard 改了全局终端语言，复原成中文
+      // onboard changed the global terminal language; restore Chinese
+      setTermLanguage("zh", {});
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
+});
+
+describe("languageSource / languageLine", () => {
+  // 只改语言相关字段：basis / commitLanguage 的组合自己造，不依赖夹具探测出哪种
+  // Override just the language fields: make the basis / commitLanguage combinations instead of relying on what the fixture detects
+  const langFacts = (basis: "commits" | "few-commits" | "docs" | "lang", commitLanguage: "zh" | "en") => ({
+    ...detectProject(nodeRepo()),
+    commitLanguage,
+    commitLanguageBasis: basis,
+  });
+
+  it("来源顺序：SANDPIPE_LANG（无效值也算设了）→ --lang → commitLanguageBasis；提交够多时给了 --lang，来源仍是 --lang", () => {
+    expect(languageSource(undefined, langFacts("commits", "zh"), {})).toBe("commits");
+    expect(languageSource("en", langFacts("commits", "zh"), {})).toBe("flag");
+    expect(languageSource(undefined, langFacts("commits", "zh"), { SANDPIPE_LANG: "en" })).toBe("env");
+    // 与 setTermLanguage 同口径：fr 这类无效值也算设了
+    expect(languageSource(undefined, langFacts("commits", "zh"), { SANDPIPE_LANG: "fr" })).toBe("env");
+    expect(languageSource(undefined, langFacts("few-commits", "zh"), {})).toBe("few-commits");
+    expect(languageSource(undefined, langFacts("docs", "zh"), {})).toBe("docs");
+    // basis 是 lang（applyLangArg 设的）时按 --lang 算
+    expect(languageSource(undefined, langFacts("lang", "en"), {})).toBe("flag");
+  });
+
+  it("languageLine：写明语言、来源和怎么换（--lang / SANDPIPE_LANG）", () => {
+    expect(languageLine(undefined, langFacts("commits", "zh"), {})).toBe(
+      "语言  中文（按提交信息判断；要英文用 --lang en，或设 SANDPIPE_LANG=en）",
+    );
+    expect(languageLine("en", langFacts("lang", "en"), {})).toBe(
+      "语言  英文（按 --lang；要中文用 --lang zh，或设 SANDPIPE_LANG=zh）",
+    );
+    expect(languageLine(undefined, langFacts("docs", "zh"), {})).toContain("提交太少，按文档判断");
+    expect(languageLine(undefined, langFacts("few-commits", "zh"), {})).toContain("提交太少，按仅有的提交或默认");
+    // 设了 SANDPIPE_LANG：终端跟它走，怎么换也只指它
+    expect(languageLine(undefined, langFacts("commits", "zh"), { SANDPIPE_LANG: "zh" })).toBe(
+      "语言  中文（按 SANDPIPE_LANG；要英文设 SANDPIPE_LANG=en）",
+    );
+  });
+
+  it("SANDPIPE_LANG 和文件语言不一致时，终端和生成的文件分别写清楚", () => {
+    expect(languageLine("en", langFacts("commits", "zh"), { SANDPIPE_LANG: "zh" })).toBe(
+      "语言  终端中文（按 SANDPIPE_LANG），生成的文件 英文（按 --lang）",
+    );
+    // 只设了 SANDPIPE_LANG、提交语言和它不同：同样分开写
+    expect(languageLine(undefined, langFacts("commits", "en"), { SANDPIPE_LANG: "zh" })).toBe(
+      "语言  终端中文（按 SANDPIPE_LANG），生成的文件 英文（按提交信息判断）",
+    );
+  });
+
+  it("英文文案", () => {
+    try {
+      setTermLanguage("en", {});
+      expect(languageLine(undefined, langFacts("commits", "zh"), {})).toBe(
+        "Language  Chinese (judged from commit messages; for English use --lang en, or set SANDPIPE_LANG=en)",
+      );
+      expect(languageLine("en", langFacts("commits", "zh"), { SANDPIPE_LANG: "zh" })).toBe(
+        "Language  terminal Chinese (from SANDPIPE_LANG), generated files English (from --lang)",
+      );
+      expect(languageLine(undefined, langFacts("docs", "zh"), {})).toContain("too few commits: judged from the docs");
+      expect(languageLine(undefined, langFacts("few-commits", "zh"), {})).toContain("too few commits: the few there are, or the default");
+    } finally {
+      setTermLanguage("zh", {});
     }
   });
 });
@@ -969,6 +1078,23 @@ describe("onboard 的阶段摘要（--verbose 才打明细）", () => {
       expect(out).toContain("校验  PROJECT.md ✓");
       expect(out).toContain("缺口清单（没生成）");
       expect(warn.mock.calls.flat().join("\n")).toContain("⚠ 没有生成缺口清单");
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("默认输出有语言一行：写明当前语言、来源和怎么换", async () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await onboard(["--no-agent"], root, async () => "keep");
+      const out = log.mock.calls.flat().join("\n");
+      // vitest 固定 SANDPIPE_LANG=zh：终端来源是它，怎么换也指它
+      // vitest pins SANDPIPE_LANG=zh: the terminal's source is it, and so is the switch hint
+      expect(out).toMatch(/^语言  中文（按 SANDPIPE_LANG；要英文设 SANDPIPE_LANG=en）$/m);
     } finally {
       log.mockRestore();
       warn.mockRestore();
