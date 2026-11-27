@@ -102,6 +102,14 @@ describe('Sandcastle PR 正文其余各节 restSections', () => {
     ].join('\n'));
   });
 
+  it('有票允许的受保护路径时：Browser check 之后、Gate 之前放 Protected paths 一节', () => {
+    const body = restSections({ review: '摘要', browser: 'B', protected: '- `a` — `/a/`（ticket allowed）', gate: 'g', budget: 'b', usage: 'u' });
+    expect(body.indexOf('## Browser check')).toBeLessThan(body.indexOf('## Protected paths\n\n- `a` — `/a/`（ticket allowed）'));
+    expect(body.indexOf('## Protected paths')).toBeLessThan(body.indexOf('Gate'));
+  });
+  it('没有票允许的受保护路径时没有 Protected paths 一节', () => {
+    expect(restSections({ review: '摘要', gate: 'g', budget: 'b', usage: 'u' })).not.toContain('Protected paths');
+  });
   it('没做浏览器验收时没有 Browser check 一节', () => {
     const body = restSections({ review: '摘要', gate: 'g', budget: 'b', usage: 'u' });
     expect(body).not.toContain('Browser check');

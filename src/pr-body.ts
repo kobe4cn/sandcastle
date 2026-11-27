@@ -116,6 +116,11 @@ export type RestSections = {
    * Browser check section (browserSection: RESULT.md and screenshot notes, or the missing-ticket-Browser-check notice); undefined when neither, so the section is omitted.
    */
   browser?: string;
+  /**
+   * Protected paths 一节（protected-paths.ts 的 allowedSection：票允许改的受保护路径）；没有时 undefined，不放这一节。
+   * Protected paths section (allowedSection in protected-paths.ts: protected paths the ticket allows); undefined when none, so the section is omitted.
+   */
+  protected?: string;
   gate: string;
   budget: string;
   /** Usage 一节的表格（models.ts 的 usageTable）。 / Table for the Usage section (usageTable in models.ts). */
@@ -123,13 +128,14 @@ export type RestSections = {
 };
 
 /**
- * PR 正文除「验收说明」外的其余各节：Review → Browser check 在外面，Gate / Budget / Usage 折进 details。
- * PR body sections other than acceptance notes: Review → Browser check stay outside, Gate / Budget / Usage fold into details.
+ * PR 正文除「验收说明」外的其余各节：Review → Browser check → Protected paths 在外面，Gate / Budget / Usage 折进 details。
+ * PR body sections other than acceptance notes: Review → Browser check → Protected paths stay outside, Gate / Budget / Usage fold into details.
  */
 export const restSections = (s: RestSections): string =>
   [
     `## Review\n\n${s.review}`,
     s.browser === undefined ? undefined : `## Browser check\n\n${s.browser}`,
+    s.protected === undefined ? undefined : `## Protected paths\n\n${s.protected}`,
     details("Gate", s.gate),
     details("Budget", s.budget),
     details("Usage", s.usage),

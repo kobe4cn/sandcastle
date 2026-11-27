@@ -2,7 +2,7 @@
 // 票的 diff 里哪些文件命中 protectedPaths，每个文件报第一条命中的规则（规则源码 String(re)）；挡不挡合并（取不到 diff 时 fail-closed）。
 import { describe, expect, it } from "vitest";
 import { messages } from "../src/i18n.ts";
-import { protectedBlock, protectedHits } from "../src/protected-paths.ts";
+import { allowedProtected, allowedSection, protectedBlock, protectedHits, splitAllowed } from "../src/protected-paths.ts";
 
 describe("protectedHits：diff 里命中 protectedPaths 的文件和规则", () => {
   it("没配规则时一个都不算", () => {
@@ -60,5 +60,66 @@ describe("protectedBlock：受保护路径挡不挡自动合并", () => {
   });
   it("英文取不到 diff 的文案", () => {
     expect(protectedBlock(undefined, rules, messages("en"))).toContain("Couldn't read this ticket's diff");
+  });
+});
+
+describe("allowedProtected：票的实现指引里 `- **Protected**` 项允许的路径", () => {
+  it("没有实现指引一节 → 空", () => {
+    expect(allowedProtected("## What to build\n\n- **Protected**: `a.yml`\n")).toEqual([]);
+  });
+  it("一项里多个反引号路径都取，目录保留结尾的 /", () => {
+    const body = "## Implementation guide\n\n- **Change**: `src/a.ts`\n- **Protected**: `.github/workflows/ci.yml`, `migrations/`（要加迁移）\n* **Protected**：`x/__snapshots__/a.snap`\n";
+    expect(allowedProtected(body)).toEqual([".github/workflows/ci.yml", "migrations/", "x/__snapshots__/a.snap"]);
+  });
+  it("项写在其它节里不算", () => {
+    const body = "## What to build\n\n- **Protected**: `a.yml`\n\n## Implementation guide\n\n- **Change**: `src/a.ts`\n\n## Notes\n\n- **Protected**: `b.yml`\n";
+    expect(allowedProtected(body)).toEqual([]);
+  });
+  it("别的列表项里提到 Protected 不算", () => {
+    expect(allowedProtected("## Implementation guide\n\n- **Watch out**: **Protected** `a.yml` 不要改\n")).toEqual([]);
+  });
+});
+
+describe("splitAllowed：命中分成被票允许的和要挡的", () => {
+  const hits = protectedHits(["migrations/1.sql", "migrations2/1.sql", ".github/ci.yml", ".github/ci.yml.bak"], [/^migrations/, /^\.github\//]);
+  it("目录前缀（以 / 结尾）与全等两种匹配", () => {
+    expect(splitAllowed(hits, ["migrations/", ".github/ci.yml"])).toEqual({
+      allowed: [hits[0], hits[2]],
+      blocked: [hits[1], hits[3]],
+    });
+  });
+  it("没有允许项时全挡", () => {
+    expect(splitAllowed(hits, [])).toEqual({ allowed: [], blocked: hits });
+  });
+});
+
+describe("protectedBlock 带票允许的路径", () => {
+  const zh = messages("zh");
+  const rules = [/^\.github\//];
+  it("命中全被允许：不挡", () => {
+    expect(protectedBlock([".github/a.yml"], rules, zh, [".github/"])).toBeUndefined();
+  });
+  it("部分被允许：原因只列没被允许的", () => {
+    expect(protectedBlock([".github/a.yml", ".github/b.yml"], rules, zh, [".github/a.yml"])).toBe(
+      zh.reasonProtected([{ file: ".github/b.yml", rule: "/^\\.github\\//" }]),
+    );
+  });
+  it("取不到 diff：允许了也按命中处理", () => {
+    expect(protectedBlock(undefined, rules, zh, [".github/"])).toBe(zh.reasonProtectedUnknown);
+  });
+});
+
+describe("allowedSection：PR 正文 Protected paths 一节", () => {
+  const rules = [/^\.github\//];
+  it("有被允许的命中：逐条列出文件、规则和（ticket allowed）", () => {
+    expect(allowedSection([".github/a.yml", "src/x.ts", ".github/b.yml"], rules, [".github/a.yml"], messages("zh"))).toBe(
+      "- `.github/a.yml` — `/^\\.github\\//`（ticket allowed）",
+    );
+    expect(allowedSection([".github/a.yml"], rules, [".github/"], messages("en"))).toBe("- `.github/a.yml` — `/^\\.github\\//` (ticket allowed)");
+  });
+  it("没有被允许的命中、没配规则或取不到 diff：undefined", () => {
+    expect(allowedSection([".github/a.yml"], rules, [], messages("zh"))).toBeUndefined();
+    expect(allowedSection([".github/a.yml"], [], [".github/"], messages("zh"))).toBeUndefined();
+    expect(allowedSection(undefined, rules, [".github/"], messages("zh"))).toBeUndefined();
   });
 });

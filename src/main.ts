@@ -103,7 +103,7 @@ import { createGateQueue, type GatePriority } from "./gate-queue.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { loadProjectDoc, projectDocPath, projectDocWatcher, renderPrompts } from "./project-doc.ts";
 import { type BrowserCheck, browserSetupWarning, browserVerdict, pageFiles, ticketHasBrowserCheck } from "./browser-gate.ts";
-import { protectedBlock } from "./protected-paths.ts";
+import { allowedProtected, allowedSection, protectedBlock } from "./protected-paths.ts";
 import { detectProject } from "./detect.ts";
 import { probeTcp, servicesProblem } from "./preflight.ts";
 import { manual } from "./onboard.ts";
@@ -661,6 +661,7 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
     const branch = pr && !pr.branch.startsWith("sandcastle/") ? pr.branch : ownBranch(issue.number);
     picked.push({
       id: String(issue.number), title: issue.title, branch, browserCheck: ticketHasBrowserCheck(issue.body), reviewed: issue.labels.includes(LABEL.reviewed),
+      allowProtected: allowedProtected(issue.body),
     });
   }
   return picked;
@@ -681,8 +682,10 @@ const peakContext = (...runs: ({ readonly iterations: readonly sandcastle.Iterat
  * reviewed：票带 sandcastle:reviewed（#49，plan 时设）；build 打 / 去这个标签时同步改它，retryTransient 重跑 build 时看得到。
  * browserCheck: whether the ticket body has `- **Browser check**` (set by plan; the ones built on resume lack it, and that path doesn't go through land).
  * reviewed: the ticket is labelled sandcastle:reviewed (#49, set by plan); build updates it when adding / removing the label so a retryTransient rerun of build sees it.
+ * allowProtected：票实现指引里 `- **Protected**` 允许改的受保护路径（protected-paths.ts 的 allowedProtected，#76）；plan 和恢复路径从票正文取，缺省（如外部 PR）按 [] 处理，命中全挡。
+ * allowProtected: protected paths the ticket's implementation guide allows via `- **Protected**` (allowedProtected in protected-paths.ts, #76); plan and the resume path read it from the ticket body, and when absent (e.g. external PRs) it's treated as [], so every hit blocks.
  */
-type Issue = { id: string; title: string; branch: string; browserCheck?: boolean; reviewed?: boolean };
+type Issue = { id: string; title: string; branch: string; browserCheck?: boolean; reviewed?: boolean; allowProtected?: string[] };
 
 const ownBranch = (issueId: string | number) => `sandcastle/issue-${issueId}`;
 /**
@@ -1291,7 +1294,7 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     // With protected paths configured: resolving conflicts may touch new files, so re-read the diff in the sandbox and check again before pushing; an unreadable diff counts as a hit (fail-closed).
     // The fast path without an agent isn't checked: the set of changed files is unchanged and land already checked it (docs/adr/0003-protected-paths.md).
     if ((conflicted || chainBroken) && project.protectedPaths.length > 0) {
-      const block = protectedBlock(await ticketDiffFiles(sandbox), project.protectedPaths, M);
+      const block = protectedBlock(await ticketDiffFiles(sandbox), project.protectedPaths, M, issue.allowProtected ?? []);
       if (block) {
         console.log(t(`  ◐ #${issue.id} rebase 后受保护路径检查没通过，不 push`, `  ◐ #${issue.id} protected-path check failed after the rebase; not pushing`));
         return { ok: false, reason: block };
@@ -1571,6 +1574,8 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
       rest: restSections({
         review: `${result.summary}${revisionNote}`,
         browser: browserSection(result.browser, noTicketCheck, M),
+        // 票的实现指引允许改的受保护路径命中：不挡合并，但在 PR 里标出来（#76）。 / Protected-path hits the ticket's guide allows: they don't block the merge but are flagged in the PR (#76).
+        protected: allowedSection(result.changed, project.protectedPaths, issue.allowProtected ?? [], M),
         gate: gateNote,
         budget: `${budgetNote}${overBudget}`,
         usage: usageTable([...readUsage(issue.id, "prep"), ...result.usage], M),
@@ -1668,7 +1673,8 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   }
   // 票的最终 diff 改到了受保护路径，或配了规则却取不到 diff（fail-closed）：不自动合并（docs/adr/0003-protected-paths.md）。
   // The ticket's final diff touches protected paths, or rules are configured but the diff is unreadable (fail-closed): no auto-merge (docs/adr/0003-protected-paths.md).
-  const protectedReason = protectedBlock(result.changed, project.protectedPaths, M);
+  // 票实现指引里 `- **Protected**` 允许的命中不算，原因只列没被允许的（#76）。 / Hits allowed by the ticket guide's `- **Protected**` don't count; the reason lists only the rest (#76).
+  const protectedReason = protectedBlock(result.changed, project.protectedPaths, M, issue.allowProtected ?? []);
   if (protectedReason) {
     leaveForHuman(issue, pr, `${protectedReason}${notesNote}${browserNote}`);
     console.log(t(`  ◐ #${issue.id} 受保护路径检查没通过，留 PR #${pr}`, `  ◐ #${issue.id} protected-path check failed; PR #${pr} left open`));
@@ -2137,7 +2143,7 @@ async function schedule(): Promise<ScheduleResult> {
   // Tickets interrupted last run while waiting for checks / merging: resume that, without reimplementing (see resumeMerging).
   for (const issue of listIssues([LABEL.picked, LABEL.merging], [LABEL.prOpen, LABEL.stuck]).sort(byUrgency)) {
     if (!allowed(issue.number) || running.has(String(issue.number))) continue;
-    start({ id: String(issue.number), title: issue.title, branch: ownBranch(issue.number) }, true);
+    start({ id: String(issue.number), title: issue.title, branch: ownBranch(issue.number), allowProtected: allowedProtected(issue.body) }, true);
   }
 
   // Plan

@@ -9,6 +9,12 @@ import type { ProtectedHit } from "./protected-paths.ts";
 
 export type Language = "zh" | "en";
 
+/**
+ * 受保护路径命中逐行「- `文件` — `规则`」，每行可带后缀（reasonProtected 与 protectedAllowed 共用）。
+ * Protected-path hits as "- `file` — `rule`" lines, each with an optional suffix (shared by reasonProtected and protectedAllowed).
+ */
+const hitLines = (hits: ProtectedHit[], suffix = "") => hits.map((h) => `- \`${h.file}\` — \`${h.rule}\`${suffix}`).join("\n");
+
 const zh = {
   list: (items: string[]) => items.join("、"),
   sep: "；",
@@ -93,7 +99,9 @@ const zh = {
   reReviewNoRange: "（取不到 rebase 前的分支范围，复审没法对比，按不通过处理）",
   /** 票的 diff 改到了 protectedPaths 命中的文件（protected-paths.ts），逐条列出。 / The ticket's diff touches files matched by protectedPaths (protected-paths.ts), listed one by one. */
   reasonProtected: (hits: ProtectedHit[]) =>
-    `改到了受保护路径（protectedPaths），需要人看过再合并：\n\n${hits.map((h) => `- \`${h.file}\` — \`${h.rule}\``).join("\n")}`,
+    `改到了受保护路径（protectedPaths），需要人看过再合并：\n\n${hitLines(hits)}`,
+  /** 票的实现指引允许改的受保护路径，PR 正文 Protected paths 一节逐条列出（#76）。 / Protected paths the ticket's implementation guide allows, listed in the PR body's Protected paths section (#76). */
+  protectedAllowed: (hits: ProtectedHit[]) => hitLines(hits, "（ticket allowed）"),
   /** 配了 protectedPaths 但取不到 diff，按命中处理（fail-closed）。 / protectedPaths is configured but the diff is unavailable; treated as a hit (fail-closed). */
   reasonProtectedUnknown: "取不到这张票的 diff，无法判断是否改了受保护路径（protectedPaths），需要人看过再合并。",
   reasonAutoMergeOff: "项目配置 autoMerge: false（试跑期），reviewer 和门槛都通过，等人合并。",
@@ -281,7 +289,8 @@ const en: Messages = {
   reasonHeadUnknown: "couldn't read HEAD before/after the fix, so what the fix changed is unknown; not re-reviewed",
   reReviewNoRange: "(the branch range before the rebase could not be read, so the re-review can't compare; treated as not passing)",
   reasonProtected: (hits) =>
-    `Protected paths (protectedPaths) were changed; a human needs to look before merging:\n\n${hits.map((h) => `- \`${h.file}\` — \`${h.rule}\``).join("\n")}`,
+    `Protected paths (protectedPaths) were changed; a human needs to look before merging:\n\n${hitLines(hits)}`,
+  protectedAllowed: (hits) => hitLines(hits, " (ticket allowed)"),
   reasonProtectedUnknown: "Couldn't read this ticket's diff, so whether it changes protected paths (protectedPaths) is unknown; a human needs to look before merging.",
   reasonAutoMergeOff: "The project config has autoMerge: false (trial period). Reviewer and gate both passed; waiting for a human to merge.",
   reasonBrowser: (problems) => `Pages changed and the browser check doesn't meet the auto-merge conditions: ${problems} (see the Browser check section of the PR description).`,
