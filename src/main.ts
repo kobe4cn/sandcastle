@@ -89,7 +89,7 @@ import { limitWait, sleepUntil, untilAfterLimit } from "./limit-wait.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
 import { acceptanceSection, browserSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from "./pr-body.ts";
 import type { ForgeComment, ForgeIssue, ForgePr, IssueState } from "./forge.ts";
-import { type MergeFlowDeps, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
+import { mainBrokenBlocker, type MergeFlowDeps, type MergeResult, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
 import { loadProject } from "./profile.ts";
 import {
   acquireRunLock, errorLine, exitWhenDone, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GATE_INFRA_PREFIX, GateInfraError, imageExists, isAgentIdleTimeout, isGateInfraFailure, logErrorDetail, missingImage, onInterrupt,
@@ -1312,7 +1312,7 @@ type HostGap = { release: () => void; reacquire: () => Promise<void> };
  * the ticket is still in running, so its files can't be claimed by new tickets; the ticket isn't closed, so cleanup won't remove its worktree); the lock is retaken before push and merge.
  * Meanwhile other tickets may merge into main first: then this merge fails and the PR is left open as usual.
  */
-async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = true): Promise<{ ok: true } | { ok: false; reason: string }> {
+async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = true): Promise<MergeResult> {
   if (isExternal(issue)) return { ok: false, reason: M.rebaseExternal(issue.branch) };
   const env = testEnv(issue.id);
   host.release();
@@ -1548,6 +1548,14 @@ const mergeDeps = (issue: Issue, pr: string, host: HostGap): MergeFlowDeps => ({
   signalSlotFreed,
   leaveForHuman: (reason) => leaveForHuman(issue, pr, reason),
   markMerging: (on) => markMerging(issue.id, on),
+  // 合并前查开着的 main-broken 票（ADR 0007）：列票出错按有票处理（fail-closed），由 merge-flow 留 PR。
+  // Look up the open main-broken tickets before merging (ADR 0007); a listing error counts as a hold (fail-closed) and merge-flow leaves the PR.
+  mainBrokenHold: () => {
+    const r = attempt(() => forge.listOpenIssues([LABEL.mainBroken]));
+    if (!r.ok) return { error: r.out };
+    const n = mainBrokenBlocker(r.value, issue.id);
+    return n === undefined ? undefined : { blocker: n };
+  },
 });
 
 let mergingLabelEnsured = false;
@@ -1915,11 +1923,11 @@ async function resumeMerging(issue: Issue, host: HostGap) {
 // ---------------------------------------------------------------------------
 // 按依赖选测试的票每合并 MAIN_CHECK_EVERY 张，对当时的 origin/main 跑一次完整测试（排在票的门槛后面，有票在等就让位；已开跑的不中断）。
 // 兜住依赖图漏选，和「两张票各自通过、合在一起才坏」。失败就开一张带 LABEL.mainBroken 的修复票（调度时排最前），
-// 自动合并照常、不暂停。状态存在 MAIN_CHECK_FILE：重启后接着计数，失败票里列出上次通过以来进 main 的提交。
+// main-broken 票开着时其他票留 PR、不自动合并，见 ADR 0007。状态存在 MAIN_CHECK_FILE：重启后接着计数，失败票里列出上次通过以来进 main 的提交。
 // Periodic fallback full run on main (2026-11-24)
 // After every MAIN_CHECK_EVERY merged dependency-selected tickets, run the full suite on the origin/main of the moment (queued behind tickets' gates, yielding while a ticket waits; a run already started is not interrupted).
 // Catches what the dependency graph misses, and "two tickets that pass alone but break together". On failure open a fix ticket labelled LABEL.mainBroken (scheduled first);
-// auto-merge carries on without pausing. State lives in MAIN_CHECK_FILE: counting resumes after a restart, and the failure ticket lists commits merged into main since the last pass.
+// while a main-broken ticket is open the other tickets are left as PRs instead of auto-merging (see ADR 0007). State lives in MAIN_CHECK_FILE: counting resumes after a restart, and the failure ticket lists commits merged into main since the last pass.
 const MAIN_CHECK_EVERY = project.mainCheckEvery;
 const MAIN_CHECK_FILE = ".sandcastle/logs/main-check.json";
 const MAIN_CHECK_ID = "main"; // 测试资源后缀 _imain，和票的 _i<n> 不撞 / test resource suffix _imain, distinct from tickets' _i<n>

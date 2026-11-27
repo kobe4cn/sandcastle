@@ -8,3 +8,4 @@
 - [0004 自举：运行版本与被改代码隔离](0004-self-hosting-version-isolation.md)
 - [0005 浏览器验收之后改了页面，截图作废](0005-browser-check-staleness.md)
 - [0006 票的来源只认可信作者](0006-trusted-ticket-sources.md)
+- [0007 main-broken 票开着时其他票不自动合并](0007-main-broken-holds-merge.md)

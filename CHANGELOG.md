@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 有开着的 `sandcastle:main-broken` 票时，其他票照常开 PR、过门槛，但不自动合并：留 PR（`sandcastle:pr-open`），PR 评论和终端写明「main 兜底测试失败，等 #n 修好」；修复票本身、它 `## Split into` 拆出的子票、别的 main-broken 票不挡，照常合并；查不到开着的修复票（列票报错）也留 PR（fail-closed）。检查在等完 PR 检查、直接合并前一次，rebase 补救 force-push 后、重试合并前再一次，等检查期间才开出的修复票也挡得住（ADR 0007；`src/merge-flow.ts` 新增纯函数 `mainBrokenBlocker` 和 hold 检查，`src/main.ts` 的 `mergeDeps` 接 `forge.listOpenIssues`；docs/config 中英、docs/internal/sandcastle.md 同步）（closes #85）
 - 用量记录记下子代理实际用的模型：`usage.jsonl` 每条记录新增可选 `models` 字段，从这次 run 各会话 stream-json result 行的 `modelUsage` 按模型累加输入 / 缓存写 / 缓存读 / 输出 token（含子代理，如第三方档案下看截图的小模型；键是 Claude Code 实际请求的模型 ID，第三方档案下就是映射后的真实名，等于档案 env 某个 `ANTHROPIC_DEFAULT_*_MODEL` 的明文值时记成 `haiku→glm-4.5-air`），Claude 档案每个模型另带 `costUSD`、第三方档案不带；PR 正文 Usage 表在 `models` 有 2 个及以上模型时，在这条 run 的行下面每个模型加一行 `↳ <模型名>`（列数不变、不显示费用），宿主日志能证明截图这类任务真的交给了能看图的模型（`src/models.ts` 的 `agentFor` 加 `onModelUsage`、`recordUsage` 加 `modelUsage` 参数、`usageTable` 加模型子行，src/main.ts 的 `runAgent` 接线）（closes #53）
 
 ## 0.3.2
