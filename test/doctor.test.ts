@@ -87,6 +87,7 @@ describe("diagnose", () => {
       浏览器验收: "warn",
       // onboard 生成的配置 autoMerge: false
       合并条件: "ok",
+      受保护路径: "ok",
       项目知识: "warn",
       "models.json": "ok",
       ".env": "fail",
@@ -272,6 +273,34 @@ describe("diagnose：合并条件", () => {
   it("autoMerge 为 false：通过，即使 checks 为 none 且有 workflow", async () => {
     const c = await run({ merge: '  autoMerge: false,\n  mergeRequires: { checks: "none" },', workflow: "ci.yml" });
     expect(c).toMatchObject({ level: "ok", detail: expect.stringContaining("autoMerge: false") });
+  });
+});
+
+describe("diagnose：受保护路径", () => {
+  const run = (root: string) => diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+
+  it("onboard 按探测写了：逐条列出正则，通过", async () => {
+    // nodeRepo 有 drizzle 迁移目录
+    expect(check(await run(readyRepo()), "受保护路径")).toMatchObject({ level: "ok", detail: "/^drizzle\\//" });
+  });
+
+  it("手动配了多条：逐条列出", async () => {
+    const root = readyRepo();
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(config, readFileSync(config, "utf8").replace(/  protectedPaths: .*\n/, "  protectedPaths: [/^\\.github\\//, /\\.snap$/],\n"));
+    expect(check(await run(root), "受保护路径")).toMatchObject({ level: "ok", detail: "/^\\.github\\//、/\\.snap$/" });
+  });
+
+  it("没配：写未配置，通过（英文项目用英文）", async () => {
+    const root = pythonRepo();
+    installFiles(root, detectProject(root));
+    expect(check(await run(root), "Protected paths")).toMatchObject({ level: "ok", detail: "not configured" });
+  });
+
+  it("配置加载失败：没有这一项", async () => {
+    const root = readyRepo();
+    writeFileSync(join(root, ".sandcastle/sandcastle.config.ts"), "export default {;\n");
+    expect(check(await run(root), "受保护路径")).toBeUndefined();
   });
 });
 

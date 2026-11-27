@@ -43,6 +43,8 @@ const q = (s: string) => JSON.stringify(s);
 /** 按语言二选一（PROJECT.md 草稿正文、终端以外的单语内容）。 / Pick by language (PROJECT.md draft body and other single-language content). */
 const pick = (lang: Language) => (zh: string, en: string) => (lang === "en" ? en : zh);
 /** 生成文件里的注释：中文一行、英文一行。 / Comments in generated files: one Chinese line, one English line. */
+/** 正则源码写成配置里的字面量（/.../） / Regex sources as literals for the config (/.../) */
+const regexLiterals = (sources: string[]) => sources.map((p) => String(new RegExp(p)));
 const note = (indent: string, zh: string, en: string) => [`${indent}// ${zh}`, `${indent}// ${en}`];
 
 /** 用户手册在工具里的路径，按语言选中文版或英文版。 / Path of a user manual in the tool, Chinese or English copy by language. */
@@ -195,7 +197,18 @@ export function configSource(f: ProjectFacts, importFrom: string, lang: Language
             "页面文件的路径（按探测到的前端框架给的默认值，按项目实际目录改）：票改到这些文件就算「改了页面」，要做浏览器验收。",
             "Page file paths (defaults for the detected frontend framework; adjust to the project's real layout): a ticket touching these counts as \"changing pages\" and needs a browser check.",
           ),
-          `  browser: { pagePaths: [${f.pagePaths.map((p) => String(new RegExp(p))).join(", ")}] },`,
+          `  browser: { pagePaths: [${regexLiterals(f.pagePaths).join(", ")}] },`,
+          "",
+        ]
+      : []),
+    ...(f.protectedPaths.length
+      ? [
+          ...note(
+            "  ",
+            "受保护路径（按探测结果给的默认值：快照、CI workflow、迁移目录……）：票改到命中的文件就不自动合并，留 PR 给人看。lockfile 等需要的自己加，见 sandpipe 的 docs/config.zh-CN.md。",
+            "Protected paths (defaults from what was detected: snapshots, CI workflows, migration directory…): a ticket touching a matching file isn't auto-merged; the PR is left for a human. Add lockfiles etc. yourself if needed, see sandpipe's docs/config.md.",
+          ),
+          `  protectedPaths: [${regexLiterals(f.protectedPaths).join(", ")}],`,
           "",
         ]
       : []),
@@ -856,6 +869,7 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
       `  Docs: ${list(f.docs)}; test dirs: ${list(f.testDirs)}; services: ${list(f.services)}; migrations: ${migrations}; web UI: ${f.webUi ? "yes" : "no"}`,
     ),
   );
+  console.log(`  ${t("受保护路径：", "Protected paths: ")}${list(regexLiterals(f.protectedPaths))}`);
   if (f.forge.kind === "gitlab" && !questionsOnly)
     console.warn(t("  ⚠ 远端是 GitLab：GitLab Forge 还没做，文件照常生成，但先别跑", "  ⚠ The remote is GitLab: the GitLab forge isn't done yet. Files are generated, but don't run it yet"));
 

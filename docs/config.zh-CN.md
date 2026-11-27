@@ -107,7 +107,7 @@ onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-
 | `appendOnlyFiles` | `[]` | 只追加的索引文件。几张票同时追加不算改同一个文件，可以并行 |
 | `acceptancePrep(branch)` | 无 | 改了页面的票，PR「验收说明」最前面固定的准备步骤 |
 | `browser.pagePaths` | `[]` | 页面文件路径（相对仓库根）的正则数组，如 `[/^app\/routes\//]`；票改到匹配的文件算「改了页面」。onboard 按探测到的前端框架（next、remix / react-router、nuxt / vue、svelte、astro，其它有网页界面的项目按 `src/` 下的 tsx / jsx / vue / svelte / css）写默认值，没有网页界面不写 |
-| `protectedPaths` | `[]` | 受保护路径（相对仓库根、不带前导 `/`，和 `git diff --name-only` 的输出一致）的正则数组，如 `[/^\.github\//, /^migrations\//]`。票的最终 diff（review / 打回 / fix 之后）改到命中的文件就不自动合并，留 PR，评论逐条列出「文件 — 命中的规则」；rebase 时 agent 解过冲突的，push 前重取 diff 再查一次。配了规则但取不到 diff 时也留 PR。lockfile 等需要的项目自己加（见 `docs/adr/0003-protected-paths.md`） |
+| `protectedPaths` | `[]` | 受保护路径（相对仓库根、不带前导 `/`，和 `git diff --name-only` 的输出一致）的正则数组，如 `[/^\.github\//, /^migrations\//]`。票的最终 diff（review / 打回 / fix 之后）改到命中的文件就不自动合并，留 PR，评论逐条列出「文件 — 命中的规则」；rebase 时 agent 解过冲突的，push 前重取 diff 再查一次。配了规则但取不到 diff 时也留 PR。`onboard` 按探测结果写默认值：有快照（`__snapshots__/` 或 `.snap`）写 `/(^\|\/)__snapshots__\//`、`/\.snap$/`，有 Playwright 快照目录写 `/-snapshots\//`，有 `.github/workflows/` 写 `/^\.github\/workflows\//`，探测到迁移目录写 `/^<目录>\//`，都没有就不写；`sandpipe doctor` 列出当前的规则。lockfile 不进默认值（加依赖的票都会改它），需要的项目自己加（见 `docs/adr/0003-protected-paths.md`） |
 | `beforeSchedule()` | 无 | 每次调度开头在宿主机上跑的维护 |
 | `texts` | 通用版 | 自动开的票和内联提示词的正文 |
 

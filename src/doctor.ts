@@ -222,6 +222,16 @@ export async function diagnose(opts: {
       );
   }
 
+  // ---- 受保护路径 ---- / Protected paths
+  // 只列出来给人看，状态总是 ok。配置加载失败时没有这一项。
+  // Only listed for a human to see; always ok. Absent when the config fails to load.
+  if (project)
+    add(
+      t("受保护路径", "Protected paths"),
+      "ok",
+      project.protectedPaths.length ? project.protectedPaths.map(String).join(t("、", ", ")) : t("未配置", "not configured"),
+    );
+
   // ---- 项目知识 ---- / Project knowledge
   // 没有 PROJECT.md 时不查：上面已经提示先跑 onboard，这里再提示 --questions-only 会误导；清单路径相对仓库根，所以读 cwd 不读 dir。
   // Skipped without PROJECT.md: the checks above already say to run onboard, and suggesting --questions-only here would mislead; the list's path is relative to the repo root, so read cwd, not dir.

@@ -18,7 +18,7 @@
 | 路径 | 内容 |
 |---|---|
 | `src/cli.ts` | 命令行入口：`run`（默认）、`onboard`、`doctor`、`baseline` |
-| `src/doctor.ts` | 跑之前的检查：配置、宿主机 env 文件、PROJECT.md、浏览器验收（有网页界面时）、合并条件（有 CI workflow 却设了 `checks: "none"` 时警告）、缺口清单、models.json、.env、平台登录与权限、标签、Sandcastle 票的 Blocked by 引用、远端分支、镜像、hook、.gitignore |
+| `src/doctor.ts` | 跑之前的检查：配置、宿主机 env 文件、PROJECT.md、浏览器验收（有网页界面时）、合并条件（有 CI workflow 却设了 `checks: "none"` 时警告）、受保护路径（列出配置的正则）、缺口清单、models.json、.env、平台登录与权限、标签、Sandcastle 票的 Blocked by 引用、远端分支、镜像、hook、.gitignore |
 | `src/main.ts` | 编排（调度、build、land）。不含项目细节，不直接调 gh |
 | `src/detect.ts` `src/onboard.ts` `src/open-questions.ts` `prompts/onboard.md` | 接入新项目：探测、生成配置、agent 补全 PROJECT.md 并写缺口清单，校验清单格式和「写到哪」的节名 |
 | `src/claude-conflict.ts` | onboard / update 遇到 `.claude/` 下本工具的文件和模板不同时：显示差异，问保留 / 覆盖 / 另存 `.new` |
@@ -89,6 +89,7 @@ npm run build      # esbuild 打包、压缩到 dist/（npm pack 前自动跑）
 1. 改 `package.json` 的 `version`，在 `CHANGELOG.md` 加一节 `## <版本>`。
 2. 提交，`git tag v<版本> && git push --tags`。
 3. `.github/workflows/release.yml` 跑类型检查和测试，`npm pack` 后把 `sandpipe.tgz` 发到公开仓库 `package.json` 的 `sandcastle.releases`。
+4. 自举（ADR 0004）：先别升级本机的运行版本。用新版（`npx sandpipe@<版本>`）在本仓库跑一张试点票，确认流水线本身没坏，再 `sandpipe upgrade`，并在本仓库跑 `sandpipe update`，同步 `.claude/` 里的副本。
 
 公开的只有安装包（压缩过的 JS、提示词、模板、`docs/config`、`docs/onboarding-checklist` 的中英两份），见 `package.json` 的 `files`。
 `examples/`、其余 `docs/`、测试和源码都不发布。往这些发布的文件里写东西时，不要写进具体项目（比如 duckdb_crm）的内部信息。

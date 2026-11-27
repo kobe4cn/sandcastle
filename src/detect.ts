@@ -51,6 +51,11 @@ export interface ProjectFacts {
   /** 页面文件路径的正则源码（按前端框架给的默认值），没有网页界面时为空 / Regex sources for page file paths (defaults by frontend framework); empty without a web UI */
   pagePaths: string[];
   /**
+   * 受保护路径的正则源码（按探测结果给：快照、Playwright 快照、CI workflow、迁移目录），都没有时为空；lockfile 不进默认值
+   * Regex sources for protected paths (by what was detected: snapshots, Playwright snapshots, CI workflows, migration directory); empty when none; lockfiles are not a default
+   */
+  protectedPaths: string[];
+  /**
    * 提到浏览器验收的现成资料（文档、旧的 .sandcastle 提示词、test/e2e 说明、scripts/ 里建种子或验收数据的脚本），给 onboard 的 agent 先读
    * Existing material that mentions browser checks (docs, old .sandcastle prompts, test/e2e notes, seed or acceptance-data scripts under scripts/), for onboard's agent to read first
    */
@@ -375,6 +380,27 @@ function scanServiceEnv(root: string): { serviceEnv: ServiceEnvKey[]; serviceEnv
   return { serviceEnv, serviceEnvFrom };
 }
 
+/** 快照类规则，每组里有一条命中仓库文件就整组写上 / Snapshot rules; a group is written whole when any of its rules matches a repo file */
+const SNAPSHOT_RULES = [["(^|/)__snapshots__/", String.raw`\.snap$`], ["-snapshots/"]];
+
+const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * 受保护路径的默认值。快照按 git 跟踪（含未忽略的未跟踪文件）的文件判断，git 不可用时不写；workflow 与迁移按目录判断。
+ * Default protected paths. Snapshots are judged from files git knows (tracked plus untracked, not ignored), skipped when git is unavailable; workflows and migrations by directory.
+ */
+function defaultProtectedPaths(root: string, migrations: ProjectFacts["migrations"]): string[] {
+  const ls = trySh("git", ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard"]);
+  const files = ls.ok ? ls.out.split("\n").filter(Boolean) : [];
+  const out: string[] = [];
+  // 探测条件和写出的规则用同一组源码，改一边不会漏另一边。
+  // Detection and the written rules share the same sources, so changing one can't miss the other.
+  for (const group of SNAPSHOT_RULES) if (files.some((f) => group.some((src) => new RegExp(src).test(f)))) out.push(...group);
+  if (isDir(join(root, ".github/workflows"))) out.push(String.raw`^\.github/workflows/`);
+  if (migrations) out.push(`^${escapeRegex(migrations.dir)}/`);
+  return out;
+}
+
 export function detectProject(root = process.cwd()): ProjectFacts {
   const pkgText = read(root, "package.json");
   const language: Language = pkgText
@@ -437,6 +463,7 @@ export function detectProject(root = process.cwd()): ProjectFacts {
     ...scanServiceEnv(root),
     webUi: lang.webUi,
     pagePaths: lang.pagePaths,
+    protectedPaths: defaultProtectedPaths(root, migrations),
     browserHints: browserHints(root),
     recentCommits,
     commitLanguage: fromDocs ?? fromCommits,

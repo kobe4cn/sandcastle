@@ -102,6 +102,42 @@ describe("detectProject", () => {
     expect(detectProject(pythonRepo()).pagePaths).toEqual([]);
   });
 
+  it("protectedPaths 按探测结果给：快照、Playwright 快照、CI workflow、迁移目录；都没有时为空", () => {
+    const add = (root: string, files: Record<string, string>) => {
+      for (const [f, s] of Object.entries(files)) {
+        mkdirSync(join(root, f, ".."), { recursive: true });
+        writeFileSync(join(root, f), s);
+      }
+      execFileSync("git", ["-C", root, "add", "-A"], { stdio: "ignore" });
+      return detectProject(root).protectedPaths;
+    };
+    // nodeRepo 有 drizzle 迁移目录
+    expect(detectProject(nodeRepo()).protectedPaths).toEqual(["^drizzle/"]);
+    expect(detectProject(pythonRepo()).protectedPaths).toEqual([]);
+    expect(add(pythonRepo(), { ".github/workflows/ci.yml": "", "src/__snapshots__/a.test.ts.snap": "", "e2e/cart.spec.ts-snapshots/cart.png": "" })).toEqual([
+      "(^|/)__snapshots__/",
+      "\\.snap$",
+      "-snapshots/",
+      "^\\.github/workflows/",
+    ]);
+    // 只有 .snap 文件（不在 __snapshots__ 下）也算
+    expect(add(pythonRepo(), { "tests/x.snap": "" })).toEqual(["(^|/)__snapshots__/", "\\.snap$"]);
+    // 迁移目录按探测到的 dir 写成 ^<dir>/
+    const root = pythonRepo();
+    mkdirSync(join(root, "alembic/versions"), { recursive: true });
+    expect(detectProject(root).protectedPaths).toEqual(["^alembic/versions/"]);
+    const prisma = nodeRepo();
+    writeFileSync(join(prisma, "package.json"), JSON.stringify({ name: "shop", dependencies: { prisma: "6" } }));
+    mkdirSync(join(prisma, "prisma/migrations"), { recursive: true });
+    expect(detectProject(prisma).protectedPaths).toEqual(["^prisma/migrations/"]);
+    // 不是 git 仓库：快照查不了，不写；目录类的照常
+    const plain = mkdtempSync(join(tmpdir(), "sc-plain-"));
+    mkdirSync(join(plain, ".github/workflows"), { recursive: true });
+    mkdirSync(join(plain, "src/__snapshots__"), { recursive: true });
+    writeFileSync(join(plain, "src/__snapshots__/a.snap"), "");
+    expect(detectProject(plain).protectedPaths).toEqual(["^\\.github/workflows/"]);
+  });
+
   it("有 GLOSSARY.md 的仓库，文档列表里有它", () => {
     const root = nodeRepo();
     writeFileSync(join(root, "GLOSSARY.md"), "# 术语表\n");
@@ -262,6 +298,23 @@ describe("configSource", () => {
     const nextSrc = configSource({ ...f, pagePaths: ["^(app|pages|components|src/(app|pages|components))/"] }, "sandpipe");
     expect(nextSrc).toContain("pagePaths: [/^(app|pages|components|src\\/(app|pages|components))\\//]");
     expect(configSource(detectProject(pythonRepo()), "sandpipe")).not.toContain("pagePaths");
+  });
+
+  it("探测到受保护路径：写 protectedPaths，加载后的正则能匹配对应文件；为空不写", async () => {
+    const root = nodeRepo();
+    const f = { ...detectProject(root), protectedPaths: ["(^|/)__snapshots__/", "\\.snap$", "-snapshots/", "^\\.github/workflows/", "^drizzle/"] };
+    const src = configSource(f, "sandpipe");
+    expect(src).toContain("  protectedPaths: [/(^|\\/)__snapshots__\\//, /\\.snap$/, /-snapshots\\//, /^\\.github\\/workflows\\//, /^drizzle\\//],");
+    expect(src).toContain("// Protected paths");
+    expect(src).toContain("// 受保护路径");
+    installFiles(root, f);
+    const project = await loadProject(join(root, ".sandcastle"));
+    const hit = (file: string) => project.protectedPaths.some((re) => re.test(file));
+    expect(project.protectedPaths).toHaveLength(5);
+    for (const file of ["src/__snapshots__/a.test.ts.snap", "__snapshots__/x", "tests/x.snap", "e2e/cart.spec.ts-snapshots/cart.png", ".github/workflows/ci.yml", "drizzle/0001_x/migration.sql"])
+      expect(hit(file), file).toBe(true);
+    for (const file of ["src/cart.ts", "github/workflows/x.yml", "src/drizzle/x.ts", "snapshots/a.txt"]) expect(hit(file), file).toBe(false);
+    expect(configSource(detectProject(pythonRepo()), "sandpipe")).not.toContain("protectedPaths");
   });
 
   it("env 文件里有多个库和中间件：生成的配置逐个换主机，数据库各自加 _i<runId>", async () => {
