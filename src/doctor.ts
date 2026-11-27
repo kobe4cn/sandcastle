@@ -1,10 +1,10 @@
 // doctor：跑流水线之前把能在宿主机上查的都查一遍，每项给出结论和修法。
 // 查：仓库根目录、配置能加载、宿主机依赖与 env 文件、PROJECT.md 与提示词能渲染、浏览器验收、合并条件（有 CI workflow 却不等检查时警告）、项目知识（缺口清单）、models.json、.env 的 token、平台登录与权限、
-// 标签（--fix 时补建）、Sandcastle 票的 Blocked by 引用、远端基础分支、沙箱镜像、门槛依赖的服务、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
+// 标签（--fix 时补建）、Sandcastle 票的 Blocked by 引用、开着的 main-broken 票、远端基础分支、沙箱镜像、门槛依赖的服务、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
 // 有一项 ✗ 退出码就是 1。
 // doctor: before running the pipeline, check everything that can be checked on the host, giving a verdict and a fix for each.
 // Checks: repository root, config loads, host dependencies and env files, PROJECT.md and prompts render, browser check, merge requirements (warns when there are CI workflows but checks aren't awaited), project knowledge (open questions list), models.json, .env tokens, forge login and permissions,
-// labels (created with --fix), Blocked by references in Sandcastle tickets, remote base branch, sandbox image, gate services, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
+// labels (created with --fix), Blocked by references in Sandcastle tickets, open main-broken tickets, remote base branch, sandbox image, gate services, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
 // Exit code 1 if any check is ✗.
 
 import { existsSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
@@ -380,6 +380,27 @@ export async function diagnose(opts: {
             t(`引用了不存在的票：${bad.join("、")}`, `References to tickets that don't exist: ${bad.join(", ")}`),
             t("改正票里的 ## Blocked by，或删掉这一行", "Fix the ticket's ## Blocked by, or remove the line"),
           );
+      } catch (e) {
+        add(name, "warn", errText(e));
+      }
+    }
+
+    // ---- main 兜底测试 ---- / Main fallback test
+    // 只警告：开着的 main-broken 票表示 main 上的兜底完整测试失败，期间其他票做完只留 PR、不自动合并（ADR 0007）；修复票由流水线排最前，不妨碍启动。
+    // Warn only: an open main-broken ticket means the fallback full test run on main failed; while one is open, other tickets only get PRs and aren't merged automatically (ADR 0007). The pipeline schedules the fix ticket first, so this doesn't block startup.
+    if (reachable) {
+      const name = t("main 兜底测试", "Main fallback test");
+      try {
+        const broken = forge.listOpenIssues([project.labels.mainBroken]);
+        if (broken.length) {
+          const nums = broken.map((i) => `#${i.number}`).join(t("、", ", "));
+          add(
+            name,
+            "warn",
+            t(`开着的 main-broken 票：${nums}`, `Open main-broken ticket(s): ${nums}`),
+            t("先修好这些票；期间其他票做完只开 PR、不自动合并", "Fix these tickets first; until then other tickets only get PRs and aren't merged automatically"),
+          );
+        } else add(name, "ok", t("没有开着的 main-broken 票", "No open main-broken tickets"));
       } catch (e) {
         add(name, "warn", errText(e));
       }
