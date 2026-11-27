@@ -165,9 +165,9 @@ Sandcastle 处理期间，PR 作者不要往这个分支推提交。本地和远
 - dev server 在沙箱里起（5180），`MAILER=console`，Magic Link 从它的日志里取。
 - `/ops` 要 TOTP，沙箱里验不了。
 
-截图和 `RESULT.md`（每一步的结论）写在 worktree 的 `.browser-check/`，不提交。关沙箱前脚本把它拷到宿主机 `$TMPDIR/sandcastle-browser-check/issue-<n>/`，开 PR 时把 `RESULT.md` 写进正文的 **Browser check** 一节，截图用 `gh --attach` 附上。
+截图和 `RESULT.md`（每一步的结论）写在 worktree 的 `.browser-check/`，不提交。关沙箱前脚本把它拷到宿主机 `$TMPDIR/sandcastle-browser-check/issue-<n>/`，开 PR 时正文的 **Browser check** 一节先写评审结论（reviewer 自己看截图、对照票的 Browser check 逐条给的 `<browser-verdict>`，没给时写明「评审没有给出逐条结论」），再写 implement 自评（`RESULT.md`），截图用 `gh --attach` 附上。reviewer 只在自己逐条全 ✅、且与 `RESULT.md` 一致时给 `browser-check` 的 `done`。
 
-改了页面的票：`RESULT.md` 每一步都是 ✅ 时可以自动合并（2026-11-24 放宽）；有 ❌、⚠️ 或没验证到的步骤才留 PR，由你看截图和结论后合并。
+改了页面的票：`RESULT.md` 每一步都是 ✅、reviewer 自己看截图的结论也逐条全 ✅ 时可以自动合并（2026-11-24 放宽）；有 ❌、⚠️ 或没验证到的步骤才留 PR，由你看截图和结论后合并。
 
 ## 验收说明
 

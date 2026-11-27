@@ -95,7 +95,10 @@ describe("用 duckdb_crm 的 PROJECT.md 渲染", () => {
     expect(out.implement).toContain("test/CATALOG.md");
     expect(out.implement).toContain("cmpName");
     expect(out.review).toContain("cmpName");
-    expect(out.review).toContain("改了页面的：`.browser-check/RESULT.md` 存在");
+    expect(out.review).toContain("改了页面的：评审自己看过 `.browser-check/` 的截图");
+    expect(out.review).toContain("screenshot-checker");
+    expect(out.review).toContain("<browser-verdict>");
+    expect(out.review).toContain("- ✅|❌|❓ <核对点>：<在截图里看到的>");
     expect(out.review).toContain("<browser-check>missing</browser-check>");
     expect(out.review).toContain("租户隔离");
     expect(out.rebase).toContain("npm run db:generate -- --name <原来的名字>");
@@ -126,7 +129,9 @@ describe("没有浏览器验收的项目", () => {
     expect(out.implement).not.toContain("playwright");
     expect(out.implement).toContain("本项目不做沙箱里的浏览器验收");
     expect(out.review).toContain("没有改页面");
-    expect(out.review).not.toContain("RESULT.md` 存在");
+    expect(out.review).not.toContain("评审自己看过");
+    expect(out.review).not.toContain("<browser-verdict>");
+    expect(out.review).not.toContain("screenshot-checker");
     expect(out.review).toContain("<browser-check>missing</browser-check>");
   });
 });

@@ -992,6 +992,11 @@ type Reviewed = {
   summary: string;
   browserTag: string | undefined;
   /**
+   * 评审自己看截图给的逐条结论（review 的 `<browser-verdict>`），进 PR 正文 Browser check 一节；没给时 undefined（#83）。
+   * The reviewer's own per-step verdict from the screenshots (the review's `<browser-verdict>`), goes into the PR body's Browser check section; undefined when not given (#83).
+   */
+  browserVerdict: string | undefined;
+  /**
    * 浏览器验收时（implement 结束）的 HEAD；没有 .browser-check/ 或取不到时不设。恢复路径没有它，按过期处理（#58）。
    * HEAD at the browser check (end of implement); unset without .browser-check/ or when unreadable. The resume path lacks it and is treated as stale (#58).
    */
@@ -1076,7 +1081,7 @@ async function resumeReviewed(issue: Issue, sandbox: Sandbox): Promise<Reviewed 
   const state = parseReviewed(comments.value);
   if (resumeDecision(state, head) === "resume" && state) {
     console.log(t(`  ↻ 接着上次：#${issue.id} 评审已过，直接跑门槛`, `  ↻ Resuming: #${issue.id} already passed review; going straight to the gate`));
-    return { runs: [], revisions: state.revisions, verdict: "merge", summary: state.summary, browserTag: state.browserTag };
+    return { runs: [], revisions: state.revisions, verdict: "merge", summary: state.summary, browserTag: state.browserTag, browserVerdict: undefined };
   }
   clearReviewed(issue);
   return undefined;
@@ -1151,6 +1156,7 @@ async function implementAndReview(issue: Issue, sandbox: Sandbox, run: RunAgent)
     verdict: tagged(review.stdout, "verdict"),
     summary: tagged(review.stdout, "review-summary") ?? M.noReviewSummary,
     browserTag: tagged(review.stdout, "browser-check"),
+    browserVerdict: tagged(review.stdout, "browser-verdict"),
     browserAt,
   };
   return { done: true as const, implement, reviewed };
@@ -1255,6 +1261,7 @@ async function gateAndCollect(
     fixHeadUnknown,
     browser: collectBrowserCheck(sandbox.worktreePath, issue.id),
     browserTag: reviewed.browserTag,
+    browserVerdict: reviewed.browserVerdict,
     browserStale: staleBrowser,
     notes: readAcceptanceNotes(sandbox.worktreePath),
     changed,
@@ -1696,7 +1703,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
       acceptance: acceptanceSection(issue.branch, result.notes, { pageChanged, pagePrep: project.acceptancePrep, m: M }),
       rest: restSections({
         review: `${result.summary}${revisionNote}`,
-        browser: browserSection(result.browser, noTicketCheck, M),
+        browser: browserSection(result.browser, noTicketCheck, M, result.browserVerdict),
         // 票的实现指引允许改的受保护路径命中：不挡合并，但在 PR 里标出来（#76）。 / Protected-path hits the ticket's guide allows: they don't block the merge but are flagged in the PR (#76).
         protected: allowedSection(result.changed, project.protectedPaths, issue.allowProtected ?? [], M),
         gate: gateNote,

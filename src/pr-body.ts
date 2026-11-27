@@ -94,15 +94,26 @@ export const pageChangedByReview = (tag: string | undefined): boolean => {
 const details = (title: string, content: string) => `<details><summary>${title}</summary>\n\n${content}\n\n</details>`;
 
 /**
- * Browser check 一节的内容：RESULT.md 与截图说明；改了页面但票里没有 Browser check 时（noTicketCheck）在前面加提示，没有 `.browser-check/` 也给。
+ * Browser check 一节的内容。有 `.browser-check/` 时先放评审自己看截图给的逐条结论（reviewerVerdict，review 的 `<browser-verdict>`；没给就写明），
+ * 再放 implement 自评：RESULT.md 与截图说明（#83）。改了页面但票里没有 Browser check 时（noTicketCheck）在最前面加提示，没有 `.browser-check/` 也给。
  * 两样都没有时 undefined，不放这一节。
- * Content of the Browser check section: RESULT.md and the screenshot note; when pages changed but the ticket has no Browser check (noTicketCheck), a notice goes first, even without `.browser-check/`.
+ * Content of the Browser check section. With `.browser-check/`: first the reviewer's own per-step verdict from the screenshots (reviewerVerdict,
+ * the review's `<browser-verdict>`; says so when missing), then the implementer's self-check: RESULT.md and the screenshot note (#83).
+ * When pages changed but the ticket has no Browser check (noTicketCheck), a notice goes first, even without `.browser-check/`.
  * undefined when there's neither, so the section is omitted.
  */
-export const browserSection = (b: BrowserCheck | undefined, noTicketCheck: boolean, m: Messages = messages()): string | undefined => {
+export const browserSection = (
+  b: BrowserCheck | undefined,
+  noTicketCheck: boolean,
+  m: Messages = messages(),
+  reviewerVerdict?: string,
+): string | undefined => {
   const parts = [
     noTicketCheck ? m.browserNoTicketCheck : undefined,
-    b ? `${b.result ?? m.browserNoResult}\n\n${m.browserShots(b.shots.length)}` : undefined,
+    b
+      ? `### ${m.browserReviewerVerdict}\n\n${reviewerVerdict ?? m.browserNoReviewerVerdict}\n\n` +
+        `### ${m.browserSelfCheck}\n\n${b.result ?? m.browserNoResult}\n\n${m.browserShots(b.shots.length)}`
+      : undefined,
   ].filter((x): x is string => x !== undefined);
   return parts.length ? parts.join("\n\n") : undefined;
 };
@@ -112,8 +123,8 @@ export type RestSections = {
   /** Review 一节：reviewer 摘要 + 打回记录。 / Review section: reviewer summary + revision history. */
   review: string;
   /**
-   * Browser check 一节（browserSection：RESULT.md 与截图说明，或票缺 Browser check 的提示）；都没有时 undefined，不放这一节。
-   * Browser check section (browserSection: RESULT.md and screenshot notes, or the missing-ticket-Browser-check notice); undefined when neither, so the section is omitted.
+   * Browser check 一节（browserSection：评审结论、implement 自评即 RESULT.md 与截图说明，或票缺 Browser check 的提示）；都没有时 undefined，不放这一节。
+   * Browser check section (browserSection: the reviewer's verdict, the implementer's self-check i.e. RESULT.md and screenshot notes, or the missing-ticket-Browser-check notice); undefined when neither, so the section is omitted.
    */
   browser?: string;
   /**

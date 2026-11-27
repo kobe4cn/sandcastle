@@ -119,8 +119,26 @@ describe('Sandcastle PR 正文其余各节 restSections', () => {
 
 describe('Sandcastle PR 正文的 Browser check 一节 browserSection', () => {
   const b = { result: '- ✅ 列表正常（list.png）', shots: ['/tmp/list.png'] };
-  it('有 .browser-check/、票里有 Browser check：RESULT.md + 截图说明', () => {
-    expect(browserSection(b, false)).toBe('- ✅ 列表正常（list.png）\n\n截图 1 张，附在下面。');
+  it('有 .browser-check/、票里有 Browser check、评审没给结论：写明没有逐条结论，再放 RESULT.md + 截图说明', () => {
+    const zh = messages('zh');
+    expect(browserSection(b, false)).toBe(
+      `### ${zh.browserReviewerVerdict}\n\n${zh.browserNoReviewerVerdict}\n\n### ${zh.browserSelfCheck}\n\n- ✅ 列表正常（list.png）\n\n截图 1 张，附在下面。`,
+    );
+    expect(zh.browserNoReviewerVerdict).toBe('评审没有给出逐条结论');
+  });
+  it('有评审结论：评审结论在前，implement 自评（RESULT.md）在后', () => {
+    const zh = messages('zh');
+    const s = browserSection(b, false, zh, '- ❌ 列表正常：截图里列表是空的')!;
+    expect(zh.browserReviewerVerdict).toBe('评审结论');
+    expect(zh.browserSelfCheck).toBe('implement 自评（RESULT.md）');
+    expect(s.indexOf(zh.browserReviewerVerdict)).toBeLessThan(s.indexOf('截图里列表是空的'));
+    expect(s.indexOf('截图里列表是空的')).toBeLessThan(s.indexOf(zh.browserSelfCheck));
+    expect(s.indexOf(zh.browserSelfCheck)).toBeLessThan(s.indexOf('- ✅ 列表正常（list.png）'));
+    expect(s).not.toContain(zh.browserNoReviewerVerdict);
+  });
+  it('没有 .browser-check/ 时评审结论不出现，行为不变', () => {
+    expect(browserSection(undefined, false, messages('zh'), '- ✅ x：y')).toBeUndefined();
+    expect(browserSection(undefined, true, messages('zh'), '- ✅ x：y')).toBe(messages('zh').browserNoTicketCheck);
   });
   it('没有 .browser-check/、也不缺 Browser check：没有这一节', () => {
     expect(browserSection(undefined, false)).toBeUndefined();
@@ -130,12 +148,16 @@ describe('Sandcastle PR 正文的 Browser check 一节 browserSection', () => {
     expect(messages('zh').browserNoTicketCheck).toContain('票里没有 Browser check，建议补 prep 规则');
   });
   it('票里缺 Browser check、有 .browser-check/：提示在前，RESULT.md 在后', () => {
-    const s = browserSection(b, true)!;
+    const s = browserSection(b, true, messages('zh'), '- ✅ 列表正常：有三行')!;
     expect(s.startsWith(messages('zh').browserNoTicketCheck)).toBe(true);
-    expect(s).toContain('列表正常');
+    expect(s.indexOf('有三行')).toBeLessThan(s.indexOf('列表正常（list.png）'));
   });
   it('英文', () => {
-    expect(browserSection(undefined, true, messages('en'))).toContain('no Browser check');
+    const en = messages('en');
+    expect(browserSection(undefined, true, en)).toContain('no Browser check');
+    const s = browserSection(b, false, en, '- ✅ list: rows shown')!;
+    expect(s.indexOf("Reviewer's verdict")).toBeLessThan(s.indexOf("Implementer's self-check (RESULT.md)"));
+    expect(browserSection(b, false, en)).toContain('The reviewer gave no per-step verdict');
   });
   it('只有提示时 restSections 也出这一节', () => {
     expect(restSections({ review: 'r', browser: browserSection(undefined, true), gate: 'g', budget: 'b', usage: 'u' })).toContain('## Browser check');

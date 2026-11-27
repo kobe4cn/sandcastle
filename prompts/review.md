@@ -75,7 +75,7 @@
 
 - 每条验收标准都实现了、都有测试覆盖。
 - 「需要人判断」一栏是「无」，PR 上有写权限的人的 review 意见都处理了。
-{{IF_BROWSER}}- 改了页面的：`.browser-check/RESULT.md` 存在，每一步都是 ✅（有 ❌、⚠️ 或没验证到的步骤就写 `pr`），引用的截图文件都在。改了页面本身不是留 PR 的理由。
+{{IF_BROWSER}}- 改了页面的：评审自己看过 `.browser-check/` 的截图（做法见下面「浏览器验收结论」），给了 `<browser-check>done</browser-check>`（条件见下面「浏览器验收结论」第 3 步）；`.browser-check/RESULT.md` 存在、每一步都是 ✅（有 ❌、⚠️ 或没验证到的步骤就写 `pr`），引用的截图文件都在。改了页面本身不是留 PR 的理由。
 {{ELSE_BROWSER}}- 没有改页面（本项目不在沙箱里做浏览器验收，改了页面的一律留 PR 给人看）。
 {{END_BROWSER}}- 按「设计决定」代拍板的，本身不是留 PR 的理由；只要不在「必须停下」里、和代码一致就行。
 - 改动不碰「必须停下」里列的任何一项（权限、敏感数据、改动已有数据的迁移等）。
@@ -97,7 +97,7 @@
 **已修**：…
 **代拍板**：…（这张票里 agent 自己定的设计决定，各一句：选了什么；没有就写「无」）
 **需要人判断**：…（没有就写「无」）
-**浏览器验收**：不需要 / 已做（看 `.browser-check/RESULT.md`，结论里有 ❌ 或没验证到的写出来）/ 需要但没做（写检查什么）
+**浏览器验收**：不需要 / 已做（写你自己看截图的结论，有 ❌ 或 ❓ 的写出来；和 `.browser-check/RESULT.md` 不一致的也写出来）/ 需要但没做（写检查什么）
 **验收说明**：合格 / 问题（缺失、步骤对不上代码、「做了什么」和 diff 对不上、漏验收标准、无用户可见变化没写明，写出来）
 </review-summary>
 
@@ -107,4 +107,18 @@
 - 已做：<browser-check>done</browser-check>
 - 需要但没做：<browser-check>missing</browser-check>
 
-然后输出 <promise>COMPLETE</promise>。
+{{IF_BROWSER}}`done` 只能基于你自己看截图得到的结论，不能只照抄 RESULT.md。
+
+浏览器验收结论（有 `.browser-check/` 时必须给）：
+
+1. **自己看截图**：用 Read 看 `.browser-check/*.png`，对照票的 Browser check 逐条核对。当前模型看不到图片时（Read 图片会被 hook 拦下并说明），用 Agent 工具起 `subagent_type: "screenshot-checker"` 看图：一次一张，prompt 里给截图路径和要核对的点，几张可以在同一条消息里并行起。
+2. **逐条输出**：票的 Browser check 每个核对点一行，格式固定为 `- ✅|❌|❓ <核对点>：<在截图里看到的>`，行首只能是三个符号之一（✅ 符合，❌ 不符合，❓ 看不出或没截到）：
+
+<browser-verdict>
+- ✅ 管理员打开 /users 看到用户列表：截图 01-users.png 里列表有三行，表头齐全
+- ❓ 删除后出现提示：没有对应的截图
+</browser-verdict>
+
+3. **和 RESULT.md 对照**：你逐条全是 ✅、且与 RESULT.md 一致，才给 `<browser-check>done</browser-check>`。RESULT.md 说 ✅、你看到的是 ❌ 或 ❓ 时：能靠改代码修的，给 `<verdict>revise</verdict>`，在 `<revise>` 里写出哪一步不对、截图里看到的是什么（revise 改了页面后截图会过期、留 PR，这是预期）；改不了或截图缺失的，给 `<browser-check>missing</browser-check>`。
+
+{{ELSE_BROWSER}}{{END_BROWSER}}然后输出 <promise>COMPLETE</promise>。
