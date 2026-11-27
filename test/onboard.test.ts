@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { detectProject, parseRemoteUrl } from "../src/detect.ts";
-import { agentFailureMessage, agentStartHint, agentWritable, applyLangArg, assertRepoRoot, configSource, containerfileSource, detectSummary, envStepHint, filesSummary, hasGlobalSkill, installFiles, installGlobalSkill, outputCollector, prefixLines, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles, validationSummary } from "../src/onboard.ts";
+import { agentDoneLine, agentFailureMessage, agentStartHint, agentWritable, applyLangArg, assertRepoRoot, configSource, containerfileSource, detectSummary, envStepHint, filesSummary, hasGlobalSkill, installFiles, installGlobalSkill, outputCollector, prefixLines, staleGlobalSkillFiles, projectDocDraft, mergeGitignore, mergeSettings, onboard, onboardPrompt, questionsOnlyPrecheck, questionsPrompt, TYPES_ENTRY, updateClaudeFiles, validationSummary } from "../src/onboard.ts";
 import { loadProject } from "../src/profile.ts";
 import { OPEN_QUESTIONS } from "../src/open-questions.ts";
 import { setTermLanguage } from "../src/term.ts";
@@ -917,6 +917,11 @@ describe("onboard 的阶段摘要（--verbose 才打明细）", () => {
     expect(validationSummary(true, { count: 0, state: "invalid" })).toContain("缺口清单 ✗");
   });
 
+  it("agentDoneLine：doc 写「完成」和笔记路径，questions 不写 logs 只写「完成」", () => {
+    expect(agentDoneLine("doc")).toBe("完成，笔记见 .sandcastle/logs/onboard.md");
+    expect(agentDoneLine("questions")).toBe("完成");
+  });
+
   it("英文文案", () => {
     try {
       setTermLanguage("en", {});
@@ -932,6 +937,8 @@ describe("onboard 的阶段摘要（--verbose 才打明细）", () => {
       expect(validationSummary(true, { count: 5, state: "ok" })).toBe("Checks  PROJECT.md ✓ · 5 open question(s)");
       expect(validationSummary(true, { count: 0, state: "missing" })).toContain("open questions (not written)");
       expect(validationSummary(false, { count: 0, state: "invalid" })).toContain("open questions ✗");
+      expect(agentDoneLine("doc")).toBe("Done; notes in .sandcastle/logs/onboard.md");
+      expect(agentDoneLine("questions")).toBe("Done");
     } finally {
       setTermLanguage("zh", {});
     }
@@ -1039,5 +1046,14 @@ describe("onboard 的阶段摘要（--verbose 才打明细）", () => {
     expect((cli.match(/--verbose/g) ?? []).length).toBeGreaterThanOrEqual(2);
     for (const p of ["../README.md", "../README.zh-CN.md"])
       expect(readFileSync(new URL(p, import.meta.url), "utf8")).toMatch(/onboard \[--no-agent\] \[--model[^\n]*\] \[--verbose\]/);
+  });
+
+  it("help 和 README 写明 agent 的 stderr 与笔记全文只在 --verbose 打，questions-only 也认 --verbose", () => {
+    const cli = readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8");
+    // 中英两份 help 里各提到一次 stderr
+    // stderr is mentioned once in each of the two help texts
+    expect((cli.match(/stderr/g) ?? []).length).toBeGreaterThanOrEqual(2);
+    for (const p of ["../README.md", "../README.zh-CN.md"])
+      expect(readFileSync(new URL(p, import.meta.url), "utf8")).toMatch(/--questions-only \[--model[^\n]*\] \[--verbose\]/);
   });
 });
