@@ -121,6 +121,11 @@ const zh = {
   browserMissingShots: (names: string) => `RESULT.md 引用的截图不存在：${names}`,
   browserTagNotDone: (tag: string) => `review 的 browser-check 是 \`${tag}\`，不是 done`,
   browserNoTag: "review 没有给出 browser-check（要求是 done）",
+  browserStale: (files: string) => `验收之后 revise / fix 改了页面，截图已过期：${files}`,
+  browserStaleUnknown: "取不到浏览器验收时的提交或之后的 diff，无法判断截图是否过期",
+  /** rebase 解冲突改到了页面，不 push、留 PR（#58）。 / Resolving rebase conflicts touched pages; not pushed, PR left open (#58). */
+  reasonBrowserStaleAfterRebase: (files: string | undefined) =>
+    files ? `rebase 解冲突改了页面，截图已过期，需要人重新验收：${files}` : "rebase 解冲突后取不到 diff，无法判断是否改了页面，按截图已过期处理，需要人重新验收。",
   // —— 票里缺 Browser check 的提示（pr-body.ts 的 browserSection、land 的 PR 评论） —— / Notice for a ticket without a Browser check (browserSection in pr-body.ts, the PR comment in land)
   browserNoTicketCheck:
     "⚠️ 改了页面，但票里没有 Browser check，建议补 prep 规则：prep 写实现指引时，改页面的票要加 `- **Browser check**` 一项（以什么角色打开哪个页面、做什么、应该看到什么）。",
@@ -315,6 +320,12 @@ const en: Messages = {
   browserMissingShots: (names) => `screenshots referenced in RESULT.md don't exist: ${names}`,
   browserTagNotDone: (tag) => `the review's browser-check is \`${tag}\`, not done`,
   browserNoTag: "the review gave no browser-check (done is required)",
+  browserStale: (files) => `pages changed by revise / fix after the browser check, so the screenshots are out of date: ${files}`,
+  browserStaleUnknown: "couldn't read the commit at the browser check or the diff since, so can't tell whether the screenshots are out of date",
+  reasonBrowserStaleAfterRebase: (files) =>
+    files
+      ? `Resolving the rebase conflicts changed pages, so the screenshots are out of date; a human needs to recheck: ${files}`
+      : "Resolving the rebase conflicts: couldn't read the diff, so whether pages changed is unknown; treating the screenshots as out of date, a human needs to recheck.",
   browserNoTicketCheck:
     "⚠️ Pages changed, but the ticket has no Browser check; consider adding a prep rule: when prep writes the implementation guide, tickets that change pages should get a `- **Browser check**` item (which role opens which page, what to do, what should be seen).",
   reasonMergeFailed: (out, retry) => `Merge failed: ${out}\n\nRetrying after a rebase also failed: ${retry}`,

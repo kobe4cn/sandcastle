@@ -1,7 +1,9 @@
 // test/browser-gate.test.ts —— 浏览器验收作为自动合并的硬条件（`src/browser-gate.ts`，纯函数）：
 // 哪些改动算改了页面、浏览器验收缺什么（返回问题数组，缺哪个报哪个）、合并前的结论（留不留 PR、原因）。
 import { describe, expect, it } from "vitest";
-import { browserProblems, browserSetupWarning, browserVerdict, pageFiles, ticketHasBrowserCheck } from "../src/browser-gate.ts";
+import {
+  browserProblems, browserSetupWarning, browserStale, browserVerdict, pageFiles, rebasePageHits, ticketHasBrowserCheck,
+} from "../src/browser-gate.ts";
 import { messages } from "../src/i18n.ts";
 import { setTermLanguage } from "../src/term.ts";
 
@@ -21,6 +23,39 @@ describe("pageFiles：diff 里命中 browser.pagePaths 的文件", () => {
   it("带 g 标志的正则反复用也不漏判", () => {
     const g = /\.tsx$/g;
     expect(pageFiles(["a.tsx", "b.tsx", "c.tsx"], [g])).toEqual(["a.tsx", "b.tsx", "c.tsx"]);
+  });
+});
+
+describe("browserStale：验收之后的改动有没有碰页面", () => {
+  const pages = [/\.tsx$/];
+  it("命中页面：返回命中的文件", () => {
+    expect(browserStale(["src/app/page.tsx", "src/db.ts"], pages)).toEqual(["src/app/page.tsx"]);
+  });
+  it("没命中：空数组", () => {
+    expect(browserStale(["src/db.ts"], pages)).toEqual([]);
+  });
+  it("取不到 diff：unknown（fail-closed）", () => {
+    expect(browserStale(undefined, pages)).toBe("unknown");
+  });
+});
+
+describe("rebasePageHits：rebase 解冲突改到的页面", () => {
+  const pages = [/\.tsx$/];
+  it("冲突文件是页面：算", () => {
+    expect(rebasePageHits(["src/app/page.tsx", "src/db.ts"], ["src/app/page.tsx"], ["src/app/page.tsx"], pages)).toEqual(["src/app/page.tsx"]);
+  });
+  it("解冲突后新出现的页面文件：算", () => {
+    expect(rebasePageHits(["src/db.ts"], ["src/db.ts"], ["src/db.ts", "src/app/new.tsx"], pages)).toEqual(["src/app/new.tsx"]);
+  });
+  it("rebase 前已有、也没冲突的页面不算", () => {
+    expect(rebasePageHits(["src/db.ts"], ["src/db.ts", "src/app/page.tsx"], ["src/db.ts", "src/app/page.tsx"], pages)).toEqual([]);
+  });
+  it("冲突文件与新文件重合时去重", () => {
+    expect(rebasePageHits(["a.tsx"], [], ["a.tsx"], pages)).toEqual(["a.tsx"]);
+  });
+  it("before 或 after 取不到：unknown", () => {
+    expect(rebasePageHits(["a.tsx"], undefined, ["a.tsx"], pages)).toBe("unknown");
+    expect(rebasePageHits(["a.tsx"], ["a.tsx"], undefined, pages)).toBe("unknown");
   });
 });
 
@@ -74,6 +109,22 @@ describe("browserVerdict：合并前的结论", () => {
     expect(block).toContain("没有截图；review 的 browser-check 是 `missing`");
     expect(block).toMatch(/^改了页面，浏览器验收不满足自动合并的条件/);
   });
+  it("验收之后又改了页面：挡，原因里带文件名", () => {
+    const { block } = browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", stale: ["src/app/page.tsx", "src/b.tsx"] }, zh);
+    expect(block).toContain("验收之后 revise / fix 改了页面，截图已过期");
+    expect(block).toContain("src/app/page.tsx、src/b.tsx");
+  });
+  it("取不到验收时的提交或之后的 diff：按过期挡", () => {
+    const { block } = browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", stale: "unknown" }, zh);
+    expect(block).toContain("无法判断截图是否过期");
+  });
+  it("验收之后的改动没碰页面：照常有效", () => {
+    expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", stale: [] }, zh)).toEqual({});
+  });
+  it("没有 .browser-check/ 时 stale 不另报", () => {
+    const { block } = browserVerdict({ pages: true, hasBrowser: true, tag: "done", stale: "unknown" }, zh);
+    expect(block).not.toContain("过期");
+  });
   it("改了页面但没配浏览器验收：留 PR 并给补法", () => {
     const { block } = browserVerdict({ pages: true, hasBrowser: false, browser: ok, tag: "done" }, zh);
     expect(block).toContain("改了页面、本项目没配浏览器验收");
@@ -88,6 +139,11 @@ describe("英文文案", () => {
     expect(browserProblems({ shots: [] }, "done", en)).toEqual(["no screenshots", "no RESULT.md"]);
     expect(browserVerdict({ pages: true, hasBrowser: false }, en).block).toContain("## Browser check");
     expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "none" }, en).block).toMatch(/^Pages changed/);
+    expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", stale: ["a.tsx"] }, en).block).toContain("screenshots are out of date: a.tsx");
+    expect(browserVerdict({ pages: true, hasBrowser: true, browser: ok, tag: "done", stale: "unknown" }, en).block).toContain("can't tell whether the screenshots are out of date");
+    expect(en.reasonBrowserStaleAfterRebase("`a.tsx`")).toContain("`a.tsx`");
+    expect(en.reasonBrowserStaleAfterRebase(undefined)).toContain("couldn't read the diff");
+    expect(zh.reasonBrowserStaleAfterRebase(undefined)).toContain("取不到");
   });
 });
 

@@ -30,13 +30,40 @@ const SHOT_REF = /[\w.-]+\.(png|jpe?g)/gi;
 const basename = (p: string) => p.split(/[\\/]/).at(-1) ?? p;
 
 /**
- * 浏览器验收缺什么（空数组就是都满足）：至少一张截图；RESULT.md 存在、列表行没有 ❌ / ⚠、引用的截图都在；review 标签是 done。
- * What the browser check is missing (empty means all satisfied): at least one screenshot; RESULT.md exists, its list rows have no ❌ / ⚠,
- * and the screenshots it references exist; the review tag is done.
+ * 验收之后（browserAt..HEAD）的改动里命中页面的文件；取不到 diff 时为 "unknown"，按过期处理（fail-closed，#58）。
+ * Page files among the changes since the check (browserAt..HEAD); "unknown" when the diff is unavailable, treated as stale (fail-closed, #58).
  */
-export function browserProblems(b: BrowserCheck | undefined, tag: string | undefined, m: Messages): string[] {
+export const browserStale = (changedSince: string[] | undefined, pagePaths: RegExp[]): string[] | "unknown" =>
+  changedSince === undefined ? "unknown" : pageFiles(changedSince, pagePaths);
+
+/**
+ * rebase 解冲突改到的页面：冲突文件，加上 rebase 后新出现在票 diff 里的文件（rebase 前已有的不算，sha 变了不能用两点 diff，#58）。
+ * before 或 after 取不到时为 "unknown"。
+ * Pages touched by resolving rebase conflicts: the conflicting files plus files newly appearing in the ticket diff after the rebase
+ * (ones already there before don't count; the sha changed so a two-dot diff won't do, #58). "unknown" when before or after is unavailable.
+ */
+export function rebasePageHits(
+  conflictFiles: string[], before: string[] | undefined, after: string[] | undefined, pagePaths: RegExp[],
+): string[] | "unknown" {
+  if (before === undefined || after === undefined) return "unknown";
+  const had = new Set(before);
+  return pageFiles([...new Set([...conflictFiles, ...after.filter((f) => !had.has(f))])], pagePaths);
+}
+
+/**
+ * 浏览器验收缺什么（空数组就是都满足）：至少一张截图；RESULT.md 存在、列表行没有 ❌ / ⚠、引用的截图都在；review 标签是 done；
+ * 验收之后没再改页面（stale 为空或不传）。
+ * What the browser check is missing (empty means all satisfied): at least one screenshot; RESULT.md exists, its list rows have no ❌ / ⚠,
+ * and the screenshots it references exist; the review tag is done; no page changed after the check (stale empty or omitted).
+ */
+export function browserProblems(
+  b: BrowserCheck | undefined, tag: string | undefined, m: Messages, stale?: string[] | "unknown",
+): string[] {
   if (!b) return [m.browserNotDone];
   const problems: string[] = [];
+  // 验收之后又改了页面，截图对应的不是最终代码（#58）。 / Pages changed after the check, so the screenshots don't show the final code (#58).
+  if (stale === "unknown") problems.push(m.browserStaleUnknown);
+  else if (stale?.length) problems.push(m.browserStale(m.list(stale)));
   if (b.shots.length === 0) problems.push(m.browserNoShots);
   if (b.result === undefined) problems.push(m.browserNoResultFile);
   else {
@@ -56,12 +83,12 @@ export function browserProblems(b: BrowserCheck | undefined, tag: string | undef
  * The pre-merge verdict: no page changes, no block; pages changed but the project has no browser check configured, or the check falls short, gives a reason `block` for leaving the PR.
  */
 export function browserVerdict(
-  x: { pages: boolean; hasBrowser: boolean; browser?: BrowserCheck; tag?: string },
+  x: { pages: boolean; hasBrowser: boolean; browser?: BrowserCheck; tag?: string; stale?: string[] | "unknown" },
   m: Messages,
 ): { block?: string } {
   if (!x.pages) return {};
   if (!x.hasBrowser) return { block: m.reasonNoBrowserConfig };
-  const problems = browserProblems(x.browser, x.tag, m);
+  const problems = browserProblems(x.browser, x.tag, m, x.stale);
   return problems.length ? { block: m.reasonBrowser(problems.join(m.sep)) } : {};
 }
 

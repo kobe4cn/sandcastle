@@ -102,7 +102,9 @@ import { duration, flakyTicketsLine, gateDoneLine, gateEnv, gateEnvLine, gateInf
 import { createGateQueue, type GatePriority } from "./gate-queue.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { loadProjectDoc, projectDocPath, projectDocWatcher, renderPrompts } from "./project-doc.ts";
-import { type BrowserCheck, browserSetupWarning, browserVerdict, pageFiles, ticketHasBrowserCheck } from "./browser-gate.ts";
+import {
+  type BrowserCheck, browserSetupWarning, browserStale, browserVerdict, pageFiles, rebasePageHits, ticketHasBrowserCheck,
+} from "./browser-gate.ts";
 import { allowedProtected, allowedSection, protectedBlock } from "./protected-paths.ts";
 import { createTrust, needsHold } from "./trust.ts";
 import { detectProject } from "./detect.ts";
@@ -973,6 +975,11 @@ type Reviewed = {
   verdict: string | undefined;
   summary: string;
   browserTag: string | undefined;
+  /**
+   * 浏览器验收时（implement 结束）的 HEAD；没有 .browser-check/ 或取不到时不设。恢复路径没有它，按过期处理（#58）。
+   * HEAD at the browser check (end of implement); unset without .browser-check/ or when unreadable. The resume path lacks it and is treated as stale (#58).
+   */
+  browserAt?: string;
 };
 
 async function build(issue: Issue) {
@@ -1028,8 +1035,14 @@ const sandboxHead = async (sandbox: Sandbox) =>
  * 票相对 BASE_REF 改了哪些文件（git diff --name-only，相对仓库根）；取不到时返回 undefined。
  * Files the ticket changed against BASE_REF (git diff --name-only, relative to the repo root); undefined when it can't be read.
  */
-const ticketDiffFiles = async (sandbox: Sandbox): Promise<string[] | undefined> => {
-  const diff = await sandbox.exec(`git diff --name-only ${BASE_REF}...HEAD`).catch(() => undefined);
+const ticketDiffFiles = (sandbox: Sandbox): Promise<string[] | undefined> => diffNames(sandbox, `${BASE_REF}...HEAD`);
+
+/**
+ * 沙箱里 `git diff --name-only <range>` 的文件列表；取不到时返回 undefined。
+ * The file list of `git diff --name-only <range>` in the sandbox; undefined when it can't be read.
+ */
+const diffNames = async (sandbox: Sandbox, range: string): Promise<string[] | undefined> => {
+  const diff = await sandbox.exec(`git diff --name-only ${range}`).catch(() => undefined);
   return diff?.exitCode === 0 ? diff.stdout.split("\n").map((l) => l.trim()).filter(Boolean) : undefined;
 };
 
@@ -1082,6 +1095,9 @@ async function implementAndReview(issue: Issue, sandbox: Sandbox, run: RunAgent)
   if (implement.completionSignal !== COMPLETE || ahead === 0) {
     return { done: false as const, implement };
   }
+  // 浏览器验收在 implement 里做：记下这时的 HEAD，之后 revise / fix 改了页面就判截图过期（#58）。由编排器记，不靠 agent 写。
+  // The browser check happens during implement: record HEAD now, so pages changed later by revise / fix mark the screenshots stale (#58). Recorded by the orchestrator, not the agent.
+  const browserAt = existsSync(join(sandbox.worktreePath, ".browser-check")) ? (await sandboxHead(sandbox)) || undefined : undefined;
 
   const runReview = (round: number) =>
     run("review", `review-${issue.id}-${round}`, (agent) => sandbox.run({
@@ -1118,6 +1134,7 @@ async function implementAndReview(issue: Issue, sandbox: Sandbox, run: RunAgent)
     verdict: tagged(review.stdout, "verdict"),
     summary: tagged(review.stdout, "review-summary") ?? M.noReviewSummary,
     browserTag: tagged(review.stdout, "browser-check"),
+    browserAt,
   };
   return { done: true as const, implement, reviewed };
 }
@@ -1200,6 +1217,15 @@ async function gateAndCollect(
   // Which files changed (to judge page changes and protected paths): taken after review / revisions / gate fixes so every commit counts.
   // undefined if unreadable: the page judgement treats it as empty and falls back without blocking; with protectedPaths configured, land treats it as a hit (fail-closed).
   const changed = await ticketDiffFiles(sandbox);
+  // 有 .browser-check/ 时看验收之后（browserAt..HEAD）改没改页面；没记 browserAt（恢复路径）或取不到 diff 按过期（#58）。
+  // revise / fix 在同一沙箱里只追加提交，两点 diff 就是验收之后的改动。
+  // With .browser-check/, check whether pages changed since the check (browserAt..HEAD); no browserAt (resume path) or no diff counts as stale (#58).
+  // revise / fix only append commits in the same sandbox, so the two-dot diff is exactly what changed since the check.
+  let staleBrowser: string[] | "unknown" | undefined;
+  if (existsSync(join(sandbox.worktreePath, ".browser-check"))) {
+    const since = reviewed.browserAt ? await diffNames(sandbox, `${reviewed.browserAt} HEAD`) : undefined;
+    staleBrowser = browserStale(since, project.browser.pagePaths);
+  }
   return {
     done: true as const,
     implement,
@@ -1212,6 +1238,7 @@ async function gateAndCollect(
     fixHeadUnknown,
     browser: collectBrowserCheck(sandbox.worktreePath, issue.id),
     browserTag: reviewed.browserTag,
+    browserStale: staleBrowser,
     notes: readAcceptanceNotes(sandbox.worktreePath),
     changed,
     usage,
@@ -1276,8 +1303,11 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     const oldBase = mergeBase?.exitCode === 0 ? mergeBase.stdout.trim() : "";
     // rebase 前改了哪些文件：解冲突后只补报新出现的票放行命中，rebase 前的已在 PR 里标过（#76）。只在票有放行项时取。
     // Which files changed before the rebase: after conflict resolution only newly appearing ticket-allowed hits are reported, the earlier ones are already flagged in the PR (#76). Only read when the ticket has allowed entries.
+    // 也用来判断解冲突有没有改到页面（#58）：配了 pagePaths 且有浏览器验收时取。
+    // Also used to judge whether conflict resolution touched pages (#58): read when pagePaths is set and the browser check is configured.
     const allowProtected = issue.allowProtected ?? [];
-    const changedBefore = project.protectedPaths.length > 0 && allowProtected.length > 0 ? await ticketDiffFiles(sandbox) : undefined;
+    const checkPages = project.browser.pagePaths.length > 0 && DOC.hasBrowser;
+    const changedBefore = (project.protectedPaths.length > 0 && allowProtected.length > 0) || checkPages ? await ticketDiffFiles(sandbox) : undefined;
     const rebase = await sandbox.exec(`git rebase ${BASE_REF}`);
     const conflicted = rebase.exitCode !== 0;
     const chainBroken = !conflicted && (await sandbox.exec(INTEGRITY_OK)).exitCode !== 0;
@@ -1346,8 +1376,9 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     // 票放行的命中不挡，但 rebase 前没有的那些在 push 后补一条 PR 评论（#76）。
     // Ticket-allowed hits don't block, but the ones not there before the rebase get a PR comment after the push (#76).
     let allowedAfterRebase: string | undefined;
+    let changedAfter: string[] | undefined;
     if ((conflicted || chainBroken) && project.protectedPaths.length > 0) {
-      const changedAfter = await ticketDiffFiles(sandbox);
+      changedAfter = await ticketDiffFiles(sandbox);
       const block = protectedBlock(changedAfter, project.protectedPaths, M, allowProtected);
       if (block) {
         console.log(t(`  ◐ #${issue.id} rebase 后受保护路径检查没通过，不 push`, `  ◐ #${issue.id} protected-path check failed after the rebase; not pushing`));
@@ -1367,6 +1398,18 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
         console.log(t(`  ◐ #${issue.id} rebase 解冲突之后的复审没通过，不 push`, `  ◐ #${issue.id} re-review after resolving rebase conflicts failed; not pushing`));
         const table = usage.length ? `\n\n${usageTable(usage, M)}` : "";
         return { ok: false, reason: `${M.reasonReReview("rebase", verdict.summary)}${table}` };
+      }
+    }
+    // agent 解冲突改到了页面：截图对应的不是 rebase 后的代码，不 push、留 PR（#58）。sha 全变了，只看冲突文件和新出现的文件。
+    // 不依赖 .browser-check/：rebase 开的是新沙箱，里面没有它。干净 rebase（没起 agent）不查。
+    // The agent's conflict resolution touched pages: the screenshots don't match the rebased code, so don't push and leave the PR (#58). Every sha changed, so only conflicting and newly appearing files count.
+    // Doesn't rely on .browser-check/: the rebase opens a fresh sandbox without it. A clean rebase (no agent) isn't checked.
+    if ((conflicted || chainBroken) && checkPages) {
+      changedAfter ??= await ticketDiffFiles(sandbox);
+      const hits = rebasePageHits(conflictFiles, changedBefore, changedAfter, project.browser.pagePaths);
+      if (hits === "unknown" || hits.length > 0) {
+        console.log(t(`  ◐ #${issue.id} rebase 改了页面，截图已过期，不 push`, `  ◐ #${issue.id} the rebase changed pages, so the screenshots are out of date; not pushing`));
+        return { ok: false, reason: M.reasonBrowserStaleAfterRebase(hits === "unknown" ? undefined : M.list(hits)) };
       }
     }
 
@@ -1686,7 +1729,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   // 改了页面的票，浏览器验收是自动合并的硬条件（src/browser-gate.ts）；不满足时同样附进每条留给人的原因。
   // For tickets that change pages, the browser check is a hard condition for auto-merge (src/browser-gate.ts); when unmet it's likewise added to every leave-for-human reason.
   const { block: browserBlock } = browserVerdict(
-    { pages: pageChanged, hasBrowser: DOC.hasBrowser, browser: result.browser, tag: result.browserTag },
+    { pages: pageChanged, hasBrowser: DOC.hasBrowser, browser: result.browser, tag: result.browserTag, stale: result.browserStale },
     M,
   );
   const browserNote = browserBlock ? `\n\n${browserBlock}` : "";
