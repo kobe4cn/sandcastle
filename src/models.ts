@@ -279,16 +279,28 @@ export function reloadModels() {
 const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 /**
+ * --settings 传给沙箱里每个 claude 进程的设置：关掉 Claude Code 自带的提交 / PR 署名。
+ * 别家档案只改环境变量，Claude Code 不知道实际模型，会把提交署名成 Anthropic 的（如 Claude Opus 5.5）；
+ * 统一不署模型名，各阶段实际用的档案看 PR 正文的 Usage 表。includeCoAuthoredBy 和 attribution 是新旧两代开关，都写上。
+ * Settings passed as --settings to every claude process in the sandbox: Claude Code's built-in commit / PR attribution is off.
+ * Third-party profiles only change environment variables, so Claude Code doesn't know the real model and would attribute commits to an Anthropic one (e.g. Claude Opus 5.5);
+ * no model name anywhere, and the profile each phase actually used is in the PR body's Usage table. includeCoAuthoredBy and attribution are the two generations of the switch; both are set.
+ */
+export const NO_ATTRIBUTION_SETTINGS = { includeCoAuthoredBy: false, attribution: { commit: "", pr: "" } } as const;
+
+/**
  * createSandbox 里的 sandbox.run 不用 agent provider 的 env（只用容器启动时的），所以档案的 env 加在命令前面：
- * `env -u … K=V claude …`，另加 SANDCASTLE_PROFILE（implementer 在进度评论里写明用的档案）。命令在容器里由 sh -c 执行，`${VAR}` 写成 "$VAR"，密钥不出现在宿主机的命令行里。
+ * `env -u … K=V claude --settings … …`，另加 SANDCASTLE_PROFILE（implementer 在进度评论里写明用的档案）。命令在容器里由 sh -c 执行，`${VAR}` 写成 "$VAR"，密钥不出现在宿主机的命令行里。
+ * `--settings` 带 NO_ATTRIBUTION_SETTINGS：claude 的自带署名关掉（所有档案、resume 会话都一样）。
  *
  * Claude 凭据不在容器级 env 里（main.ts 用 CLAUDE_CREDENTIALS_CLEARED 清空），按会话给：
  * - Claude 档案：.env 里有值的凭据每个一行放在 prompt 前面从 stdin 送进去，sh 用 read 读进没导出的变量、export 后 exec 成 claude，
  *   值不进任何命令行，sh 被替换掉；没值的凭据 `env -u`（容器里是空串）。
  * - 别家档案：`env -u` 两个凭据，stdin 只有 prompt，这次会话起的进程都没有凭据（之前 Claude 会话留在后台的进程除外）。
  *
- * Profile env goes in front of the command because sandbox.run in createSandbox ignores the agent provider's env: `env -u … K=V claude …`,
+ * Profile env goes in front of the command because sandbox.run in createSandbox ignores the agent provider's env: `env -u … K=V claude --settings … …`,
  * plus SANDCASTLE_PROFILE. The command runs under sh -c in the container; `${VAR}` becomes "$VAR", so secrets never appear on the host's command line.
+ * `--settings` carries NO_ATTRIBUTION_SETTINGS: Claude's built-in attribution is off (the same for every profile and for resumed sessions).
  * Claude credentials aren't in the container-level env (main.ts clears them with CLAUDE_CREDENTIALS_CLEARED); they're given per session:
  * - Claude profiles: each credential with a value goes as one stdin line ahead of the prompt; sh reads it into an unexported variable, exports it and execs claude,
  *   so the value is on no command line and sh is replaced; credentials without a value are `env -u`'d (they're empty strings in the container).
@@ -308,14 +320,23 @@ export function agentFor(profile: Profile, env: Record<string, string>, phase?: 
     // resume 会话也走这里（resumeSession 是 options 的一项）。 / Resumed sessions come through here too (resumeSession is one of the options).
     buildPrintCommand: (options) => {
       const cmd = base.buildPrintCommand(options);
+      // claude 后面插 --settings（NO_ATTRIBUTION_SETTINGS）：关掉自带署名，所有档案一视同仁。--settings 的优先级高于项目
+      // 的 .claude/settings.json，盖不掉；sandcastle 改了命令格式、命令不再以 claude 开头时抛错，不悄悄丢掉设置。
+      // --settings (NO_ATTRIBUTION_SETTINGS) goes right after claude: built-in attribution off, the same for every profile.
+      // --settings outranks the project's .claude/settings.json, which can't override it; if sandcastle changes the command
+      // format so it no longer starts with claude, throw rather than silently drop the settings.
+      if (!cmd.command.startsWith("claude ")) {
+        throw new Error(t(`agentFor 只认 claude 开头的命令，拿到的是「${cmd.command.slice(0, 40)}」`, `agentFor only knows commands starting with claude, got "${cmd.command.slice(0, 40)}"`));
+      }
+      const bare = `claude --settings ${shellQuote(JSON.stringify(NO_ATTRIBUTION_SETTINGS))} ${cmd.command.slice("claude ".length)}`;
       const creds = profile.thirdParty ? [] : claudeCredentials();
-      if (creds.length === 0) return { ...cmd, command: envPrefix(CLAUDE_CREDENTIALS) + cmd.command };
+      if (creds.length === 0) return { ...cmd, command: envPrefix(CLAUDE_CREDENTIALS) + bare };
       const given = new Set(creds.map(([k]) => k));
       const reads = creds.map((_, i) => `IFS= read -r __c${i}; `).join("");
       const exports = `export ${creds.map(([k], i) => `${k}="$__c${i}"`).join(" ")}; `;
       return {
         ...cmd,
-        command: `${reads}${exports}exec ${envPrefix(CLAUDE_CREDENTIALS.filter((k) => !given.has(k)))}${cmd.command}`,
+        command: `${reads}${exports}exec ${envPrefix(CLAUDE_CREDENTIALS.filter((k) => !given.has(k)))}${bare}`,
         stdin: creds.map(([, v]) => `${v}\n`).join("") + (cmd.stdin ?? ""),
       };
     },
