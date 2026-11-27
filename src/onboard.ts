@@ -18,6 +18,10 @@
 //    Complete PROJECT.md (on by default, --no-agent skips it): one claude -p on the host reads the code, finishes the draft and puts open points into OPEN-QUESTIONS.md;
 //    it may edit only those two files (only PROJECT.md if the list already exists); then validated with parseProjectDoc and parseOpenQuestions.
 //    claude runs under the local Claude Code login (unrelated to the token in .env); its stderr is echoed line by line with a [claude] prefix, and failures put the exit code and the last lines into the warning.
+// 4. 终端输出按阶段收成摘要（探测、文件、校验各一到两行，detectSummary / filesSummary / validationSummary）；--verbose 打完整明细。
+//    要人处理的（另存为 .new 的冲突文件、PROJECT.md 校验失败、GitLab 警告）永远单独成醒目的一行，不被计数收掉。
+//    Terminal output is summarized per stage (detection, files, validation, one to two lines each: detectSummary / filesSummary / validationSummary); --verbose prints the full details.
+//    Things needing a human (a conflict file saved as .new, a PROJECT.md validation failure, the GitLab warning) always get their own prominent line and are never folded into the counts.
 
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { execFileSync, spawn } from "node:child_process";
@@ -896,33 +900,36 @@ async function questionsOnlyRun(root: string, f: ProjectFacts, model: string, la
     console.warn(t("  ⚠ agent 失败：", "  ⚠ The agent failed: ") + String((e as Error).message));
     return;
   }
-  const remaining = reportOpenQuestions(root);
-  if (remaining > 0) console.log(`\n${t("接下来：", "Next: ")}${fillDocsHint(remaining)}`);
+  const qc = checkOpenQuestions(root);
+  if (qc.state === "ok") console.log(t(`✓ 缺口清单还有 ${qc.count} 条`, `✓ ${qc.count} open question(s) left`));
+  for (const w of qc.warnings) console.warn(w);
+  if (qc.count > 0) console.log(`\n${t("接下来：", "Next: ")}${fillDocsHint(qc.count)}`);
 }
 
 /**
- * 校验缺口清单并打印剩余条数，返回条数（没有清单或格式不对时为 0）。
- * Validate the open questions list and print how many are left; returns the count (0 when missing or malformed).
+ * 校验缺口清单，返回剩余条数和需要单独成行的警告（没生成、格式不对、「写到哪」指向 PROJECT.md 里没有的节）。
+ * 「还有 N 条」的明细行不在这里打，由调用方按 --verbose / --questions-only 决定。
+ * Validate the open questions list, returning how many are left plus warnings that each need their own line (missing, malformed, a target pointing to a PROJECT.md section that doesn't exist).
+ * The "N left" detail line isn't printed here — callers decide via --verbose / --questions-only.
  */
-function reportOpenQuestions(root: string): number {
+function checkOpenQuestions(root: string): QuestionsCheck & { warnings: string[] } {
   try {
     const questions = readOpenQuestions(root);
-    if (questions === null) {
-      console.warn(t("⚠ 没有生成缺口清单", "⚠ No open questions list was generated"));
-      return 0;
-    }
-    console.log(t(`✓ 缺口清单还有 ${questions.length} 条`, `✓ ${questions.length} open question(s) left`));
-    for (const { line, section } of unknownSectionTargets(questions))
-      console.warn(
+    if (questions === null)
+      return { count: 0, state: "missing", warnings: [t("⚠ 没有生成缺口清单", "⚠ No open questions list was generated")] };
+    return {
+      count: questions.length,
+      state: "ok",
+      warnings: unknownSectionTargets(questions).map(({ line, section }) =>
         t(
           `⚠ 缺口清单第 ${line} 行：「写到哪」指向 PROJECT.md 里没有的节「${section}」，只能用现有节名`,
           `⚠ Open questions line ${line}: target points to a PROJECT.md section that doesn't exist, "${section}"; use an existing section`,
         ),
-      );
-    return questions.length;
+      ),
+    };
   } catch (e) {
-    console.warn(t("⚠ 缺口清单校验没过：", "⚠ The open questions list is invalid: ") + (e as Error).message);
-    return 0;
+    const message = (e as Error).message;
+    return { count: 0, state: "invalid", message, warnings: [t("⚠ 缺口清单校验没过：", "⚠ The open questions list is invalid: ") + message] };
   }
 }
 
@@ -978,9 +985,72 @@ export function assertRepoRoot(root: string) {
     throw new Error(t(`不在仓库根目录（根目录是 ${top}）：cd 到仓库根目录再运行`, `Not in the repository root (the root is ${top}): cd to the repository root and run again`));
 }
 
+// ---------------------------------------------------------------------------
+// 阶段摘要（默认输出；--verbose 才打完整明细）
+// Stage summaries (the default output; full details print only under --verbose)
+// ---------------------------------------------------------------------------
+
+/**
+ * 探测段的摘要（两行）：项目、语言与包管理、平台、基线；门槛、受保护路径条数、有无网页界面。
+ * 受保护路径只给条数：正则字面量很长，要看时用 --verbose。
+ * Summary of the detection stage (two lines): project, language and package manager, forge, base; gate, protected path count, web UI.
+ * Protected paths are a count only: the regex literals run long; use --verbose to see them.
+ */
+export function detectSummary(f: ProjectFacts): string[] {
+  const pm = f.packageManager ? `/${f.packageManager}` : "";
+  const forge = `${f.forge.kind}${f.forge.path ? ` ${f.forge.path}` : ""}`;
+  const gate = (["typecheck", "lint", "test"] as const).filter((k) => f.commands[k]).join(" + ") || t("没探测到", "none detected");
+  const web = f.webUi ? t("有网页界面", "web UI") : t("无网页界面", "no web UI");
+  // 续行缩进对齐「探测  」的显示宽度（中文标签是两个全角字符）
+  // The continuation indent matches the display width of "探测  " (the Chinese label is two wide chars)
+  return [
+    t(
+      `探测  ${f.name}（${f.language}${pm}）· ${forge} · 基线 ${f.baseBranch}`,
+      `Detect  ${f.name} (${f.language}${pm}) · ${forge} · base ${f.baseBranch}`,
+    ),
+    t(
+      `      门槛 ${gate} · 受保护路径 ${f.protectedPaths.length} 条 · ${web}`,
+      `        gate ${gate} · ${f.protectedPaths.length} protected path(s) · ${web}`,
+    ),
+  ];
+}
+
+/**
+ * 文件段的摘要（一行）：新建与跳过（已存在）的计数，有更新时附上；已存在没动的（skipped / kept / unchanged）都算「跳过」。
+ * 另存为 .new 的不计数——它要人合并，摘要之外单独成行警告。
+ * Summary of the file stage (one line): counts of written and skipped (already present) files, plus updated when nonzero; files left alone (skipped / kept / unchanged) all count as skipped.
+ * .new saves aren't counted — they need a human merge and get their own warning line besides the summary.
+ */
+export function filesSummary(results: Outcome[]): string {
+  const n = (status: Outcome["status"]) => results.filter((r) => r.status === status).length;
+  const written = n("written");
+  const skipped = n("skipped") + n("kept") + n("unchanged");
+  const updated = n("updated");
+  return t(
+    `文件  新建 ${written} 个，跳过 ${skipped} 个（已存在）${updated ? `，更新 ${updated} 个` : ""}`,
+    `Files  ${written} written, ${skipped} skipped (already present)${updated ? `, ${updated} updated` : ""}`,
+  );
+}
+
+/** 缺口清单校验的结果：count 是剩余条数；missing（没生成）/ invalid（格式不对）时 count 为 0，invalid 的 message 是报错。 / Result of validating the open questions list: count is how many are left; 0 with missing (not written) / invalid (malformed), whose message holds the error. */
+export type QuestionsCheck = { count: number; state: "ok" | "missing" | "invalid"; message?: string };
+
+/**
+ * 校验段的摘要（一行）：PROJECT.md 是否通过、缺口清单条数；没生成 / 没过的详细报错由调用方单独成行。
+ * Summary of the validation stage (one line): whether PROJECT.md passed and the open question count; the details of a failure or a missing list get their own line from the caller.
+ */
+export function validationSummary(projectOk: boolean, q: QuestionsCheck): string {
+  let questions: string;
+  if (q.state === "ok") questions = t(`缺口清单 ${q.count} 条`, `${q.count} open question(s)`);
+  else if (q.state === "missing") questions = t("缺口清单（没生成）", "open questions (not written)");
+  else questions = t("缺口清单 ✗", "open questions ✗");
+  return `${t("校验  ", "Checks  ")}PROJECT.md ${projectOk ? "✓" : "✗"} · ${questions}`;
+}
+
 export async function onboard(argv: string[], root = process.cwd(), decide: Decide = askChoice) {
   const noAgent = argv.includes("--no-agent");
   const questionsOnly = argv.includes("--questions-only");
+  const verbose = argv.includes("--verbose");
   if (questionsOnly && noAgent)
     throw new Error(t("--questions-only 要靠 agent 生成清单，不能和 --no-agent 一起用", "--questions-only needs the agent to write the list; it can't be combined with --no-agent"));
   const modelIdx = argv.indexOf("--model");
@@ -994,27 +1064,30 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
   // Generated files and the terminal output from here on use one language: --lang, else the commit messages'.
   const lang: Language = langArg ?? f.commitLanguage;
   setTermLanguage(lang);
-  const none = t("（无）", "(none)");
-  const list = (xs: string[]) => xs.join(t("、", ", ")) || none;
-  console.log(
-    t(
-      `探测：${f.name}（${f.language}${f.packageManager ? ` / ${f.packageManager}` : ""}），远端 ${f.remote} → ${f.forge.kind}${f.forge.path ? ` ${f.forge.path}` : ""}，基线 ${f.baseBranch}`,
-      `Detected: ${f.name} (${f.language}${f.packageManager ? ` / ${f.packageManager}` : ""}), remote ${f.remote} → ${f.forge.kind}${f.forge.path ? ` ${f.forge.path}` : ""}, base ${f.baseBranch}`,
-    ),
-  );
-  const cmds = Object.entries(f.commands)
-    .filter(([, v]) => v)
-    .map(([k, v]) => `${k}=${v}`)
-    .join(t("；", "; "));
-  console.log(`  ${t("命令：", "Commands: ")}${cmds || t("（没探测到）", "(none detected)")}`);
-  const migrations = f.migrations ? `${f.migrations.tool} ${f.migrations.dir}` : none;
-  console.log(
-    t(
-      `  文档：${list(f.docs)}；测试目录：${list(f.testDirs)}；服务：${list(f.services)}；迁移：${migrations}；网页界面：${f.webUi ? "有" : "无"}`,
-      `  Docs: ${list(f.docs)}; test dirs: ${list(f.testDirs)}; services: ${list(f.services)}; migrations: ${migrations}; web UI: ${f.webUi ? "yes" : "no"}`,
-    ),
-  );
-  console.log(`  ${t("受保护路径：", "Protected paths: ")}${list(regexLiterals(f.protectedPaths))}`);
+  for (const line of detectSummary(f)) console.log(line);
+  if (verbose) {
+    const none = t("（无）", "(none)");
+    const list = (xs: string[]) => xs.join(t("、", ", ")) || none;
+    console.log(
+      t(
+        `探测：${f.name}（${f.language}${f.packageManager ? ` / ${f.packageManager}` : ""}），远端 ${f.remote} → ${f.forge.kind}${f.forge.path ? ` ${f.forge.path}` : ""}，基线 ${f.baseBranch}`,
+        `Detected: ${f.name} (${f.language}${f.packageManager ? ` / ${f.packageManager}` : ""}), remote ${f.remote} → ${f.forge.kind}${f.forge.path ? ` ${f.forge.path}` : ""}, base ${f.baseBranch}`,
+      ),
+    );
+    const cmds = Object.entries(f.commands)
+      .filter(([, v]) => v)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(t("；", "; "));
+    console.log(`  ${t("命令：", "Commands: ")}${cmds || t("（没探测到）", "(none detected)")}`);
+    const migrations = f.migrations ? `${f.migrations.tool} ${f.migrations.dir}` : none;
+    console.log(
+      t(
+        `  文档：${list(f.docs)}；测试目录：${list(f.testDirs)}；服务：${list(f.services)}；迁移：${migrations}；网页界面：${f.webUi ? "有" : "无"}`,
+        `  Docs: ${list(f.docs)}; test dirs: ${list(f.testDirs)}; services: ${list(f.services)}; migrations: ${migrations}; web UI: ${f.webUi ? "yes" : "no"}`,
+      ),
+    );
+    console.log(`  ${t("受保护路径：", "Protected paths: ")}${list(regexLiterals(f.protectedPaths))}`);
+  }
   if (f.forge.kind === "gitlab" && !questionsOnly)
     console.warn(t("  ⚠ 远端是 GitLab：GitLab Forge 还没做，文件照常生成，但先别跑", "  ⚠ The remote is GitLab: the GitLab forge isn't done yet. Files are generated, but don't run it yet"));
 
@@ -1024,10 +1097,23 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
   // 在生成文件和 agent 之前算：清单已存在就不让 agent 碰。
   // Computed before generating files and running the agent: an existing open questions list is off limits.
   const writable = agentWritable(root);
+  const results: Outcome[] = [];
   for (const o of installFiles(root, f, lang)) {
     if (o.status === "skipped" && o.file in CLAUDE_FILES) o.status = await resolveClaudeFile(root, o.file, tool(CLAUDE_FILES[o.file]), decide);
-    console.log(`  ${o.status === "skipped" || o.status === "unchanged" || o.status === "kept" ? "·" : "✓"} ${o.file}${t("：", ": ")}${statusText(o.status)}`);
+    results.push(o);
+    if (verbose) console.log(`  ${o.status === "skipped" || o.status === "unchanged" || o.status === "kept" ? "·" : "✓"} ${o.file}${t("：", ": ")}${statusText(o.status)}`);
   }
+  console.log(filesSummary(results));
+  // .new 要人合并：计数之外单独成醒目的一行（循环中间的提问和 saveNew 的警告照旧）
+  // A .new needs a human merge: its own prominent line besides the counts (the mid-loop prompt and saveNew's warning stay as they are)
+  for (const o of results)
+    if (o.status === "saved-new")
+      console.warn(
+        t(
+          `⚠ ${o.file} 和当前模板不同，新版另存为 ${o.file}.new；合并后删掉 .new`,
+          `⚠ ${o.file} differs from the current template; the new version is saved as ${o.file}.new. Merge it, then delete the .new`,
+        ),
+      );
 
   if (noAgent || docExisted) {
     if (docExisted) console.log(t("PROJECT.md 已存在，不再让 agent 重写。", "PROJECT.md already exists; not asking the agent to rewrite it."));
@@ -1043,14 +1129,20 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
     }
   }
 
+  let projectOk = true;
+  let projectError: string | undefined;
   try {
     parseProjectDoc(readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8"));
-    console.log(t("✓ PROJECT.md 校验通过", "✓ PROJECT.md is valid"));
   } catch (e) {
-    console.warn(t("⚠ PROJECT.md 校验没过：", "⚠ PROJECT.md is invalid: ") + (e as Error).message);
+    projectOk = false;
+    projectError = (e as Error).message;
   }
-
-  const remaining = reportOpenQuestions(root);
+  const qc = checkOpenQuestions(root);
+  console.log(validationSummary(projectOk, qc));
+  if (verbose && qc.state === "ok") console.log(t(`✓ 缺口清单还有 ${qc.count} 条`, `✓ ${qc.count} open question(s) left`));
+  if (!projectOk) console.warn(t("⚠ PROJECT.md 校验没过：", "⚠ PROJECT.md is invalid: ") + projectError);
+  for (const w of qc.warnings) console.warn(w);
+  const remaining = qc.count;
 
   // 给网页链接而不是本机路径：pnpm 全局装的包路径很长，在终端里没法点。
   // Print a web link rather than a local path: packages installed globally with pnpm live under a very long path that can't be clicked in a terminal.

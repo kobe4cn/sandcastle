@@ -85,7 +85,7 @@ SANDCASTLE_ONLY=12 sandpipe    # 只做 #12；不设就处理全部带标签的�
 | 命令 | 作用 |
 |---|---|
 | `sandpipe [run]` | 跑流水线 |
-| `sandpipe onboard [--no-agent] [--model <名>] [--lang zh\|en]` | 接入新项目，`.sandcastle/` 下已有的文件不覆盖；`.claude/` 下本工具的文件和模板不同时显示差异，问保留、覆盖还是另存为 `.new`（非交互时另存 `.new`） |
+| `sandpipe onboard [--no-agent] [--model <名>] [--lang zh\|en] [--verbose]` | 接入新项目，`.sandcastle/` 下已有的文件不覆盖；`.claude/` 下本工具的文件和模板不同时显示差异，问保留、覆盖还是另存为 `.new`（非交互时另存 `.new`）；输出按探测 / 文件 / 校验收成阶段摘要，`--verbose` 打印完整明细 |
 | `sandpipe onboard --questions-only [--model <名>] [--lang zh\|en]` | 只生成缺口清单 `.sandcastle/OPEN-QUESTIONS.md`，给早于清单接入的项目；不动其他文件 |
 | `sandpipe doctor [--fix]` | 跑之前的检查；有 ✗ 时退出码为 1 |
 | `sandpipe baseline` | 对 `origin/main` 跑一次完整门槛，只报告 |
