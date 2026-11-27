@@ -469,6 +469,12 @@ describe("全局 prep-ticket skill", () => {
     // 标签名只在一处出现（占位符），其余都说「ready label」，项目改了标签名也不会漏
     expect(skill.match(/ready-for-agent|\{\{L_READY_FOR_AGENT\}\}/g)).toHaveLength(1);
   });
+
+  it("Blocked by 的写法：一个 blocker 一行列表项，列表项外的票号不算（#100）", () => {
+    const skill = readFileSync(new URL("../claude/skills/prep-ticket/SKILL.md", import.meta.url), "utf8");
+    expect(skill).toContain("one list item per blocker (`- #n`)");
+    expect(skill).toContain("issue numbers outside list items (prose, continuation lines) don't count");
+  });
 });
 
 describe("编辑器类型", () => {
