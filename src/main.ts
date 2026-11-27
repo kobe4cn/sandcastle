@@ -77,7 +77,7 @@
 
 import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { cpus, loadavg, tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import * as sandcastle from "@ai-hero/sandcastle";
 import type { SandboxExecOptions } from "@ai-hero/sandcastle";
@@ -2083,7 +2083,11 @@ for (let pass = 1; ; pass++) {
   // 每轮读一次 .sandcastle/models.json，不管有没有空位：改了配置不用重启，下一轮生效（#43：空位全满时也要读）。
   // Read .sandcastle/models.json every pass whether or not a slot is free: config changes apply next pass without a restart (#43: read even when every slot is taken).
   reloadModels();
-  if (projectDocChanged()) console.warn(t("  ⚠ .sandcastle/PROJECT.md 已变更，需重启 sandpipe 才生效", "  ⚠ .sandcastle/PROJECT.md changed; restart sandpipe for it to take effect"));
+  // 路径按实际读的写（设了 SANDCASTLE_PROJECT_DIR 时不是 .sandcastle/），相对当前目录。 / Show the path actually read (not .sandcastle/ when SANDCASTLE_PROJECT_DIR is set), relative to cwd.
+  if (projectDocChanged()) {
+    const file = relative(process.cwd(), projectDocPath());
+    console.warn(t(`  ⚠ ${file} 已变更，需重启 sandpipe 才生效`, `  ⚠ ${file} changed; restart sandpipe for it to take effect`));
+  }
   if (busy() < MAX_PARALLEL) {
     const now = new Date().toLocaleString();
     console.log(t(`\n=== 调度 ${pass}（${now}，${busy()}/${MAX_PARALLEL} 个空位已占）===\n`, `\n=== Pass ${pass} (${now}, ${busy()}/${MAX_PARALLEL} slots taken) ===\n`));
