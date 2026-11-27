@@ -30,12 +30,13 @@
 | `src/profile.ts` | **ProjectProfile**：项目配置（测试隔离、门槛、安装、一致性检查、文案）与默认值 |
 | `src/isolation.ts` | 给 config 的 `isolation.env` / `cleanup` 用的辅助函数（从包入口导出）：读宿主机 env 文件、换宿主机地址、加库名后缀、跑回收脚本 |
 | `src/project-doc.ts` | 解析 `.sandcastle/PROJECT.md`、渲染提示词 |
-| `prompts/` | 通用提示词模板（implement / review / prep / rebase）与共享片段（设计决定、编码规范、票的大小） |
+| `prompts/` | 通用提示词模板（implement / review / prep / rebase / re-review）与共享片段（设计决定、编码规范、票的大小） |
 | `src/gate-progress.ts` | 门槛进度：输出实时写进 `.sandcastle/logs/gate-*.log`、心跳、用时文案 |
 | `src/shell.ts` | 宿主机命令（超时、远端重试） |
 | `src/guide.ts` `src/pr-body.ts` `src/models.ts` | 票正文解析、空转退出原因、PR 正文、模型档案 |
 | `src/limit-wait.ts` | 撞用量限额后等到重置、醒来重读 models.json 再重跑 |
 | `src/resume-state.ts` | 评审已过的状态（#49）：标记评论的写 / 解析、重启后是否直接跑门槛 |
+| `src/re-review.ts` | fix 之后的复审（#70）：要不要复审、只看 fix 提交的 diff 命令、复审结论解析 |
 | `src/preflight.ts` | 启动预检（#55）：用 TCP 探测 `gate.services` 声明的门槛依赖服务，`sandpipe run` 启动时和 doctor 共用 |
 | `templates/.sandcastle/` | 装到新项目的 PROJECT.md 模板、配置模板、Containerfile、models.json |
 | `claude/` | 上下文预算 hook、screenshot-checker 子代理、prep-ticket 和 fill-project-docs skill（后者附 NOTICE，改编自 mattpocock/skills，MIT） |

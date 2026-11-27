@@ -75,6 +75,13 @@ const zh = {
   reasonReviseMax: (n: number) => `reviewer 打回 ${n} 次后仍有要改的问题（见最新的 Review）。`,
   reasonReviewerPr: "reviewer 认为需要人审（见 PR 正文的 Review）。",
   reasonGate: "typecheck 或完整测试没通过（见 PR 正文的 Gate）。",
+  /**
+   * 门槛失败后 fix（或 rebase 解冲突）改了代码，之后的复审没通过（re-review.ts）。
+   * The re-review after a fix (or rebase conflict resolution) changed code didn't pass (re-review.ts).
+   */
+  reasonReReview: (kind: "fix" | "rebase", summary: string) =>
+    `${kind === "fix" ? "fix 之后的复审没通过" : "rebase 解冲突之后的复审没通过"}：\n\n${summary}`,
+  reReviewNoVerdict: "（复审没有输出结论，按不通过处理）",
   reasonAutoMergeOff: "项目配置 autoMerge: false（试跑期），reviewer 和门槛都通过，等人合并。",
   reasonBrowser: (problems: string) => `改了页面，浏览器验收不满足自动合并的条件：${problems}（见 PR 正文的 Browser check 一节）。`,
   reasonNoBrowserConfig:
@@ -252,6 +259,9 @@ const en: Messages = {
   reasonReviseMax: (n) => `The reviewer still found issues after sending it back ${n} time(s) (see the latest Review).`,
   reasonReviewerPr: "The reviewer thinks a human should review this (see the Review section of the PR description).",
   reasonGate: "Typecheck or the full test run failed (see the Gate section of the PR description).",
+  reasonReReview: (kind, summary) =>
+    `The ${kind === "fix" ? "re-review after the fix" : "re-review after resolving rebase conflicts"} did not pass:\n\n${summary}`,
+  reReviewNoVerdict: "(the re-review gave no verdict; treated as not passing)",
   reasonAutoMergeOff: "The project config has autoMerge: false (trial period). Reviewer and gate both passed; waiting for a human to merge.",
   reasonBrowser: (problems) => `Pages changed and the browser check doesn't meet the auto-merge conditions: ${problems} (see the Browser check section of the PR description).`,
   reasonNoBrowserConfig:

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- fix 改了代码后合并前要再复审：门槛失败后 fix 会话有新提交、门槛重跑通过时，起一次复审会话（阶段 `re-review`，run 名 `re-review-<id>-fix`，新提示词 `prompts/re-review.md`），只看 fix 前 HEAD 之后的提交，对照票的验收标准，重点查删测试、跳过测试（skip / only / todo）、放宽断言，只评不改。结论不是 `merge`（含没输出结论）时留 PR、不自动合并，PR 评论写明「fix 之后的复审没通过」和复审摘要（中英文案）。复审用量记进 `usage.jsonl`（phase `re-review`）和 PR 的 Usage 表。没跑 fix、fix 前后 HEAD 相同、或 reviewer 本来就没给 `merge`（反正留 PR）时不复审。之前 fix 的改动不经任何评审就能自动合并，可能靠删测试或放宽断言过门槛（纯函数在新文件 `src/re-review.ts`）（closes #70）
 - `models.json` 的 `phases` 新增阶段 `re-review`（fix / rebase 之后的复审会话用），`usage.jsonl` 的记录可带 `phase: "re-review"`。没写时沿用 `phases.review` 的档案列表，老项目升级不用改配置；写了但为空列表或档案不存在时照其他阶段一样报错。模板 `models.json` 列出了它，上下文预算 hook 的阶段列表也加上了（closes #69）
 - 门槛依赖的服务可以在配置里声明了：`gate.services: [{ name, host, port }]`（可选）。`sandpipe run` 启动时（运行锁和 podman 检查之后）逐个用 TCP 连一次（超时 3 秒），有连不上的就报错退出，写明服务名、`host:port`、错误和「先把服务起来」，不再等第一张票跑到门槛才发现；`sandpipe doctor` 每个声明的服务输出一行「门槛服务 <name>」，连上 ok、连不上 fail 并附修复提示。`host` 写宿主机能直连的地址（新模块 `src/preflight.ts`：`probeTcp`、`checkServices`）（closes #55）
 - 门槛依赖的服务连不上时不再开 fix 会话、算作失败：门槛退出码非 0 且输出某一行命中 `ECONNREFUSED`、`getaddrinfo ENOTFOUND` / `EAI_AGAIN`、`Cannot connect to the Docker daemon` / `Cannot connect to Podman`（或项目配置的 `gate.envErrorPattern`）时，终端打「⚠ #n 门槛依赖的服务连不上（那一行），不算失败，稍后重试」，和 podman 断开一样整步按临时错误定时重跑（不等 podman）；重试用完仍连不上就打 stuck，评论写明那一行，不再写成通用的沙箱错误。`No test files found` 和普通断言失败不算。测试本身断言 ECONNREFUSED 又真失败时会被误判，靠重试用完转 stuck 兜底（纯函数 `gateEnvError`，`src/lifecycle.ts`）（closes #54）

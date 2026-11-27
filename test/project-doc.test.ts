@@ -31,6 +31,7 @@ const RUNTIME_ARGS = {
   review: ["TASK_ID", "BRANCH", "BASE", "ROUND", "REVISE_MAX"],
   prep: ["TASK_ID", "REPREP_MARK", "BASE"],
   rebase: ["TASK_ID", "BRANCH", "BASE", "SITUATION"],
+  "re-review": ["TASK_ID", "BRANCH", "KIND", "DIFF_CMD"],
 };
 
 describe("parseProjectDoc", () => {
@@ -84,7 +85,7 @@ describe("用 duckdb_crm 的 PROJECT.md 渲染", () => {
 
   it("只有 review 有 !`…` 命令块（两条 git）", () => {
     expect(out.review.match(/!`/g)).toHaveLength(2);
-    for (const name of ["implement", "prep", "rebase"] as const) expect(out[name], name).not.toContain("!`");
+    for (const name of ["implement", "prep", "rebase", "re-review"] as const) expect(out[name], name).not.toContain("!`");
   });
 
   it("原提示词里的项目规则都到了对应阶段", () => {

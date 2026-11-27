@@ -97,6 +97,7 @@ import {
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
 import { parseReviewed, type ReviewedState, resumeDecision, reviewedComment } from "./resume-state.ts";
+import { fixDiffCmd, needsReReview, type ReReview, reReviewVerdict, tagged } from "./re-review.ts";
 import { duration, flakyTicketsLine, gateDoneLine, gateEnv, gateEnvLine, gateInfraLine, startGateProgress } from "./gate-progress.ts";
 import { createGateQueue, type GatePriority } from "./gate-queue.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
@@ -674,9 +675,6 @@ const peakContext = (...runs: ({ readonly iterations: readonly sandcastle.Iterat
     ...runs.flatMap((run) => (run?.iterations ?? []).map(sessionPeak)),
   );
 
-const tagged = (stdout: string, tag: string) =>
-  new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`).exec(stdout)?.[1]?.trim();
-
 /**
  * browserCheck：票正文有没有 `- **Browser check**`（plan 时设；resume 构造的不带，那条路不走 land）。
  * reviewed：票带 sandcastle:reviewed（#49，plan 时设）；build 打 / 去这个标签时同步改它，retryTransient 重跑 build 时看得到。
@@ -971,6 +969,12 @@ async function build(issue: Issue) {
 }
 
 /**
+ * 沙箱 worktree 的 HEAD；取不到时返回空串。 / The sandbox worktree's HEAD; an empty string when it can't be read.
+ */
+const sandboxHead = async (sandbox: Sandbox) =>
+  (await sandbox.exec("git rev-parse HEAD").catch(() => undefined))?.stdout.trim() ?? "";
+
+/**
  * 票带 reviewed 时读票上的标记评论，和 worktree 的 HEAD 比：一致返回评审结果；不一致或读不出来就清掉状态，返回 undefined 正常重做。
  * When the ticket is labelled reviewed, read its marker comment and compare with the worktree HEAD: return the review results when they match; otherwise clear the state and return undefined to redo normally.
  */
@@ -978,7 +982,7 @@ async function resumeReviewed(issue: Issue, sandbox: Sandbox): Promise<Reviewed 
   // 读评论或取 HEAD 失败时不清状态，这次照常重做：一次网络抖动不该让下次重启也没法恢复。
   // If reading comments or HEAD fails, keep the state and just redo this time: one network blip shouldn't stop the next restart from resuming too.
   const comments = attempt(() => forge.issueComments(issue.id));
-  const head = (await sandbox.exec("git rev-parse HEAD").catch(() => undefined))?.stdout.trim();
+  const head = await sandboxHead(sandbox);
   if (!comments.ok || !head) return undefined;
   const state = parseReviewed(comments.value);
   if (resumeDecision(state, head) === "resume" && state) {
@@ -1061,7 +1065,9 @@ async function implementAndReview(issue: Issue, sandbox: Sandbox, run: RunAgent)
 
 /**
  * 门槛（失败时给一次 fix 机会再跑）、改了哪些文件、浏览器验收和验收说明，拼成 land 要的结果。门槛不管 verdict 都跑。
+ * fix 有新提交且门槛重跑通过时，再起一次 re-review 会话只看 fix 的提交（#70），结论进 reReview，不通过由 land 留 PR。
  * The gate (with one fix chance and a rerun on failure), changed files, browser check and acceptance notes, assembled into the result land needs. The gate runs whatever the verdict.
+ * When the fix committed and the gate rerun passed, a re-review session looks only at the fix's commits (#70); the verdict goes into reReview, and land leaves the PR open if it fails.
  */
 async function gateAndCollect(
   issue: Issue, sandbox: Sandbox, run: RunAgent, env: Record<string, string>, implement: Sessions, reviewed: Reviewed, usage: UsageRecord[],
@@ -1069,7 +1075,12 @@ async function gateAndCollect(
   const gate = () => runGate((c, o) => sandbox.exec(c, o), issue.id, env);
   let gateResult = await gate();
   let fix: sandcastle.SandboxRunResult | undefined;
+  let reReview: ReReview | undefined;
+  let reReviewRun: sandcastle.SandboxRunResult | undefined;
   if (gateResult.exitCode !== 0) {
+    // fix 前的 HEAD：fix 有没有新提交、复审看哪段 diff，都以它为起点。取不到就是空串，不复审。
+    // The pre-fix HEAD: the start point for whether the fix committed and which diff the re-review sees. Empty when unreadable, which skips the re-review.
+    const before = await sandboxHead(sandbox);
     // 给 implementer 一次修的机会（新会话），再跑一次门槛。 / Give the implementer one chance to fix (new session), then run the gate again.
     fix = await run("fix", `fix-${issue.id}`, (agent) => sandbox.run({
       name: `fix-${issue.id}`,
@@ -1082,6 +1093,20 @@ async function gateAndCollect(
       }),
     }));
     gateResult = await gate();
+    const after = await sandboxHead(sandbox);
+    // reviewer 本来就没给 merge 时 land 反正留 PR，不白跑复审。 / When the reviewer didn't say merge, land leaves the PR anyway; skip the re-review.
+    if (gateResult.exitCode === 0 && reviewed.verdict === "merge" && needsReReview(before, after)) {
+      const name = `re-review-${issue.id}-fix`;
+      reReviewRun = await run("re-review", name, (agent) => sandbox.run({
+        name,
+        maxIterations: 1,
+        idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
+        agent,
+        promptFile: PROMPTS["re-review"],
+        promptArgs: { TASK_ID: issue.id, BRANCH: issue.branch, KIND: "fix", DIFF_CMD: fixDiffCmd(before) },
+      }));
+      reReview = reReviewVerdict(reReviewRun.stdout, M);
+    }
   }
   // 改了哪些文件（判断改没改页面用）：在 review / 修改 / 修门槛之后取，算上所有提交。取不到就当空的，退回原有判断，不挡合并。
   // Which files changed (to judge page changes): taken after review / revisions / gate fixes so every commit counts. If it fails, treat it as empty and fall back to the existing judgement without blocking the merge.
@@ -1091,11 +1116,12 @@ async function gateAndCollect(
   return {
     done: true as const,
     implement,
-    runs: [...reviewed.runs, fix],
+    runs: [...reviewed.runs, fix, reReviewRun],
     revisions: reviewed.revisions,
     verdict: reviewed.verdict,
     summary: reviewed.summary,
     gate: { ok: gateResult.exitCode === 0, output: gateResult.stdout.slice(-3000), tier: gateTier(gateResult.stdout) },
+    reReview,
     browser: collectBrowserCheck(sandbox.worktreePath, issue.id),
     browserTag: reviewed.browserTag,
     notes: readAcceptanceNotes(sandbox.worktreePath),
@@ -1546,6 +1572,14 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
   if (!result.gate.ok) {
     leaveForHuman(issue, pr, `${M.reasonGate}${notesNote}${browserNote}`);
     console.log(t(`  ◐ #${issue.id} 门槛失败，留 PR #${pr}`, `  ◐ #${issue.id} gate failed; PR #${pr} left open`));
+    logBrowserBlock();
+    return;
+  }
+  // fix 改了代码、门槛重跑过了，但 fix 之后的复审没通过（#70）：不自动合并。
+  // The fix changed code and the gate rerun passed, but the re-review after the fix didn't pass (#70): no auto-merge.
+  if (result.reReview && !result.reReview.pass) {
+    leaveForHuman(issue, pr, `${M.reasonReReview("fix", result.reReview.summary)}${notesNote}${browserNote}`);
+    console.log(t(`  ◐ #${issue.id} fix 之后的复审没通过，留 PR #${pr}`, `  ◐ #${issue.id} re-review after the fix failed; PR #${pr} left open`));
     logBrowserBlock();
     return;
   }

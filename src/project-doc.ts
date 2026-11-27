@@ -181,7 +181,7 @@ export function projectDocWatcher(read: () => string): () => boolean {
 
 // ---- 提示词渲染 ---- / Prompt rendering
 
-export const PROMPT_NAMES = ["implement", "review", "prep", "rebase"] as const;
+export const PROMPT_NAMES = ["implement", "review", "prep", "rebase", "re-review"] as const;
 export type PromptName = (typeof PROMPT_NAMES)[number];
 
 const PACKAGE_PROMPTS = fileURLToPath(new URL("../prompts/", import.meta.url));
