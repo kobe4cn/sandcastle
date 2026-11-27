@@ -23,6 +23,35 @@ export interface AgentRun {
   readonly stdout: string;
 }
 
+/**
+ * stream-json 的 result 行里 modelUsage 的一项：一个模型的用量（Claude Code 统计，含子代理）。
+ * 其余字段（webSearchRequests、contextWindow…）忽略；缺的字段按 0。
+ * One entry of modelUsage in a stream-json result line: one model's usage (counted by Claude Code, subagents included).
+ * Other fields (webSearchRequests, contextWindow, …) are ignored; missing ones count as 0.
+ */
+export interface ModelUsageEntry {
+  readonly inputTokens?: number;
+  readonly outputTokens?: number;
+  readonly cacheReadInputTokens?: number;
+  readonly cacheCreationInputTokens?: number;
+  readonly costUSD?: number;
+}
+
+/**
+ * usage.jsonl 里 models 字段的一项：一个模型在这次 run 的 token（从各 result 行的 modelUsage 累加）；
+ * costUSD 只给 Claude 档案记（别家档案的费用是 Claude Code 按 Claude 单价算的，没有意义，#53 决定 C）。
+ * One entry of usage.jsonl's models field: one model's tokens in this run (accumulated from the modelUsage of the result lines);
+ * costUSD is recorded for Claude profiles only (another vendor's cost is computed at Claude prices and means nothing, #53 decision C).
+ */
+export interface ModelTokens {
+  readonly model: string;
+  readonly input: number;
+  readonly cacheCreation: number;
+  readonly cacheRead: number;
+  readonly output: number;
+  readonly costUSD?: number;
+}
+
 export interface Profile {
   readonly name: string;
   readonly model: string;
@@ -306,7 +335,12 @@ export const NO_ATTRIBUTION_SETTINGS = { includeCoAuthoredBy: false, attribution
  *   so the value is on no command line and sh is replaced; credentials without a value are `env -u`'d (they're empty strings in the container).
  * - Other vendors' profiles: both credentials are `env -u`'d and stdin is just the prompt, so no process the session starts has them (except background processes an earlier Claude session left running).
  */
-export function agentFor(profile: Profile, env: Record<string, string>, phase?: Phase): sandcastle.AgentProvider {
+export function agentFor(
+  profile: Profile,
+  env: Record<string, string>,
+  phase?: Phase,
+  onModelUsage?: (mu: Record<string, ModelUsageEntry>) => void,
+): sandcastle.AgentProvider {
   const base = sandcastle.claudeCode(profile.model, { env, ...(profile.effort ? { effort: profile.effort } : {}) });
   // SANDCASTLE_PHASE 给 .claude/hooks/sandcastle-context.mjs：上下文到预算时按阶段给出不同的收尾要求。
   // SANDCASTLE_PHASE is for .claude/hooks/sandcastle-context.mjs: at the budget it gives a different wrap-up request per phase.
@@ -317,6 +351,22 @@ export function agentFor(profile: Profile, env: Record<string, string>, phase?: 
   const envPrefix = (unset: readonly string[]) => `env ${[...unset.map((k) => `-u ${k}`), ...assignments].join(" ")} `;
   return {
     ...base,
+    // 每行都会调 parseStreamLine：result 行的 modelUsage（按模型分的用量，含子代理）先回调再交给 base，供用量记录（#53）。
+    // 解析失败、不是 result 行、没有 modelUsage 都不回调；回调抛错会让 sandcastle 把这行当坏行，这里只收集、不做别的。
+    // parseStreamLine is called for every line: a result line's modelUsage (per-model usage, subagents included) is handed to the callback
+    // before base sees the line, feeding the usage record (#53). Parse failures, non-result lines, and lines without modelUsage don't call back;
+    // a throwing callback would make sandcastle treat the line as broken, so it only collects.
+    ...(onModelUsage ? {
+      parseStreamLine: (line: string) => {
+        try {
+          const obj = JSON.parse(line);
+          if (obj?.type === "result" && typeof obj.modelUsage === "object" && obj.modelUsage !== null) onModelUsage(obj.modelUsage);
+        } catch {
+          // 坏 JSON 吞掉，照旧交给 base / Bad JSON is swallowed; base sees the line as usual
+        }
+        return base.parseStreamLine(line);
+      },
+    } : {}),
     // resume 会话也走这里（resumeSession 是 options 的一项）。 / Resumed sessions come through here too (resumeSession is one of the options).
     buildPrintCommand: (options) => {
       const cmd = base.buildPrintCommand(options);
@@ -528,6 +578,11 @@ export interface UsageRecord {
    * This session hit a usage limit and switched to the next profile; records that didn't (including older ones) lack this field.
    */
   readonly limited?: boolean;
+  /**
+   * 这次 run 各模型的 token（含子代理），从 stream-json result 行的 modelUsage 按模型累加；没拿到 result 行（idle 超时、报错、撞限额拿不到 run）时不写，老记录也没有。
+   * Per-model tokens of this run (subagents included), accumulated per model from stream-json result lines' modelUsage; absent when no result line was seen (idle timeout, error, limit hit with no run), nor in older records.
+   */
+  readonly models?: readonly ModelTokens[];
 }
 
 /**
@@ -587,10 +642,67 @@ function usageModel(p: Profile): string {
 }
 
 /**
- * 记一次 run 的用量：追加到 .sandcastle/logs/usage.jsonl 并返回；build 收集返回值写进 PR，prep 的落地时用 readUsage 读回。写不进只警告。
- * Record one run's usage: append to .sandcastle/logs/usage.jsonl and return it; build collects the result for the PR, prep's is read back with readUsage on landing. Write failures only warn.
+ * models 里记的模型名。modelUsage 的键是 Claude Code 实际请求的模型 ID——第三方档案下就是映射后的真实名（如 glm-4.5-air），
+ * 所以第三方档案的 env 某个 ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL 的明文值等于它时，记成「别名→实际名」（与 usageModel 同一写法），
+ * 让宿主日志能对上截图这类子代理用的是哪档模型；查不到（值是 ${VAR}、真实值只在容器里，或没设）原样记。
+ * The model name recorded in models. A modelUsage key is the model ID Claude Code actually requested — under a third-party profile, the mapped
+ * real name (e.g. glm-4.5-air) — so when it equals the plain value of some ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL in that profile's env,
+ * it's recorded as "alias→actual" (the same form as usageModel), letting host logs tell which tier a subagent (screenshot reading, say) used;
+ * otherwise (a `${VAR}` value whose real value exists only in the container, or unset) it's recorded as is.
  */
-export function recordUsage(issue: string, phase: Phase, run: AgentRun | undefined, name: string, profile: Profile, limited = false): UsageRecord {
+function modelName(key: string, p: Profile): string {
+  if (!p.thirdParty) return key;
+  for (const alias of ["opus", "sonnet", "haiku"]) {
+    const value = p.env[`ANTHROPIC_DEFAULT_${alias.toUpperCase()}_MODEL`];
+    if (value === key && !SECRET_REF.test(value)) return `${alias}→${key}`;
+  }
+  return key;
+}
+
+/**
+ * 把各 result 行的 modelUsage 按模型累加成 models 字段（键先过 modelName）；第三方档案不写 costUSD（#53 决定 C）。
+ * 没传或数组为空时返回 undefined，recordUsage 就不写这个字段。
+ * Accumulate the result lines' modelUsage per model into the models field (keys through modelName first); third-party profiles get no costUSD (#53 decision C).
+ * When nothing is passed or the array is empty, returns undefined and recordUsage omits the field.
+ */
+function mergeModelUsage(modelUsage: readonly Record<string, ModelUsageEntry>[] | undefined, p: Profile): ModelTokens[] | undefined {
+  if (!modelUsage || modelUsage.length === 0) return undefined;
+  const num = (v: unknown) => (typeof v === "number" ? v : 0);
+  const acc = new Map<string, { input: number; cacheCreation: number; cacheRead: number; output: number; costUSD: number }>();
+  for (const mu of modelUsage) {
+    for (const [key, entry] of Object.entries(mu)) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const model = modelName(key, p);
+      const sum = acc.get(model) ?? { input: 0, cacheCreation: 0, cacheRead: 0, output: 0, costUSD: 0 };
+      sum.input += num(entry.inputTokens);
+      sum.cacheCreation += num(entry.cacheCreationInputTokens);
+      sum.cacheRead += num(entry.cacheReadInputTokens);
+      sum.output += num(entry.outputTokens);
+      sum.costUSD += num(entry.costUSD);
+      acc.set(model, sum);
+    }
+  }
+  return [...acc].map(([model, s]) => ({
+    model, input: s.input, cacheCreation: s.cacheCreation, cacheRead: s.cacheRead, output: s.output,
+    ...(p.thirdParty ? {} : { costUSD: s.costUSD }),
+  }));
+}
+
+/**
+ * 记一次 run 的用量：追加到 .sandcastle/logs/usage.jsonl 并返回；build 收集返回值写进 PR，prep 的落地时用 readUsage 读回。写不进只警告。
+ * modelUsage 是这次 run 各会话 stream-json result 行的 modelUsage（agentFor 的 onModelUsage 收到的），按模型累加进 models；没传就不写这个字段。
+ * Record one run's usage: append to .sandcastle/logs/usage.jsonl and return it; build collects the result for the PR, prep's is read back with readUsage on landing. Write failures only warn.
+ * modelUsage is this run's per-session stream-json result modelUsage (what agentFor's onModelUsage collected), accumulated per model into models; without it the field is omitted.
+ */
+export function recordUsage(
+  issue: string,
+  phase: Phase,
+  run: AgentRun | undefined,
+  name: string,
+  profile: Profile,
+  limited = false,
+  modelUsage?: readonly Record<string, ModelUsageEntry>[],
+): UsageRecord {
   const iterations = run?.iterations ?? [];
   const totals = iterations.map(sessionTotals).reduce(
     (a, b) => ({
@@ -599,9 +711,10 @@ export function recordUsage(issue: string, phase: Phase, run: AgentRun | undefin
     }),
     { input: 0, cacheCreation: 0, cacheRead: 0, output: 0, peak: 0 },
   );
+  const models = mergeModelUsage(modelUsage, profile);
   const record: UsageRecord = {
     at: new Date().toISOString(), issue, phase, run: name, profile: profile.name, model: usageModel(profile),
-    sessions: iterations.length, ...totals, ...(limited ? { limited: true } : {}),
+    sessions: iterations.length, ...totals, ...(limited ? { limited: true } : {}), ...(models ? { models } : {}),
   };
   try {
     mkdirSync(".sandcastle/logs", { recursive: true });
@@ -643,16 +756,26 @@ export function readUsage(issue: string, phase?: Phase): UsageRecord[] {
 const k = (n: number) => `${(n / 1000).toFixed(1)}k`;
 
 /**
- * PR 正文里的用量表：每次 run 一行，只记 token 数（别家档案的「费用」是按 Claude 单价算的，没有意义）。
- * Usage table in the PR body: one row per run, token counts only (another vendor's "cost" is computed at Claude prices and means nothing).
+ * PR 正文里的用量表：每次 run 一行，表里不显示费用（usage.jsonl 的 models 只给 Claude 档案记 costUSD）；
+ * models 记了 2 个及以上模型时在这行下面每个模型一行「↳ 模型名」（会话格留空、次数和上下文峰值格 —），把子代理用的模型也列出来——
+ * modelUsage 的键是完整模型 ID、和档案的 model 别名对不上，没法可靠挑出「主模型」，所以只要有 2 个就全列（#53 决定 B）；更少时不加行，老记录输出不变。
+ * Usage table in the PR body: one row per run, no costs in the table (usage.jsonl's models records costUSD for Claude profiles only);
+ * when models has 2 or more models, one "↳ model" row per model follows the run's row (empty session cell, — for runs and peak context),
+ * listing the models subagents used — a modelUsage key is a full model ID that doesn't match the profile's model alias, so the "main model"
+ * can't be picked reliably and all are listed from 2 up (#53 decision B); fewer adds no row, and older records render unchanged.
  */
 export function usageTable(records: readonly UsageRecord[], m: Messages = messages()): string {
   if (records.length === 0) return m.usageNone;
-  const rows = records.map((r) => {
+  const rows: string[] = [];
+  for (const r of records) {
     const cells = r.limited
       ? [m.usageLimited, "—", "—", "—", "—", "—"]
       : [r.sessions, k(r.input), k(r.cacheCreation), k(r.cacheRead), k(r.output), k(r.peak)];
-    return `| ${[r.run, m.usageProfile(r.profile, r.model), ...cells].join(" | ")} |`;
-  });
+    rows.push(`| ${[r.run, m.usageProfile(r.profile, r.model), ...cells].join(" | ")} |`);
+    const models = r.models ?? [];
+    if (models.length >= 2) {
+      for (const mu of models) rows.push(`| | ↳ ${mu.model} | — | ${k(mu.input)} | ${k(mu.cacheCreation)} | ${k(mu.cacheRead)} | ${k(mu.output)} | — |`);
+    }
+  }
   return [m.usageHeader, "|---|---|---|---|---|---|---|---|", ...rows].join("\n");
 }

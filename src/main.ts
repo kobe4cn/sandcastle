@@ -83,7 +83,7 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import type { SandboxExecOptions } from "@ai-hero/sandcastle";
 import {
   CLAUDE_CREDENTIALS_CLEARED, agentFor, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
-  type AgentRun, type AllProfilesLimited, type Phase, type UsageRecord,
+  type AgentRun, type AllProfilesLimited, type ModelUsageEntry, type Phase, type UsageRecord,
 } from "./models.ts";
 import { limitWait, sleepUntil, untilAfterLimit } from "./limit-wait.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
@@ -187,8 +187,10 @@ const claudeEnv = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(CONTEXT_BUDGET) };
 /**
  * 跑一次 agent 会话：阶段用哪个档案（模型、厂商）由 .sandcastle/models.json 决定，撞限额换下一个（models.ts）。
  * 用量追加到 .sandcastle/logs/usage.jsonl，也放进 usage（撞限额换档案的那次也记一条 limited）；build 收集的会进 PR 的用量表，prep 的落地时从 usage.jsonl 读回，rebase 的不进表（rebase 之后的复审没通过时，它的用量表附在留 PR 的评论里，#71）。
+ * 各模型的用量（含子代理，如第三方档案下看截图的小模型）从 stream-json 的 result 行收进记录的 models 字段（#53）。
  * Run one agent session: which profile (model, vendor) a phase uses comes from .sandcastle/models.json, switching to the next on limits (models.ts).
  * Usage is appended to .sandcastle/logs/usage.jsonl and also pushed onto usage (a session that hit a limit and switched profiles gets a limited record too); build's collected records go into the PR's usage table, prep's are read back from usage.jsonl on landing, rebase's stay out of the table (when the re-review after a rebase fails, its usage table is attached to the comment leaving the PR, #71).
+ * Per-model usage (subagents included, e.g. the small model reading screenshots under a third-party profile) is collected from stream-json result lines into the record's models field (#53).
  */
 async function runAgent<T extends AgentRun>(
   phase: Phase,
@@ -198,13 +200,21 @@ async function runAgent<T extends AgentRun>(
   usage: UsageRecord[],
   fn: (agent: sandcastle.AgentProvider) => Promise<T>,
 ): Promise<T> {
+  // 这次尝试收到的各会话 result 行 modelUsage（agentFor 的 onModelUsage 回调收集，含子代理的模型）；
+  // 每次 (p) => 调用开头重置：撞限额换档案后，撞的那次只带它自己的，正常那次不带前面失败尝试的。
+  // The modelUsage of this attempt's session result lines (collected by agentFor's onModelUsage callback, subagent models included);
+  // reset at the start of every (p) => call: after a limit switches profiles, the limited record carries only its own, the final one none of the failed attempts'.
+  let modelUsage: Record<string, ModelUsageEntry>[] = [];
   const { run, profile } = await runWithProfile(
     phase,
     name,
-    (p) => fn(agentFor(p, { ...claudeEnv, ...env }, phase)),
-    (p, r) => usage.push(recordUsage(issue, phase, r, name, p, true)),
+    (p) => {
+      modelUsage = [];
+      return fn(agentFor(p, { ...claudeEnv, ...env }, phase, (mu) => modelUsage.push(mu)));
+    },
+    (p, r) => usage.push(recordUsage(issue, phase, r, name, p, true, modelUsage)),
   );
-  usage.push(recordUsage(issue, phase, run, name, profile));
+  usage.push(recordUsage(issue, phase, run, name, profile, false, modelUsage));
   return run;
 }
 

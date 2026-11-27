@@ -687,6 +687,20 @@ describe("N1f 用量记录", () => {
     return file;
   };
 
+  it("agentFor 带 onModelUsage：result 行的 modelUsage 原样回调，其余行、坏 JSON、没有 modelUsage 的 result 行不回调；返回值与不传时相同", () => {
+    const p = profile();
+    const got: unknown[] = [];
+    const wrapped = m.agentFor(p, {}, "implement", (mu) => got.push(mu));
+    const usage = { "claude-opus-4-5": { inputTokens: 1, cacheCreationInputTokens: 2, cacheReadInputTokens: 3, outputTokens: 4, costUSD: 0.01 } };
+    const resultLine = JSON.stringify({ type: "result", result: "x", modelUsage: usage });
+    expect(wrapped.parseStreamLine(resultLine)).toEqual(m.agentFor(p, {}).parseStreamLine(resultLine));
+    expect(got).toEqual([usage]);
+    wrapped.parseStreamLine('{"type":"assistant","message":{"content":"hi"}}');
+    wrapped.parseStreamLine("{broken");
+    wrapped.parseStreamLine('{"type":"result","result":"y"}');
+    expect(got).toHaveLength(1);
+  });
+
   it("recordUsage 按会话汇总并追加到 usage.jsonl，每条带 issue / phase / profile / model / peak", () => {
     const p = profile();
     const run: AgentRun = {
@@ -784,6 +798,38 @@ describe("N1f 用量记录", () => {
     expect(m.usageTable([], messages("en"))).toBe("(no usage recorded)");
   });
 
+  it("recordUsage 带 modelUsage：按模型累加写进 models；Claude 档案带 costUSD，第三方不带且键等于 ANTHROPIC_DEFAULT_*_MODEL 的值时记成「别名→实际名」；不传或空数组时不写 models", () => {
+    const p = profile();
+    const empty: AgentRun = { stdout: "", iterations: [] };
+    const mu = (model: string, n: [number, number, number, number], costUSD = 0) =>
+      ({ [model]: { inputTokens: n[0], cacheCreationInputTokens: n[1], cacheReadInputTokens: n[2], outputTokens: n[3], costUSD } });
+    const rec = m.recordUsage("#5", "implement", empty, "implement", p, false, [
+      mu("claude-opus-4-5", [10, 100, 0, 5], 0.1),
+      mu("claude-haiku-4-5", [1, 2, 3, 4], 0.01),
+      mu("claude-opus-4-5", [7, 70, 0, 2], 0.2),
+    ]);
+    expect(rec.models).toEqual([
+      { model: "claude-opus-4-5", input: 17, cacheCreation: 170, cacheRead: 0, output: 7, costUSD: 0.1 + 0.2 },
+      { model: "claude-haiku-4-5", input: 1, cacheCreation: 2, cacheRead: 3, output: 4, costUSD: 0.01 },
+    ]);
+    const used = (model: string, env: Record<string, string>, modelUsage: ReturnType<typeof mu>[], envFile?: string) => {
+      project({ profiles: { p1: { model, env } }, phases: phasesAll(["p1"]) }, envFile);
+      return m.recordUsage("#1", "implement", empty, "implement", m.inspectModels().used[0]!, false, modelUsage);
+    };
+    const glmEnv = { ANTHROPIC_BASE_URL: "https://glm.example/api", ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.5-air" };
+    // glm 档案：不写 costUSD；modelUsage 的键是映射后的真实名，等于 ANTHROPIC_DEFAULT_HAIKU_MODEL 的值 → haiku→glm-4.5-air；查不到别名的原样
+    expect(used("glm-4.6", glmEnv, [mu("glm-4.6", [10, 0, 0, 5], 0.1), mu("glm-4.5-air", [2, 0, 0, 1], 0.02)]).models).toEqual([
+      { model: "glm-4.6", input: 10, cacheCreation: 0, cacheRead: 0, output: 5 },
+      { model: "haiku→glm-4.5-air", input: 2, cacheCreation: 0, cacheRead: 0, output: 1 },
+    ]);
+    expect(used("glm-4.6", glmEnv, [mu("glm-5.3", [1, 0, 0, 1])]).models).toEqual([{ model: "glm-5.3", input: 1, cacheCreation: 0, cacheRead: 0, output: 1 }]);
+    // 值是 ${VAR}（真实值只在容器里）：反查不到，原样记
+    expect(used("opus", { ...glmEnv, ANTHROPIC_DEFAULT_OPUS_MODEL: "${GLM_MODEL}" }, [mu("glm-5.3[1m]", [1, 0, 0, 1])], "GLM_MODEL=glm-5.3\n").models).toEqual([{ model: "glm-5.3[1m]", input: 1, cacheCreation: 0, cacheRead: 0, output: 1 }]);
+    // 不传 / 空数组：不写 models 字段（老记录、没拿到 result 行的都这样）
+    expect("models" in m.recordUsage("#5", "review", empty, "review", p)).toBe(false);
+    expect("models" in m.recordUsage("#5", "review", empty, "review", p, false, [])).toBe(false);
+  });
+
   it("recordUsage 撞限额的记录：带 limited: true，没有 run 时 token 0、sessions 0；没撞的不写 limited", () => {
     const p = profile();
     const rec = m.recordUsage("#3", "implement", undefined, "implement", p, true);
@@ -798,6 +844,24 @@ describe("N1f 用量记录", () => {
     expect(lines.map((l) => l.limited)).toEqual([true, true, undefined]);
     expect("limited" in lines[2]).toBe(false);
     expect(m.readUsage("#3").map((r) => r.limited)).toEqual([true, true, undefined]);
+  });
+
+  it("usageTable：models 有 2 个及以上模型时行下面每个模型一行「↳」，次数和上下文峰值格 —，列数不变；只有 1 个或没有时不加行", () => {
+    const rec = { at: "", issue: "#1", phase: "implement" as const, run: "implement", profile: "glm", model: "glm-4.6", sessions: 3, input: 15, cacheCreation: 152, cacheRead: 4000, output: 67, peak: 3054 };
+    const models = [
+      { model: "glm-4.6", input: 1000, cacheCreation: 20, cacheRead: 300, output: 500 },
+      { model: "haiku→glm-4.5-air", input: 200, cacheCreation: 0, cacheRead: 0, output: 100 },
+    ];
+    const zh = m.usageTable([{ ...rec, models }]).split("\n");
+    expect(zh).toHaveLength(5);
+    expect(zh[3]).toBe("| | ↳ glm-4.6 | — | 1.0k | 0.0k | 0.3k | 0.5k | — |");
+    expect(zh[4]).toBe("| | ↳ haiku→glm-4.5-air | — | 0.2k | 0.0k | 0.0k | 0.1k | — |");
+    const cols = (line: string) => line.split("|").length;
+    expect(cols(zh[3]!)).toBe(cols(zh[2]!));
+    expect(cols(zh[3]!)).toBe(cols(zh[0]!));
+    // 只有 1 个模型、没有 models（老记录）：输出与现在完全一样
+    const one = m.usageTable([{ ...rec, models: models.slice(0, 1) }]);
+    expect(one).toBe(m.usageTable([rec]));
   });
 
   it("usageTable：limited 的行次数格写「撞限额，换下一个档案」，数值格 —，列数不变；老记录不变", () => {
