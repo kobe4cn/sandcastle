@@ -1,8 +1,8 @@
-// fix 之后的复审（#70）：要不要复审、diff 命令、复审结论解析。
-// Re-review after fix (#70): whether to re-review, the diff command, parsing the re-review verdict.
+// fix / rebase 之后的复审（#70、#71）：要不要复审、diff 命令、复审结论解析。
+// Re-review after fix / rebase (#70, #71): whether to re-review, the diff command, parsing the re-review verdict.
 import { describe, expect, it } from "vitest";
 import { messages } from "../src/i18n.ts";
-import { fixDiffCmd, needsReReview, reReviewVerdict } from "../src/re-review.ts";
+import { fixDiffCmd, needsReReview, rebaseDiffCmd, rebaseNeedsReReview, reReviewVerdict } from "../src/re-review.ts";
 
 const zh = messages("zh");
 const en = messages("en");
@@ -18,6 +18,20 @@ describe("re-review", () => {
 
   it("fixDiffCmd：只看 fix 前 HEAD 之后的提交", () => {
     expect(fixDiffCmd("abc123")).toBe("git log --oneline abc123..HEAD && git diff abc123..HEAD");
+  });
+
+  it("rebaseDiffCmd：range-diff 对比 rebase 前后的分支提交", () => {
+    expect(rebaseDiffCmd("base0", "head0", "origin/main")).toBe("git range-diff base0..head0 origin/main..HEAD");
+  });
+
+  it("rebaseNeedsReReview：要合并且起了解冲突 agent（冲突或完整性链断）才复审", () => {
+    expect(rebaseNeedsReReview({ conflicted: true, chainBroken: false, merge: true })).toBe(true);
+    expect(rebaseNeedsReReview({ conflicted: false, chainBroken: true, merge: true })).toBe(true);
+    // 干净 rebase 没起 agent，不复审。 / A clean rebase started no agent: no re-review.
+    expect(rebaseNeedsReReview({ conflicted: false, chainBroken: false, merge: true })).toBe(false);
+    // merge=false 只 typecheck、留给人审，不复审。 / merge=false only typechecks and leaves it for review: no re-review.
+    expect(rebaseNeedsReReview({ conflicted: true, chainBroken: false, merge: false })).toBe(false);
+    expect(rebaseNeedsReReview({ conflicted: false, chainBroken: true, merge: false })).toBe(false);
   });
 
   it("reReviewVerdict：merge 通过，摘要取 review-summary", () => {

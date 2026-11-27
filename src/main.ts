@@ -97,7 +97,7 @@ import {
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
 import { parseReviewed, type ReviewedState, resumeDecision, reviewedComment } from "./resume-state.ts";
-import { fixDiffCmd, needsReReview, type ReReview, reReviewVerdict, tagged } from "./re-review.ts";
+import { fixDiffCmd, needsReReview, type ReReview, rebaseDiffCmd, rebaseNeedsReReview, reReviewVerdict, tagged } from "./re-review.ts";
 import { duration, flakyTicketsLine, gateDoneLine, gateEnv, gateEnvLine, gateInfraLine, startGateProgress } from "./gate-progress.ts";
 import { createGateQueue, type GatePriority } from "./gate-queue.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
@@ -182,9 +182,9 @@ const claudeEnv = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(CONTEXT_BUDGET) };
 
 /**
  * 跑一次 agent 会话：阶段用哪个档案（模型、厂商）由 .sandcastle/models.json 决定，撞限额换下一个（models.ts）。
- * 用量追加到 .sandcastle/logs/usage.jsonl，也放进 usage（撞限额换档案的那次也记一条 limited）；build 收集的会进 PR 的用量表，prep 的落地时从 usage.jsonl 读回，rebase 的不进表。
+ * 用量追加到 .sandcastle/logs/usage.jsonl，也放进 usage（撞限额换档案的那次也记一条 limited）；build 收集的会进 PR 的用量表，prep 的落地时从 usage.jsonl 读回，rebase 的不进表（rebase 之后的复审没通过时，它的用量表附在留 PR 的评论里，#71）。
  * Run one agent session: which profile (model, vendor) a phase uses comes from .sandcastle/models.json, switching to the next on limits (models.ts).
- * Usage is appended to .sandcastle/logs/usage.jsonl and also pushed onto usage (a session that hit a limit and switched profiles gets a limited record too); build's collected records go into the PR's usage table, prep's are read back from usage.jsonl on landing, rebase's stay out of the table.
+ * Usage is appended to .sandcastle/logs/usage.jsonl and also pushed onto usage (a session that hit a limit and switched profiles gets a limited record too); build's collected records go into the PR's usage table, prep's are read back from usage.jsonl on landing, rebase's stay out of the table (when the re-review after a rebase fails, its usage table is attached to the comment leaving the PR, #71).
  */
 async function runAgent<T extends AgentRun>(
   phase: Phase,
@@ -1064,6 +1064,23 @@ async function implementAndReview(issue: Issue, sandbox: Sandbox, run: RunAgent)
 }
 
 /**
+ * 起一次复审会话（fix / rebase 之后，#70、#71）：run 名 `re-review-<id>-<kind>`，提示词 prompts/re-review.md，返回会话和解析出的结论。
+ * Start one re-review session (after fix / rebase, #70, #71): run name `re-review-<id>-<kind>`, prompt prompts/re-review.md; returns the session and the parsed verdict.
+ */
+async function reReviewSession(issue: Issue, sandbox: Sandbox, run: RunAgent, kind: "fix" | "rebase", diffCmd: string) {
+  const name = `re-review-${issue.id}-${kind}`;
+  const reRun = await run("re-review", name, (agent) => sandbox.run({
+    name,
+    maxIterations: 1,
+    idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
+    agent,
+    promptFile: PROMPTS["re-review"],
+    promptArgs: { TASK_ID: issue.id, BRANCH: issue.branch, KIND: kind, DIFF_CMD: diffCmd },
+  }));
+  return { run: reRun, verdict: reReviewVerdict(reRun.stdout, M) };
+}
+
+/**
  * 门槛（失败时给一次 fix 机会再跑）、改了哪些文件、浏览器验收和验收说明，拼成 land 要的结果。门槛不管 verdict 都跑。
  * fix 有新提交且门槛重跑通过时，再起一次 re-review 会话只看 fix 的提交（#70），结论进 reReview，不通过由 land 留 PR。
  * The gate (with one fix chance and a rerun on failure), changed files, browser check and acceptance notes, assembled into the result land needs. The gate runs whatever the verdict.
@@ -1096,16 +1113,7 @@ async function gateAndCollect(
     const after = await sandboxHead(sandbox);
     // reviewer 本来就没给 merge 时 land 反正留 PR，不白跑复审。 / When the reviewer didn't say merge, land leaves the PR anyway; skip the re-review.
     if (gateResult.exitCode === 0 && reviewed.verdict === "merge" && needsReReview(before, after)) {
-      const name = `re-review-${issue.id}-fix`;
-      reReviewRun = await run("re-review", name, (agent) => sandbox.run({
-        name,
-        maxIterations: 1,
-        idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
-        agent,
-        promptFile: PROMPTS["re-review"],
-        promptArgs: { TASK_ID: issue.id, BRANCH: issue.branch, KIND: "fix", DIFF_CMD: fixDiffCmd(before) },
-      }));
-      reReview = reReviewVerdict(reReviewRun.stdout, M);
+      ({ run: reReviewRun, verdict: reReview } = await reReviewSession(issue, sandbox, run, "fix", fixDiffCmd(before)));
     }
   }
   // 改了哪些文件（判断改没改页面用）：在 review / 修改 / 修门槛之后取，算上所有提交。取不到就当空的，退回原有判断，不挡合并。
@@ -1150,6 +1158,7 @@ const integrityName = project.integrity?.name ?? M.integrityName;
  * 把分支 rebase 到最新的 origin/main：没冲突直接 rebase；有冲突开一次 agent 会话按
  * prompts/rebase.md 解决。merge 为 true 时重跑门槛，通过才 force-push 再合并；
  * 为 false 时只跑 typecheck 就 force-push 更新 PR（留给人审的 PR 不和 main 冲突，测试由人合并前决定是否补跑）。
+ * merge 为 true 且 agent 解过冲突时，门槛通过后、push 前还要复审通过（#71，只看 rebase 前后的 range-diff）。
  * 任何一步不成都返回原因，由调用方留 PR。
  */
 type HostGap = { release: () => void; reacquire: () => Promise<void> };
@@ -1180,6 +1189,11 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     // merge-tree exits 1 on conflicts and lists the conflicting files after the first stdout line (the tree id); `; true` lets trySh capture stdout
     const probe = trySh("sh", ["-c", `git merge-tree --write-tree --name-only ${BASE_REF} ${issue.branch}; true`]);
     const conflictFiles = probe.ok ? probe.out.split("\n\n")[0]!.split("\n").slice(1).filter(Boolean) : [];
+    // rebase 前的分支提交范围（旧 base..旧 HEAD）：agent 解冲突后复审用 range-diff 对比（#71）。
+    // The branch's commit range before the rebase (old base..old HEAD): the re-review after agent conflict resolution compares against it with range-diff (#71).
+    const oldHead = await sandboxHead(sandbox);
+    const mergeBase = await sandbox.exec(`git merge-base ${BASE_REF} HEAD`).catch(() => undefined);
+    const oldBase = mergeBase?.exitCode === 0 ? mergeBase.stdout.trim() : "";
     const rebase = await sandbox.exec(`git rebase ${BASE_REF}`);
     const conflicted = rebase.exitCode !== 0;
     const chainBroken = !conflicted && (await sandbox.exec(INTEGRITY_OK)).exitCode !== 0;
@@ -1235,6 +1249,24 @@ async function rebaseAndMerge(issue: Issue, pr: string, host: HostGap, merge = t
     const gate = await runGate((c, o) => sandbox.exec(c, o), issue.id, env);
     if (gate.exitCode !== 0) {
       return { ok: false, reason: M.rebaseGateFailed(gate.stdout.slice(-2000)) };
+    }
+
+    // agent 解过冲突（或重做了完整性链）且门槛通过：push 前复审一次，只看 rebase 带来的变化（#71）。
+    // 这时宿主机锁还放开着，复审只在沙箱里跑；不通过就不 push，远端分支保持原样，由调用方留 PR。
+    // The agent resolved conflicts (or rebuilt the integrity chain) and the gate passed: re-review once before pushing, looking only at what the rebase changed (#71).
+    // The host lock is still released here, so the re-review stays in the sandbox; on failure nothing is pushed, the remote branch stays as it was, and the caller leaves the PR open.
+    if (rebaseNeedsReReview({ conflicted, chainBroken, merge })) {
+      const usage: UsageRecord[] = [];
+      // 取不到 rebase 前的范围时 range-diff 没法对比：按不通过处理（fail-closed），不白起会话。
+      // Without the pre-rebase range the range-diff can't compare: treat it as not passing (fail-closed) without starting a session.
+      const verdict = oldBase && oldHead
+        ? (await reReviewSession(issue, sandbox, (phase, name, fn) => runAgent(phase, issue.id, name, env, usage, fn), "rebase", rebaseDiffCmd(oldBase, oldHead, BASE_REF))).verdict
+        : { pass: false, summary: M.reReviewNoRange };
+      if (!verdict.pass) {
+        console.log(t(`  ◐ #${issue.id} rebase 解冲突之后的复审没通过，不 push`, `  ◐ #${issue.id} re-review after resolving rebase conflicts failed; not pushing`));
+        const table = usage.length ? `\n\n${usageTable(usage, M)}` : "";
+        return { ok: false, reason: `${M.reasonReReview("rebase", verdict.summary)}${table}` };
+      }
     }
 
     await host.reacquire();

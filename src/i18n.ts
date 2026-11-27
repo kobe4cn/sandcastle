@@ -82,6 +82,8 @@ const zh = {
   reasonReReview: (kind: "fix" | "rebase", summary: string) =>
     `${kind === "fix" ? "fix 之后的复审没通过" : "rebase 解冲突之后的复审没通过"}：\n\n${summary}`,
   reReviewNoVerdict: "（复审没有输出结论，按不通过处理）",
+  /** rebase 前的分支范围取不到，复审没法对比，按不通过处理（#71）。 / The pre-rebase branch range is unreadable, so the re-review can't compare; treated as not passing (#71). */
+  reReviewNoRange: "（取不到 rebase 前的分支范围，复审没法对比，按不通过处理）",
   reasonAutoMergeOff: "项目配置 autoMerge: false（试跑期），reviewer 和门槛都通过，等人合并。",
   reasonBrowser: (problems: string) => `改了页面，浏览器验收不满足自动合并的条件：${problems}（见 PR 正文的 Browser check 一节）。`,
   reasonNoBrowserConfig:
@@ -262,6 +264,7 @@ const en: Messages = {
   reasonReReview: (kind, summary) =>
     `The ${kind === "fix" ? "re-review after the fix" : "re-review after resolving rebase conflicts"} did not pass:\n\n${summary}`,
   reReviewNoVerdict: "(the re-review gave no verdict; treated as not passing)",
+  reReviewNoRange: "(the branch range before the rebase could not be read, so the re-review can't compare; treated as not passing)",
   reasonAutoMergeOff: "The project config has autoMerge: false (trial period). Reviewer and gate both passed; waiting for a human to merge.",
   reasonBrowser: (problems) => `Pages changed and the browser check doesn't meet the auto-merge conditions: ${problems} (see the Browser check section of the PR description).`,
   reasonNoBrowserConfig:

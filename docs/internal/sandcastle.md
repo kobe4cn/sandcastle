@@ -54,7 +54,7 @@ reviewer 的结论有三种：`merge`、`revise`、`pr`（规则在 `.sandcastle
    - 失败摘要只取 vitest 的 Failed Tests / Failed Suites 一节。
 3. GitHub 能 rebase 合并，且本票的 drizzle 迁移接在 `origin/main` 最新的迁移后面（两张票各加一个迁移时没有文本冲突，但迁移链会分叉，所以合并前脚本先查）。
 
-   不满足时脚本自动补救一次：在原分支上开沙箱 `git rebase origin/main`；有冲突或迁移链分叉就开一次 agent 会话按 `.sandcastle/rebase-prompt.md` 处理（追加型文件两边都留，迁移删掉重新 `db:generate`，要做判断的放弃并在 issue 上评论）；然后**重跑门槛**（和开工时同一套选测试规则，按分支相对新 main 的改动选，冲突文件已在其中），通过才 force-push 再合并。补救不成就留 PR 并写原因。
+   不满足时脚本自动补救一次：在原分支上开沙箱 `git rebase origin/main`；有冲突或迁移链分叉就开一次 agent 会话按 `.sandcastle/rebase-prompt.md` 处理（追加型文件两边都留，迁移删掉重新 `db:generate`，要做判断的放弃并在 issue 上评论）；然后**重跑门槛**（和开工时同一套选测试规则，按分支相对新 main 的改动选，冲突文件已在其中），通过才 force-push 再合并。起过解冲突 agent（有冲突或迁移链分叉）时，门槛通过后、push 前还要复审：起一次复审会话（阶段 `re-review`，run 名 `re-review-<票号>-rebase`，提示词 `prompts/re-review.md`），只看 rebase 前后的 `git range-diff <旧 base>..<旧 HEAD> origin/main..HEAD`，重点查解冲突时丢掉 / 改动的测试；不是 `merge`（含没输出结论）就不 push、不合并，留 PR，评论写「rebase 解冲突之后的复审没通过」、复审摘要和这次复审的用量表；取不到 rebase 前的分支范围时不起会话，直接按不通过处理。复审用量进 `usage.jsonl`，不改 PR 正文。干净 rebase（没起 agent）和只 typecheck 留给人审的 rebase 不复审（#71）。补救不成就留 PR 并写原因。
 
    reviewer 不给 `merge`、但门槛通过、要留 PR 给人审的票，也先查一次：和最新的 `origin/main` 有文本冲突或迁移链分叉（开工后 main 上合进了改同一处的票）时，同样 rebase、处理冲突，但只跑 typecheck、不重跑测试（省一遍门槛，也不占门槛的队列；2026-11-24），force-push 后不合并，PR 上评论冲突文件并写明 Gate 里的测试结果是 rebase 之前的，由人合并前判断是否补跑。这样人审到的 PR 能直接合并。补救不成就在「没有自动合并」的评论里写上原因。
 
