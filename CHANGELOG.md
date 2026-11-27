@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- README 中英「Onboard a project / 接入一个项目」一节各补一段说明：`sandpipe onboard` 补全 `.sandcastle/PROJECT.md` 时在本机跑 `claude -p`、用本机 Claude Code 登录的账号（不是 `.sandcastle/.env` 里的 token），流水线在沙箱里只用 `.sandcastle/.env` 的 `CLAUDE_CODE_OAUTH_TOKEN`（`claude setup-token` 生成）或 `ANTHROPIC_API_KEY`，两者互不相干，本机 Claude Code 登录过期的提醒不影响流水线的 token（closes #91）
+- README 中英「Onboard a project / 接入一个项目」一节各补一段：onboard 补全 PROJECT.md 用本机 Claude Code 的登录，流水线只用 `.sandcastle/.env` 里的 `CLAUDE_CODE_OAUTH_TOKEN` 或 `ANTHROPIC_API_KEY`，两者互不相干（closes #91）
 - onboard 起 agent 时写清楚用的哪套凭据：提示写明在本机用 `claude -p` 跑、用的是本机 Claude Code 登录的账号（不是 `.sandcastle/.env` 里的 token）；claude 的 stderr 改为按行加 `[claude]` 前缀转写到终端（半行缓冲到换行或结束），失败（非零退出、30 分钟超时、没装 claude、输出超上限）时的警告带退出码 / 原因和 stderr 最后几行，不再吞掉 claude 自己的报错（`runAgent` 从 `execFileSync` 改成 `spawn`，纯函数 `prefixLines`、`agentFailureMessage`、`agentStartHint`、`envStepHint`，`src/onboard.ts`）；结束「下一步」里填 `.env` 的一步写明流水线用的是其中的 `CLAUDE_CODE_OAUTH_TOKEN`（`claude setup-token` 生成）或 `ANTHROPIC_API_KEY`，与本机 Claude Code 登录无关，接入检查清单中英同步（closes #90）
 
 ## 0.3.0
