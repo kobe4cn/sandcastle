@@ -57,6 +57,8 @@ sandpipe doctor --fix     # check everything, creating labels along the way
 sandpipe baseline         # run the full gate once against main in a sandbox
 ```
 
+Two credentials are at play here, and they are unrelated. `sandpipe onboard` completes `.sandcastle/PROJECT.md` by running `claude -p` locally, under your local Claude Code login — not the token in `.sandcastle/.env`; the pipeline runs agents in the sandbox with the token the pipeline uses: `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or `ANTHROPIC_API_KEY` in `.sandcastle/.env`, and reads only this file, independent of your local Claude Code login. A reminder that your local Claude Code login has expired doesn't affect the pipeline's token.
+
 Then label issues with `Sandcastle` and run:
 
 ```bash
