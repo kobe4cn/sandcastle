@@ -40,6 +40,7 @@ const LABEL_META: Record<keyof Labels, [color: string, zh: string, en: string]> 
   prepped: ["c5def5", "Sandcastle prep 已确认可实现", "Sandcastle prep confirmed it can be implemented"],
   prOpen: ["0e8a16", "Sandcastle 已开 PR，等人审", "Sandcastle opened a PR, waiting for review"],
   merging: ["bfdadc", "Sandcastle 已开 PR、门槛已过，在等检查 / 合并", "Sandcastle opened the PR and the gate passed; waiting for checks / merging"],
+  reviewed: ["c2e0c6", "Sandcastle 评审已通过、正在跑门槛", "Review passed; Sandcastle is running the gate"],
   stuck: ["d93f0b", "Sandcastle 做不下去，需要人介入（见评论）", "Sandcastle is stuck and needs a human (see comments)"],
   decided: ["fef2c0", "agent 代拍板过设计决定，等人事后确认", "The agent made a design decision; confirm it afterwards"],
   flaky: ["fbca04", "偶发失败的测试（Sandcastle 门槛自动开票）", "Flaky test (opened automatically by the Sandcastle gate)"],
@@ -52,7 +53,7 @@ const LABEL_META: Record<keyof Labels, [color: string, zh: string, en: string]> 
  * 流水线第一次用到时自己建（main.ts 里 ensureLabel），缺了不算问题。
  * Created by the pipeline when first needed (ensureLabel in main.ts), so missing ones aren't a problem.
  */
-const AUTO_LABELS: (keyof Labels)[] = ["flaky", "mainBroken", "merging"];
+const AUTO_LABELS: (keyof Labels)[] = ["flaky", "mainBroken", "merging", "reviewed"];
 
 const firstLine = (s: string) => s.trim().split("\n")[0] ?? "";
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));

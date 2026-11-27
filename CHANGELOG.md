@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 评审已通过、门槛跑到一半时进程中断，重启后不再从 implement 重做：review 给出 merge 后、跑门槛前，票上打 `sandcastle:reviewed`（流水线第一次用到时自己建，`doctor --fix` 也会建），另发一条 `<!-- sandcastle:reviewed@<sha> -->` 开头的评论，存评审摘要、修改轮次和 browser-check。重启后（或门槛撞临时错误重跑 build 时）worktree 的 HEAD 还是这个 sha，就打「↻ 接着上次：#n 评审已过，直接跑门槛」，跳过 implement / review；PR 的用量表和预算一行取 `usage.jsonl` 里这张票的 implement / review / revise 记录。HEAD 变了就去掉标签、正常重做。落地开头不论成败都去掉这个标签，人用 `/sandcastle` 打回后会重新实现。纯函数在新文件 `src/resume-state.ts`（closes #49）
 - 全部档案撞限额等待时票上看得出来了：一个阶段的档案全都撞上用量限额、票进入等待时，在票上发一条评论，写明阶段、档案名和预计恢复时间（运行机器的本地时间），带标记 `<!-- sandcastle:limited -->`。同一次等待（醒来再撞、认不出重置时间每 30 分钟重来）只发一条；票上最后一条评论已经是它时不再发，重启后不重复；成功跑完后下次再撞会重新发。单个 Claude 限额报错和已关的票不发，发评论失败只打一行警告、照样等待。prep 不等限额，不发（closes #48）
 - 撞限额换档案看得出来了：档案撞上用量限额的那次会话也往 `.sandcastle/logs/usage.jsonl` 记一条，带 `limited: true`（拿得到 run 就照常算 token，报错是抛出来的则 token 记 0、会话数 0），PR 的 Usage 表里显示为一行「撞限额，换下一个档案」（英文 `hit usage limit, switched to next profile`），其余数值格写 `—`。全部档案都撞限额、build 整次重跑时，那几行只留在 `usage.jsonl`。老记录读回和渲染不变（closes #47）
 - 档案撞限额后的恢复时间（含 2 分钟余量）写进 `.sandcastle/logs/limits.json`（`{档案名: epoch 毫秒}`，先写临时文件再 rename），重启后在恢复时间之前照样跳过这个档案，不再把刚撞过限额的档案再试一次；读写时丢掉已过期的条目，文件不存在或损坏当作空（closes #46）

@@ -96,6 +96,7 @@ import {
   podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath, waitForPodman,
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
+import { parseReviewed, type ReviewedState, resumeDecision, reviewedComment } from "./resume-state.ts";
 import { duration, flakyTicketsLine, gateDoneLine, gateEnv, gateInfraLine, startGateProgress } from "./gate-progress.ts";
 import { createGateQueue, type GatePriority } from "./gate-queue.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
@@ -518,7 +519,7 @@ function closeFinishedParents() {
  * 出错只打警告。
  */
 async function cleanupClosedIssues() {
-  for (const label of [LABEL.prepped, LABEL.prOpen, LABEL.merging, LABEL.stuck]) {
+  for (const label of [LABEL.prepped, LABEL.prOpen, LABEL.merging, LABEL.reviewed, LABEL.stuck]) {
     const closed = attempt(() => forge.listClosedIssueNumbers(label));
     if (!closed.ok) {
       console.warn(t(`  ⚠ 查带 ${label} 的已关闭票失败：`, `  ⚠ Listing closed tickets labelled ${label} failed: `) + closed.out.slice(0, 200));
@@ -645,7 +646,9 @@ function plan(running: ReadonlySet<string>, slots: number, quiet = false): Issue
     // When an external PR (that `Closes` this ticket) exists, continue on its branch; otherwise use our own branch as usual.
     const pr = prFor(issue.number);
     const branch = pr && !pr.branch.startsWith("sandcastle/") ? pr.branch : ownBranch(issue.number);
-    picked.push({ id: String(issue.number), title: issue.title, branch, browserCheck: ticketHasBrowserCheck(issue.body) });
+    picked.push({
+      id: String(issue.number), title: issue.title, branch, browserCheck: ticketHasBrowserCheck(issue.body), reviewed: issue.labels.includes(LABEL.reviewed),
+    });
   }
   return picked;
 }
@@ -665,9 +668,11 @@ const tagged = (stdout: string, tag: string) =>
 
 /**
  * browserCheck：票正文有没有 `- **Browser check**`（plan 时设；resume 构造的不带，那条路不走 land）。
+ * reviewed：票带 sandcastle:reviewed（#49，plan 时设）；build 打 / 去这个标签时同步改它，retryTransient 重跑 build 时看得到。
  * browserCheck: whether the ticket body has `- **Browser check**` (set by plan; the ones built on resume lack it, and that path doesn't go through land).
+ * reviewed: the ticket is labelled sandcastle:reviewed (#49, set by plan); build updates it when adding / removing the label so a retryTransient rerun of build sees it.
  */
-type Issue = { id: string; title: string; branch: string; browserCheck?: boolean };
+type Issue = { id: string; title: string; branch: string; browserCheck?: boolean; reviewed?: boolean };
 
 const ownBranch = (issueId: string | number) => `sandcastle/issue-${issueId}`;
 /**
@@ -897,6 +902,20 @@ function reportFlaky(issue: Issue, pr: string, gateOutput: string): { tickets: s
 // 在独立沙箱里构建一张票
 // ---------------------------------------------------------------------------
 
+type Sandbox = Awaited<ReturnType<typeof sandcastle.createSandbox>>;
+type RunAgent = (phase: Phase, name: string, fn: (agent: sandcastle.AgentProvider) => Promise<sandcastle.SandboxRunResult>) => Promise<sandcastle.SandboxRunResult>;
+/**
+ * 评审的结果，门槛和 PR 正文要用。恢复时（#49）runs 为空，其余来自票上的标记评论。
+ * The review's results, used by the gate and the PR body. On resume (#49) runs is empty and the rest comes from the marker comment on the ticket.
+ */
+type Reviewed = {
+  runs: sandcastle.SandboxRunResult[];
+  revisions: string[];
+  verdict: string | undefined;
+  summary: string;
+  browserTag: string | undefined;
+};
+
 async function build(issue: Issue) {
   if (isExternal(issue)) await syncExternalBranch(issue);
   const env = testEnv(issue.id);
@@ -908,105 +927,170 @@ async function build(issue: Issue) {
     copyToWorktree,
   });
   const usage: UsageRecord[] = [];
-  const run = (phase: Phase, name: string, fn: (agent: sandcastle.AgentProvider) => Promise<sandcastle.SandboxRunResult>) =>
-    runAgent(phase, issue.id, name, env, usage, fn);
+  const run: RunAgent = (phase, name, fn) => runAgent(phase, issue.id, name, env, usage, fn);
   try {
-    // 每次会话单独挑档案：撞了限额，下一次会话就换下一个档案接着做（交接靠 issue 上的进度评论）。
-    // 档案名经环境变量 SANDCASTLE_PROFILE 给 implementer，不走 promptArgs：运行中的旧进程也会读到新提示词，多出的占位符会让它报错。
-    // Each session picks its own profile: after a limit, the next session continues with the next profile (handover via progress comments on the issue).
-    // The profile name reaches the implementer via the SANDCASTLE_PROFILE env var, not promptArgs: an old running process would also read the new prompts, and an extra placeholder makes it error.
-    const implement: Sessions = { iterations: [], stdout: "" };
-    for (let session = 1; session <= IMPLEMENT_MAX_ITERATIONS && implement.completionSignal === undefined; session++) {
-      const r = await run("implement", `implement-${issue.id}-${session}`, (agent) => sandbox.run({
-        name: `implement-${issue.id}-${session}`,
-        maxIterations: 1,
-        idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
-        completionSignal: [COMPLETE, NEEDS_DECISION],
-        agent,
-        promptFile: PROMPTS.implement,
-        promptArgs: { TASK_ID: issue.id, ISSUE_TITLE: issue.title, BRANCH: issue.branch },
-      }));
-      implement.iterations.push(...r.iterations);
-      implement.stdout += r.stdout;
-      implement.completionSignal = r.completionSignal;
+    // 上次评审已通过、分支 HEAD 没变（#49）：跳过 implement / review，直接跑门槛。HEAD 变了就清掉状态正常重做。
+    // The last review passed and the branch HEAD is unchanged (#49): skip implement / review and go straight to the gate. If HEAD moved, clear the state and redo normally.
+    const resumed = issue.reviewed ? await resumeReviewed(issue, sandbox) : undefined;
+    if (resumed) {
+      // 用量和预算从用量日志里补：这次进程里没有 implement / review 的会话结果。
+      // Usage and budget come from the usage log: this process has no implement / review session results.
+      const prior = readUsage(issue.id).filter((r) => r.phase === "implement" || r.phase === "review" || r.phase === "revise");
+      usage.push(...prior);
+      const implement: Sessions = { iterations: [], stdout: "", completionSignal: COMPLETE };
+      const budget = {
+        peak: Math.max(0, ...prior.map((r) => r.peak)),
+        sessions: prior.filter((r) => r.phase === "implement" && !r.limited).length,
+      };
+      return { ...(await gateAndCollect(issue, sandbox, run, env, implement, resumed, usage)), budget };
     }
-    // 看分支上的提交，不看这次会话的：重新准备后父票只剩已完成的部分，收尾时可能不再提交。
-    // Look at the branch's commits, not this session's: after re-prep the parent may only have finished parts left, and wrapping up may not commit anything.
-    const ahead = Number((await sandbox.exec(`git rev-list --count ${BASE_REF}..HEAD`)).stdout.trim()) || 0;
-    if (implement.completionSignal !== COMPLETE || ahead === 0) {
-      return { done: false as const, implement, usage };
+    const r = await implementAndReview(issue, sandbox, run);
+    if (!r.done) return { done: false as const, implement: r.implement, usage };
+    // 跑门槛之前落盘：门槛撞上临时错误、retryTransient 重跑 build 时也从门槛接着跑。
+    // Persist before the gate: when the gate hits a transient error and retryTransient reruns build, it also continues from the gate.
+    if (r.reviewed.verdict === "merge") {
+      const head = (await sandbox.exec("git rev-parse HEAD")).stdout.trim();
+      if (head) markReviewed(issue, { sha: head, summary: r.reviewed.summary, revisions: r.reviewed.revisions, browserTag: r.reviewed.browserTag });
     }
-
-    const runReview = (round: number) =>
-      run("review", `review-${issue.id}-${round}`, (agent) => sandbox.run({
-        name: `review-${issue.id}-${round}`,
-        maxIterations: 1,
-        idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
-        agent,
-        promptFile: PROMPTS.review,
-        promptArgs: { TASK_ID: issue.id, BRANCH: issue.branch, BASE: BASE_REF, ROUND: round, REVISE_MAX },
-      }));
-    // reviewer 给 revise：修改意见交给新的 implementer 会话，改完再审一次。
-    // Reviewer says revise: the requested changes go to a new implementer session, then review again.
-    const reviews = [await runReview(0)];
-    const revisions: { items: string; run: sandcastle.SandboxRunResult }[] = [];
-    while (revisions.length < REVISE_MAX && tagged(reviews.at(-1)!.stdout, "verdict") === "revise") {
-      const items = tagged(reviews.at(-1)!.stdout, "revise") ?? "（reviewer 没有列出修改意见）";
-      const name = `revise-${issue.id}-${revisions.length + 1}`;
-      const revise = await run("revise", name, (agent) => sandbox.run({
-        name,
-        maxIterations: 1,
-        idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
-        agent,
-        prompt: project.texts.revisePrompt({
-          issueId: issue.id, branch: issue.branch, title: issue.title, viewIssue: forge.viewIssueCommand(issue.id), items,
-        }),
-      }));
-      revisions.push({ items, run: revise });
-      reviews.push(await runReview(revisions.length));
-    }
-    const review = reviews.at(-1)!;
-
-    const gate = () => runGate((c, o) => sandbox.exec(c, o), issue.id, env);
-    let gateResult = await gate();
-    let fix: sandcastle.SandboxRunResult | undefined;
-    if (gateResult.exitCode !== 0) {
-      // 给 implementer 一次修的机会（新会话），再跑一次门槛。 / Give the implementer one chance to fix (new session), then run the gate again.
-      fix = await run("fix", `fix-${issue.id}`, (agent) => sandbox.run({
-        name: `fix-${issue.id}`,
-        maxIterations: 1,
-        idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
-        agent,
-        prompt: project.texts.fixPrompt({
-          issueId: issue.id, branch: issue.branch, title: issue.title, viewIssue: forge.viewIssueCommand(issue.id),
-          gateOutput: gateResult.stdout.slice(-4000), rerunMax: GATE_RERUN_MAX,
-        }),
-      }));
-      gateResult = await gate();
-    }
-    // 改了哪些文件（判断改没改页面用）：在 review / 修改 / 修门槛之后取，算上所有提交。取不到就当空的，退回原有判断，不挡合并。
-    // Which files changed (to judge page changes): taken after review / revisions / gate fixes so every commit counts. If it fails, treat it as empty and fall back to the existing judgement without blocking the merge.
-    const diff = await sandbox.exec(`git diff --name-only ${BASE_REF}...HEAD`).catch(() => undefined);
-    const changed = diff?.exitCode === 0 ? diff.stdout.split("\n").map((l) => l.trim()).filter(Boolean) : [];
-
-    return {
-      done: true as const,
-      implement,
-      runs: [...reviews, ...revisions.map((r) => r.run), fix],
-      revisions: revisions.map((r) => r.items),
-      verdict: tagged(review.stdout, "verdict"),
-      summary: tagged(review.stdout, "review-summary") ?? M.noReviewSummary,
-      gate: { ok: gateResult.exitCode === 0, output: gateResult.stdout.slice(-3000), tier: gateTier(gateResult.stdout) },
-      browser: collectBrowserCheck(sandbox.worktreePath, issue.id),
-      browserTag: tagged(review.stdout, "browser-check"),
-      notes: readAcceptanceNotes(sandbox.worktreePath),
-      changed,
-      usage,
-    };
+    return { ...(await gateAndCollect(issue, sandbox, run, env, r.implement, r.reviewed, usage)), budget: undefined };
   } finally {
     await closeQuietly(issue.id, () => sandbox.close());
     await dropTestResources(issue.id);
   }
+}
+
+/**
+ * 票带 reviewed 时读票上的标记评论，和 worktree 的 HEAD 比：一致返回评审结果；不一致或读不出来就清掉状态，返回 undefined 正常重做。
+ * When the ticket is labelled reviewed, read its marker comment and compare with the worktree HEAD: return the review results when they match; otherwise clear the state and return undefined to redo normally.
+ */
+async function resumeReviewed(issue: Issue, sandbox: Sandbox): Promise<Reviewed | undefined> {
+  // 读评论或取 HEAD 失败时不清状态，这次照常重做：一次网络抖动不该让下次重启也没法恢复。
+  // If reading comments or HEAD fails, keep the state and just redo this time: one network blip shouldn't stop the next restart from resuming too.
+  const comments = attempt(() => forge.issueComments(issue.id));
+  const head = (await sandbox.exec("git rev-parse HEAD").catch(() => undefined))?.stdout.trim();
+  if (!comments.ok || !head) return undefined;
+  const state = parseReviewed(comments.value);
+  if (resumeDecision(state, head) === "resume" && state) {
+    console.log(t(`  ↻ 接着上次：#${issue.id} 评审已过，直接跑门槛`, `  ↻ Resuming: #${issue.id} already passed review; going straight to the gate`));
+    return { runs: [], revisions: state.revisions, verdict: "merge", summary: state.summary, browserTag: state.browserTag };
+  }
+  clearReviewed(issue);
+  return undefined;
+}
+
+/**
+ * implement（多次会话，撞限额换档案）+ review / revise。没做完（没发 COMPLETE 或分支上没有提交）时 done 为 false。
+ * implement (several sessions, switching profiles on limits) + review / revise. done is false when unfinished (no COMPLETE or no commits on the branch).
+ */
+async function implementAndReview(issue: Issue, sandbox: Sandbox, run: RunAgent) {
+  // 每次会话单独挑档案：撞了限额，下一次会话就换下一个档案接着做（交接靠 issue 上的进度评论）。
+  // 档案名经环境变量 SANDCASTLE_PROFILE 给 implementer，不走 promptArgs：运行中的旧进程也会读到新提示词，多出的占位符会让它报错。
+  // Each session picks its own profile: after a limit, the next session continues with the next profile (handover via progress comments on the issue).
+  // The profile name reaches the implementer via the SANDCASTLE_PROFILE env var, not promptArgs: an old running process would also read the new prompts, and an extra placeholder makes it error.
+  const implement: Sessions = { iterations: [], stdout: "" };
+  for (let session = 1; session <= IMPLEMENT_MAX_ITERATIONS && implement.completionSignal === undefined; session++) {
+    const r = await run("implement", `implement-${issue.id}-${session}`, (agent) => sandbox.run({
+      name: `implement-${issue.id}-${session}`,
+      maxIterations: 1,
+      idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
+      completionSignal: [COMPLETE, NEEDS_DECISION],
+      agent,
+      promptFile: PROMPTS.implement,
+      promptArgs: { TASK_ID: issue.id, ISSUE_TITLE: issue.title, BRANCH: issue.branch },
+    }));
+    implement.iterations.push(...r.iterations);
+    implement.stdout += r.stdout;
+    implement.completionSignal = r.completionSignal;
+  }
+  // 看分支上的提交，不看这次会话的：重新准备后父票只剩已完成的部分，收尾时可能不再提交。
+  // Look at the branch's commits, not this session's: after re-prep the parent may only have finished parts left, and wrapping up may not commit anything.
+  const ahead = Number((await sandbox.exec(`git rev-list --count ${BASE_REF}..HEAD`)).stdout.trim()) || 0;
+  if (implement.completionSignal !== COMPLETE || ahead === 0) {
+    return { done: false as const, implement };
+  }
+
+  const runReview = (round: number) =>
+    run("review", `review-${issue.id}-${round}`, (agent) => sandbox.run({
+      name: `review-${issue.id}-${round}`,
+      maxIterations: 1,
+      idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
+      agent,
+      promptFile: PROMPTS.review,
+      promptArgs: { TASK_ID: issue.id, BRANCH: issue.branch, BASE: BASE_REF, ROUND: round, REVISE_MAX },
+    }));
+  // reviewer 给 revise：修改意见交给新的 implementer 会话，改完再审一次。
+  // Reviewer says revise: the requested changes go to a new implementer session, then review again.
+  const reviews = [await runReview(0)];
+  const revisions: { items: string; run: sandcastle.SandboxRunResult }[] = [];
+  while (revisions.length < REVISE_MAX && tagged(reviews.at(-1)!.stdout, "verdict") === "revise") {
+    const items = tagged(reviews.at(-1)!.stdout, "revise") ?? "（reviewer 没有列出修改意见）";
+    const name = `revise-${issue.id}-${revisions.length + 1}`;
+    const revise = await run("revise", name, (agent) => sandbox.run({
+      name,
+      maxIterations: 1,
+      idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
+      agent,
+      prompt: project.texts.revisePrompt({
+        issueId: issue.id, branch: issue.branch, title: issue.title, viewIssue: forge.viewIssueCommand(issue.id), items,
+      }),
+    }));
+    revisions.push({ items, run: revise });
+    reviews.push(await runReview(revisions.length));
+  }
+  const review = reviews.at(-1)!;
+  const reviewed: Reviewed = {
+    runs: [...reviews, ...revisions.map((r) => r.run)],
+    revisions: revisions.map((r) => r.items),
+    verdict: tagged(review.stdout, "verdict"),
+    summary: tagged(review.stdout, "review-summary") ?? M.noReviewSummary,
+    browserTag: tagged(review.stdout, "browser-check"),
+  };
+  return { done: true as const, implement, reviewed };
+}
+
+/**
+ * 门槛（失败时给一次 fix 机会再跑）、改了哪些文件、浏览器验收和验收说明，拼成 land 要的结果。门槛不管 verdict 都跑。
+ * The gate (with one fix chance and a rerun on failure), changed files, browser check and acceptance notes, assembled into the result land needs. The gate runs whatever the verdict.
+ */
+async function gateAndCollect(
+  issue: Issue, sandbox: Sandbox, run: RunAgent, env: Record<string, string>, implement: Sessions, reviewed: Reviewed, usage: UsageRecord[],
+) {
+  const gate = () => runGate((c, o) => sandbox.exec(c, o), issue.id, env);
+  let gateResult = await gate();
+  let fix: sandcastle.SandboxRunResult | undefined;
+  if (gateResult.exitCode !== 0) {
+    // 给 implementer 一次修的机会（新会话），再跑一次门槛。 / Give the implementer one chance to fix (new session), then run the gate again.
+    fix = await run("fix", `fix-${issue.id}`, (agent) => sandbox.run({
+      name: `fix-${issue.id}`,
+      maxIterations: 1,
+      idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,
+      agent,
+      prompt: project.texts.fixPrompt({
+        issueId: issue.id, branch: issue.branch, title: issue.title, viewIssue: forge.viewIssueCommand(issue.id),
+        gateOutput: gateResult.stdout.slice(-4000), rerunMax: GATE_RERUN_MAX,
+      }),
+    }));
+    gateResult = await gate();
+  }
+  // 改了哪些文件（判断改没改页面用）：在 review / 修改 / 修门槛之后取，算上所有提交。取不到就当空的，退回原有判断，不挡合并。
+  // Which files changed (to judge page changes): taken after review / revisions / gate fixes so every commit counts. If it fails, treat it as empty and fall back to the existing judgement without blocking the merge.
+  const diff = await sandbox.exec(`git diff --name-only ${BASE_REF}...HEAD`).catch(() => undefined);
+  const changed = diff?.exitCode === 0 ? diff.stdout.split("\n").map((l) => l.trim()).filter(Boolean) : [];
+
+  return {
+    done: true as const,
+    implement,
+    runs: [...reviewed.runs, fix],
+    revisions: reviewed.revisions,
+    verdict: reviewed.verdict,
+    summary: reviewed.summary,
+    gate: { ok: gateResult.exitCode === 0, output: gateResult.stdout.slice(-3000), tier: gateTier(gateResult.stdout) },
+    browser: collectBrowserCheck(sandbox.worktreePath, issue.id),
+    browserTag: reviewed.browserTag,
+    notes: readAcceptanceNotes(sandbox.worktreePath),
+    changed,
+    usage,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1231,7 +1315,45 @@ function markMerging(issueId: string, on: boolean) {
     );
 }
 
+let reviewedLabelEnsured = false;
+/**
+ * 记评审已过（#49）：先发带 sha 的标记评论（恢复要用），再打 sandcastle:reviewed；第一次用时先建标签。出错只警告。
+ * Record a passed review (#49): post the marker comment with the sha first (needed to resume), then add sandcastle:reviewed; the label is created on first use. Errors only warn.
+ */
+function markReviewed(issue: Issue, state: ReviewedState) {
+  if (!reviewedLabelEnsured) {
+    reviewedLabelEnsured = true;
+    attempt(() => forge.ensureLabel(LABEL.reviewed, "c2e0c6", M.reviewedLabelDesc));
+  }
+  const r = attempt(() => {
+    forge.commentIssue(issue.id, reviewedComment(state.sha, state, M));
+    forge.addLabel(issue.id, LABEL.reviewed);
+  });
+  if (r.ok) issue.reviewed = true;
+  else if (!issueClosed(issue.id))
+    console.warn(t(`  ⚠ 给 #${issue.id} 记评审已过失败（中断后重启会重新实现）：`, `  ⚠ Recording the passed review on #${issue.id} failed (a restart after an interrupt would reimplement it): `) + r.out.slice(0, 200));
+}
+
+/**
+ * 去掉 sandcastle:reviewed（#49）。出错只警告：标签留着时，人打回后分支没变会跳过 implement，要手动去掉。
+ * Remove sandcastle:reviewed (#49). Errors only warn: if the label stays, a send-back with an unchanged branch would skip implement, so it must be removed by hand.
+ */
+function clearReviewed(issue: Issue) {
+  const r = attempt(() => forge.removeLabel(issue.id, LABEL.reviewed));
+  if (r.ok) issue.reviewed = false;
+  else if (!issueClosed(issue.id))
+    console.warn(
+      t(
+        `  ⚠ 去掉 #${issue.id} 的 ${LABEL.reviewed} 失败（请手动去掉，否则打回后分支没变会跳过实现）：`,
+        `  ⚠ Removing ${LABEL.reviewed} from #${issue.id} failed (remove it by hand, or a send-back with an unchanged branch would skip implementing): `,
+      ) + r.out.slice(0, 200),
+    );
+}
+
 async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnType<typeof build>>>, host: HostGap) {
+  // 不论成败先清掉 reviewed（#49）：门槛失败留 PR 后人可能用 /sandcastle 打回，票重新进 build 时 sha 没变，不清会错误地跳过 implement。
+  // Clear reviewed first whatever the outcome (#49): after a failed gate leaves a PR, a human may send it back with /sandcastle; the ticket re-enters build with the same sha and would wrongly skip implement.
+  if (issue.reviewed) clearReviewed(issue);
   // 运行期间人已经合并了这张票的 PR 或关了票：不再 push、开 PR、打标签，本地分支留着备查。
   // A human already merged this ticket's PR or closed it during the run: no push, PR or labels; the local branch is kept for reference.
   if (issueClosed(issue.id)) {
@@ -1257,10 +1379,13 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     return;
   }
   const result = outcome.value;
+  // 从评审已过的状态恢复时（#49），峰值和会话数取用量日志里 implement / review / revise 的记录。
+  // When resuming from a passed review (#49), the peak and session count come from the implement / review / revise records in the usage log.
   const peak = result.done
-    ? peakContext(result.implement, ...result.runs)
+    ? Math.max(result.budget?.peak ?? 0, peakContext(result.implement, ...result.runs))
     : peakContext(result.implement);
-  const budgetNote = M.budgetNote(Math.round(peak / 1000), CONTEXT_BUDGET / 1000, result.implement.iterations.length);
+  const sessions = (result.done ? result.budget?.sessions : undefined) ?? result.implement.iterations.length;
+  const budgetNote = M.budgetNote(Math.round(peak / 1000), CONTEXT_BUDGET / 1000, sessions);
   if (!result.done) {
     // implementer 判断必须由人拍板：推上已有的提交，直接交给人，不退回 prep。
     // The implementer judged that a human must decide: push the existing commits and hand it straight to a human, not back to prep.

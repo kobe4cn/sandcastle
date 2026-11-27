@@ -115,6 +115,7 @@ onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-
 | `Sandcastle` | 人工选中，流水线只处理带这个标签的票 |
 | `sandcastle:prepped` | prep 已确认可以实现 |
 | `sandcastle:pr-open` | 已开 PR，等人审 |
+| `sandcastle:reviewed` | 评审已通过、正在跑门槛；运行被中断后，分支没变就直接跑门槛，不重新实现和评审。流水线第一次用到时自己建 |
 | `sandcastle:merging` | 已开 PR、门槛已过，在等检查 / 合并；运行被中断后，下次运行接着等，不重新实现。流水线第一次用到时自己建 |
 | `sandcastle:stuck` | 需要人介入，原因写在 issue 评论里 |
 | `sandcastle:decided` | agent 替人拍板过设计决定，等人事后确认，看过后去掉 |

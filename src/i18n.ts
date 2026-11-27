@@ -142,6 +142,9 @@ const zh = {
   // —— 偶发失败与 main 兜底 —— / Flaky failures and the fallback run on main
   flakyLabelDesc: "偶发失败的测试（Sandcastle 门槛自动开票）",
   mergingLabelDesc: "Sandcastle 已开 PR、门槛已过，在等检查 / 合并（中断重启后接着等，不重新实现）",
+  reviewedLabelDesc: "Sandcastle 评审已通过、正在跑门槛（中断重启后分支没变就直接跑门槛，不重新实现）",
+  reviewedNote: (sha: string) =>
+    `✅ 评审已通过（分支 HEAD \`${sha.slice(0, 12)}\`），接下来跑门槛。进程中断重启后分支没变就直接跑门槛，不重新实现和评审。`,
   flakySeen: (issueId: string, pr: string) => `#${issueId} 的门槛（PR #${pr}）`,
   flakyEnv: (others: string[], load: string, cores: number) =>
     `开票时：同时在做的票 ${others.length ? others.join("、") : "无"}；宿主机 1 / 5 / 15 分钟负载 ${load}（${cores} 核）。`,
@@ -310,6 +313,9 @@ const en: Messages = {
 
   flakyLabelDesc: "Flaky tests (opened automatically by the Sandcastle gate)",
   mergingLabelDesc: "Gate passed, PR open; Sandcastle is waiting for checks / merging (resumes after a restart)",
+  reviewedLabelDesc: "Review passed; Sandcastle is running the gate (a restart goes straight to the gate)",
+  reviewedNote: (sha) =>
+    `✅ Review passed (branch HEAD \`${sha.slice(0, 12)}\`); the gate runs next. After an interrupt and restart, if the branch is unchanged, it goes straight to the gate without reimplementing or re-reviewing.`,
   flakySeen: (issueId, pr) => `the gate of #${issueId} (PR #${pr})`,
   flakyEnv: (others, load, cores) =>
     `When opened: tickets in progress ${others.length ? others.join(", ") : "none"}; host load (1 / 5 / 15 min) ${load} (${cores} cores).`,
