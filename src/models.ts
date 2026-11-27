@@ -75,8 +75,11 @@ const RESET_SLACK_MS = 2 * 60_000;
 // Reading the config
 // ---------------------------------------------------------------------------
 
+/** 报错的文字：Error 只取 message，不带「Error: 」前缀。 / An error's text: just the message for an Error, without the "Error: " prefix. */
+const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
 const fail = (message: string): never => {
-  throw new Error(`${CONFIG_PATH}：${message}`);
+  throw new Error(`${CONFIG_PATH}${t("：", ": ")}${message}`);
 };
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -150,7 +153,7 @@ function parseProfile(name: string, raw: unknown, warn: (m: string) => void): Pr
     try {
       limitPattern = new RegExp(raw.limitPattern, "i");
     } catch (e) {
-      fail(t(`${at}.limitPattern 不是合法的正则：`, `${at}.limitPattern isn't a valid regex: `) + String(e));
+      fail(t(`${at}.limitPattern 不是合法的正则：`, `${at}.limitPattern isn't a valid regex: `) + errorText(e));
     }
   } else if (thirdParty) {
     warn(
@@ -185,7 +188,7 @@ function parseConfig(text: string, envKeys: Set<string>, warn: (m: string) => vo
   try {
     raw = JSON.parse(text);
   } catch (e) {
-    return fail(t("不是合法的 JSON：", "invalid JSON: ") + String(e));
+    return fail(t("不是合法的 JSON：", "invalid JSON: ") + errorText(e));
   }
   if (!isRecord(raw) || !isRecord(raw.profiles) || !isRecord(raw.phases)) return fail(t("要有 profiles 和 phases 两个对象", "must have two objects, profiles and phases"));
   const profiles = new Map(Object.entries(raw.profiles).map(([name, p]) => [name, parseProfile(name, p, warn)]));
@@ -250,7 +253,7 @@ export function reloadModels() {
     const next = parseConfig(text, sandcastleEnvKeys(), (m) => warnings.push(m));
     const key = JSON.stringify(JSON.parse(text));
     const warningKey = warnings.join("\n");
-    if (warningKey !== lastWarningText) for (const w of warnings) console.warn(`  ⚠ ${CONFIG_PATH}：${w}`);
+    if (warningKey !== lastWarningText) for (const w of warnings) console.warn(`  ⚠ ${CONFIG_PATH}${t("：", ": ")}${w}`);
     config = next;
     const list = PHASES.map((p) => `${p}=${next.phases[p].join("→")}`).join("  ");
     if (lastConfigJson === undefined) console.log(`${t("模型：", "Models: ")}${list}`);
@@ -259,7 +262,7 @@ export function reloadModels() {
     lastWarningText = warningKey;
   } catch (e) {
     if (!config) throw e;
-    console.warn(`  ⚠ ${String(e)}${t("；沿用上一次读到的配置", "; keeping the previously loaded config")}`);
+    console.warn(`  ⚠ ${errorText(e)}${t("；沿用上一次读到的配置", "; keeping the previously loaded config")}`);
   }
 }
 
@@ -493,6 +496,20 @@ function sessionTotals(it: sandcastle.IterationResult) {
  */
 export const sessionPeak = (it: sandcastle.IterationResult) => sessionTotals(it).peak;
 
+const MODEL_ALIAS = /^(opus|sonnet|haiku)(\[1m\])?$/;
+
+/**
+ * usage 里记的模型名。第三方档案的 model 是 opus/sonnet/haiku（可带 [1m]）、env 里对应的 ANTHROPIC_DEFAULT_*_MODEL 有值时，
+ * 记成「别名→实际名」（如 opus→glm-5.3[1m]），免得看起来像用了 Claude；值是 `${VAR}`（真实值只在容器里）或其余情况原样记。
+ * The model name recorded in usage. For a third-party profile whose model is opus/sonnet/haiku (optionally [1m]) with the matching ANTHROPIC_DEFAULT_*_MODEL set in env,
+ * record "alias→actual" (e.g. opus→glm-5.3[1m]) so it doesn't look like Claude was used; a `${VAR}` value (real value only in the container) or anything else is recorded as is.
+ */
+function usageModel(p: Profile): string {
+  const alias = p.thirdParty ? MODEL_ALIAS.exec(p.model) : null;
+  const actual = alias ? p.env[`ANTHROPIC_DEFAULT_${alias[1]!.toUpperCase()}_MODEL`] : undefined;
+  return actual && !SECRET_REF.test(actual) ? `${p.model}→${actual}` : p.model;
+}
+
 /**
  * 记一次 run 的用量：追加到 .sandcastle/logs/usage.jsonl 并返回；build 收集返回值写进 PR，prep 的落地时用 readUsage 读回。写不进只警告。
  * Record one run's usage: append to .sandcastle/logs/usage.jsonl and return it; build collects the result for the PR, prep's is read back with readUsage on landing. Write failures only warn.
@@ -506,7 +523,7 @@ export function recordUsage(issue: string, phase: Phase, run: AgentRun, name: st
     { input: 0, cacheCreation: 0, cacheRead: 0, output: 0, peak: 0 },
   );
   const record: UsageRecord = {
-    at: new Date().toISOString(), issue, phase, run: name, profile: profile.name, model: profile.model,
+    at: new Date().toISOString(), issue, phase, run: name, profile: profile.name, model: usageModel(profile),
     sessions: run.iterations.length, ...totals,
   };
   try {

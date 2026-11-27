@@ -427,10 +427,24 @@ describe("N1e 热重载 reloadModels", () => {
     writeModels("{ not json");
     expect(() => m.reloadModels()).not.toThrow();
     expect(warn.mock.calls.flat().join("\n")).toMatch(/不是合法的 JSON.*沿用上一次读到的配置/);
+    expect(warn.mock.calls.flat().join("\n")).toContain(".sandcastle/models.json：");
+    expect(warn.mock.calls.flat().join("\n")).not.toContain("Error: ");
     writeModels({ profiles: { sonnet: claude() }, phases: phasesAll(["ghost"]) });
     expect(() => m.reloadModels()).not.toThrow();
     expect(warn.mock.calls.flat().join("\n")).toContain("档案 ghost 不在 profiles 里");
     expect((await m.runWithProfile("implement", "#1", async () => done())).profile).toMatchObject({ name: "sonnet", model: "claude-sonnet-4-5" });
+  });
+
+  it("英文下改坏了：提示用半角冒号，不带「Error: 」前缀", async () => {
+    (await import("../src/term.ts")).setTermLanguage("en", {});
+    project({ profiles: { sonnet: claude("claude-sonnet-4-5") }, phases: phasesAll(["sonnet"]) });
+    m.reloadModels();
+    writeModels("{ not json");
+    m.reloadModels();
+    const text = warn.mock.calls.flat().join("\n");
+    expect(text).toMatch(/⚠ \.sandcastle\/models\.json: invalid JSON: .*; keeping the previously loaded config/);
+    expect(text).not.toContain("Error: ");
+    expect(text).not.toContain("：");
   });
 
   it("同一份配置 reload 两次：Models 行只打一次", () => {
@@ -561,6 +575,24 @@ describe("N1f 用量记录", () => {
     expect(lines[0]).toEqual(rec);
     expect(lines[1]).toMatchObject({ issue: "#12", phase: "review", profile: "p1", model: "claude-opus-4-5", sessions: 1, peak: 0 });
     for (const l of lines) expect(Object.keys(l)).toEqual(expect.arrayContaining(["issue", "phase", "profile", "model", "peak"]));
+  });
+
+  it("第三方档案的 model 是别名、env 里有对应的 ANTHROPIC_DEFAULT_*_MODEL：记成「别名→实际名」", () => {
+    const empty: AgentRun = { stdout: "", iterations: [] };
+    const used = (model: string, env: Record<string, string>) => {
+      project({ profiles: { p1: { model, env } }, phases: phasesAll(["p1"]) }, "GLM_MODEL=glm-5.3\n");
+      return m.recordUsage("#1", "implement", empty, "implement", m.inspectModels().used[0]!).model;
+    };
+    const glm = { ANTHROPIC_BASE_URL: "https://glm.example", ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.5-air" };
+    expect(used("opus", { ...glm, ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-5.3[1m]" })).toBe("opus→glm-5.3[1m]");
+    expect(used("sonnet[1m]", { ...glm, ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5.3" })).toBe("sonnet[1m]→glm-5.3");
+    expect(used("haiku", glm)).toBe("haiku→glm-4.5-air");
+    // 值只在容器里（${VAR}）、没设对应变量、不是别名：原样记
+    expect(used("opus", { ...glm, ANTHROPIC_DEFAULT_OPUS_MODEL: "${GLM_MODEL}" })).toBe("opus");
+    expect(used("opus", glm)).toBe("opus");
+    expect(used("opusplan", { ...glm, ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-5.3" })).toBe("opusplan");
+    // Claude 档案：别名原样记
+    expect(used("opus", { ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-opus-4-5" })).toBe("opus");
   });
 
   it("sessionPeak：会话文件里单条消息的最大上下文；没有文件退回最后一条的快照", () => {
