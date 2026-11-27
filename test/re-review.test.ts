@@ -1,8 +1,9 @@
 // fix / rebase 之后的复审（#70、#71）：要不要复审、diff 命令、复审结论解析。
 // Re-review after fix / rebase (#70, #71): whether to re-review, the diff command, parsing the re-review verdict.
+// 复审会话提交了改动或取不到 HEAD 时按不通过（#72）。 / A re-review session that committed, or an unreadable HEAD, fails (#72).
 import { describe, expect, it } from "vitest";
 import { messages } from "../src/i18n.ts";
-import { fixDiffCmd, needsReReview, rebaseDiffCmd, rebaseNeedsReReview, reReviewVerdict } from "../src/re-review.ts";
+import { fixDiffCmd, needsReReview, rebaseDiffCmd, rebaseNeedsReReview, reReviewVerdict, reReviewWithHeads } from "../src/re-review.ts";
 
 const zh = messages("zh");
 const en = messages("en");
@@ -67,5 +68,28 @@ describe("re-review", () => {
     expect(m.reasonReReview("fix", "删了测试")).toContain(fix);
     expect(m.reasonReReview("fix", "删了测试")).toContain("删了测试");
     expect(m.reasonReReview("rebase", "s")).toContain(rebase);
+  });
+  const passed = { pass: true, summary: "没问题" };
+  const failed = { pass: false, summary: "删了测试" };
+  it.each([
+    ["HEAD 相同 + 通过 → 通过", passed, "aaa", "aaa", passed],
+    ["HEAD 相同 + 不通过 → 原样", failed, "aaa", "aaa", failed],
+    ["HEAD 不同 + merge → 不通过", passed, "aaa", "bbb", { pass: false, summary: zh.reReviewCommitted("aaa", "bbb") }],
+    ["HEAD 不同 + 不通过 → 不通过，说明提交了改动", failed, "aaa", "bbb", { pass: false, summary: zh.reReviewCommitted("aaa", "bbb") }],
+    ["复审后取不到 HEAD → 不通过", passed, "aaa", "", { pass: false, summary: zh.reReviewCommitted("aaa", "") }],
+    ["复审前取不到 HEAD → 不通过", passed, "", "aaa", { pass: false, summary: zh.reReviewCommitted("", "aaa") }],
+    ["前后都取不到 HEAD → 不通过", passed, "", "", { pass: false, summary: zh.reReviewCommitted("", "") }],
+  ] as const)("reReviewWithHeads：%s（#72）", (_, verdict, before, after, want) => {
+    expect(reReviewWithHeads(verdict, before, after, zh)).toEqual(want);
+  });
+
+  it.each([
+    [zh, "复审会话提交了改动", "取不到"],
+    [en, "re-review session committed changes", "unknown"],
+  ])("reReviewCommitted：写明复审会话提交了改动，附复审前后 HEAD，取不到时写明", (m, text, unknown) => {
+    expect(m.reReviewCommitted("aaa111", "bbb222")).toContain(text);
+    expect(m.reReviewCommitted("aaa111", "bbb222")).toContain("aaa111");
+    expect(m.reReviewCommitted("aaa111", "bbb222")).toContain("bbb222");
+    expect(m.reReviewCommitted("aaa111", "")).toContain(unknown);
   });
 });

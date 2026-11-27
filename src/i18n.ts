@@ -82,6 +82,9 @@ const zh = {
   reasonReReview: (kind: "fix" | "rebase", summary: string) =>
     `${kind === "fix" ? "fix 之后的复审没通过" : "rebase 解冲突之后的复审没通过"}：\n\n${summary}`,
   reReviewNoVerdict: "（复审没有输出结论，按不通过处理）",
+  /** 复审前后 HEAD 不同或取不到：复审会话提交了改动，按不通过处理（#72）。 / HEAD differs or is unreadable before / after the re-review: the session committed changes, treated as not passing (#72). */
+  reReviewCommitted: (before: string, after: string) =>
+    `复审会话提交了改动（复审前 HEAD ${before || "取不到"}，复审后 ${after || "取不到"}）。复审只评不改，这些提交没经过门槛和评审，请人工检查或回退`,
   /** fix 前或 fix 后的 HEAD 取不到，没复审，留 PR（#73）。 / The HEAD before or after the fix was unreadable; not re-reviewed, PR left open (#73). */
   reasonHeadUnknown: "取不到 fix 前后的 HEAD，没法确定 fix 改了什么，未复审",
   /** rebase 前的分支范围取不到，复审没法对比，按不通过处理（#71）。 / The pre-rebase branch range is unreadable, so the re-review can't compare; treated as not passing (#71). */
@@ -266,6 +269,8 @@ const en: Messages = {
   reasonReReview: (kind, summary) =>
     `The ${kind === "fix" ? "re-review after the fix" : "re-review after resolving rebase conflicts"} did not pass:\n\n${summary}`,
   reReviewNoVerdict: "(the re-review gave no verdict; treated as not passing)",
+  reReviewCommitted: (before, after) =>
+    `The re-review session committed changes (HEAD before the re-review ${before || "unknown"}, after ${after || "unknown"}). The re-review only reviews and must not edit; these commits passed neither the gate nor review, so please check or revert them`,
   reasonHeadUnknown: "couldn't read HEAD before/after the fix, so what the fix changed is unknown; not re-reviewed",
   reReviewNoRange: "(the branch range before the rebase could not be read, so the re-review can't compare; treated as not passing)",
   reasonAutoMergeOff: "The project config has autoMerge: false (trial period). Reviewer and gate both passed; waiting for a human to merge.",

@@ -97,7 +97,7 @@ import {
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
 import { parseReviewed, type ReviewedState, resumeDecision, reviewedComment } from "./resume-state.ts";
-import { fixDiffCmd, needsReReview, type ReReview, rebaseDiffCmd, rebaseNeedsReReview, reReviewVerdict, tagged } from "./re-review.ts";
+import { fixDiffCmd, needsReReview, type ReReview, rebaseDiffCmd, rebaseNeedsReReview, reReviewVerdict, reReviewWithHeads, tagged } from "./re-review.ts";
 import { duration, flakyTicketsLine, gateDoneLine, gateEnv, gateEnvLine, gateInfraLine, startGateProgress } from "./gate-progress.ts";
 import { createGateQueue, type GatePriority } from "./gate-queue.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
@@ -1065,10 +1065,15 @@ async function implementAndReview(issue: Issue, sandbox: Sandbox, run: RunAgent)
 
 /**
  * 起一次复审会话（fix / rebase 之后，#70、#71）：run 名 `re-review-<id>-<kind>`，提示词 prompts/re-review.md，返回会话和解析出的结论。
+ * 复审前后 HEAD 不同或取不到时结论按不通过，不看复审输出（#72）。
  * Start one re-review session (after fix / rebase, #70, #71): run name `re-review-<id>-<kind>`, prompt prompts/re-review.md; returns the session and the parsed verdict.
+ * If HEAD differs or is unreadable before / after, the verdict is a fail regardless of the re-review's output (#72).
  */
 async function reReviewSession(issue: Issue, sandbox: Sandbox, run: RunAgent, kind: "fix" | "rebase", diffCmd: string) {
   const name = `re-review-${issue.id}-${kind}`;
+  // 复审前后各取一次沙箱 HEAD：复审会话提交了改动或取不到 HEAD 就按不通过（#72）。只用 sandbox.exec，rebase 路径这时宿主机锁是放开的。
+  // Read the sandbox HEAD before and after: if the re-review committed, or HEAD is unreadable, it fails (#72). sandbox.exec only, since on the rebase path the host lock is released here.
+  const reBefore = await sandboxHead(sandbox);
   const reRun = await run("re-review", name, (agent) => sandbox.run({
     name,
     maxIterations: 1,
@@ -1077,7 +1082,13 @@ async function reReviewSession(issue: Issue, sandbox: Sandbox, run: RunAgent, ki
     promptFile: PROMPTS["re-review"],
     promptArgs: { TASK_ID: issue.id, BRANCH: issue.branch, KIND: kind, DIFF_CMD: diffCmd },
   }));
-  return { run: reRun, verdict: reReviewVerdict(reRun.stdout, M) };
+  const reAfter = await sandboxHead(sandbox);
+  const parsed = reReviewVerdict(reRun.stdout, M);
+  const verdict = reReviewWithHeads(parsed, reBefore, reAfter, M);
+  if (verdict !== parsed) {
+    console.warn(t(`  ⚠ #${issue.id} 复审会话提交了改动（或取不到 HEAD），按不通过处理`, `  ⚠ #${issue.id} the re-review session committed changes (or HEAD is unreadable); treated as not passing`));
+  }
+  return { run: reRun, verdict };
 }
 
 /**

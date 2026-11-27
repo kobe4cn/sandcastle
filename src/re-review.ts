@@ -51,3 +51,15 @@ export function reReviewVerdict(stdout: string, m: Messages): ReReview {
   if (verdict === undefined) return { pass: false, summary: m.reReviewNoVerdict };
   return { pass: verdict === "merge", summary: tagged(stdout, "review-summary") || m.noReviewSummary };
 }
+
+/**
+ * 复审只评不改：复审前后 HEAD 不同（复审会话提交了改动）就按不通过处理，不看它给的结论，否则这些没经过门槛和评审的提交会跟着自动合并。
+ * 复审前或复审后取不到 HEAD（空串）时同样不通过（fail-closed）。HEAD 相同时原样返回结论（#72）。
+ * The re-review only reviews, never edits: if HEAD differs before / after it (the session committed), it fails regardless of its verdict,
+ * otherwise those commits, which passed neither gate nor review, would be auto-merged. An unreadable HEAD (empty) before or after fails too (fail-closed).
+ * When the HEADs match, the verdict is returned unchanged (#72).
+ */
+export function reReviewWithHeads(verdict: ReReview, before: string, after: string, m: Messages): ReReview {
+  if (before === "" || after === "" || before !== after) return { pass: false, summary: m.reReviewCommitted(before, after) };
+  return verdict;
+}
