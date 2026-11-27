@@ -31,3 +31,7 @@ _Avoid_: 当前版本、线上版本
 **自举**:
 用运行版本的 sandpipe 处理 sandcastle 仓库自己的票。
 _Avoid_: dogfooding、自部署
+
+**可信作者**:
+流水线采纳其内容的 GitHub 账号：机器人账号、项目配置 `trustedAuthors` 里的登录名、或在仓库有 admin / write 权限的人。只有可信作者写的票正文和评论才是 agent 的指令，其他人的只是参考材料。票作者不可信时，流水线打 `needs-triage`（意思和人手动打的一样：等维护者看过）并跳过；有写权限的人看过后打 `sandcastle:trusted`、去掉 `needs-triage`，票才会被处理（ADR 0006）。agent 在沙箱里读评论时按 `author_association` 近似判定（OWNER / MEMBER / COLLABORATOR 或机器人）。
+_Avoid_: 白名单用户、协作者、有权限的人

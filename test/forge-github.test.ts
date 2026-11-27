@@ -220,6 +220,19 @@ describe("githubForge 发给 gh 的参数", () => {
     expect(calls[0]).toEqual(["issue", "view", "3", "--json", "closedByPullRequestsReferences", "--jq", ".closedByPullRequestsReferences[].number"]);
   });
 
+  it("agentGuide 读评论只看可信作者：不再用 --comments，每条 gh api 读评论的命令都按 author_association / Bot 过滤（#81）", () => {
+    const guide = fakeGh().forge.agentGuide();
+    expect(guide).not.toContain("--comments");
+    const apiCmds = (guide.match(/`gh api [^`]+`/g) ?? []).filter((c) => /\/(comments|reviews)"/.test(c));
+    // 票的评论、PR 的评论、review、行内意见
+    expect(apiCmds).toHaveLength(4);
+    for (const cmd of apiCmds) {
+      expect(cmd).toContain('select(.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR" or .user.type == "Bot")');
+      expect(cmd).toContain("--paginate");
+    }
+    expect(guide).toContain("gh issue view <n>`");
+  });
+
   it("doctor 用的 checkAccess / listLabels：没登录、权限不够都抛错并说明", () => {
     const ok = fakeGh("", "acme/shop WRITE", "a\nb\n");
     expect(ok.forge.checkAccess()).toBe("gh 已登录，仓库 acme/shop（WRITE）");
