@@ -130,6 +130,7 @@ Sandcastle 处理期间，PR 作者不要往这个分支推提交。本地和远
 
 - `profiles` 是档案：`harness`（目前只支持 `claude-code`；`codex` 预留，写了会报错）、`model`（传给 `claude --model`）、可选的 `effort`、`env`、`limitPattern`、`resetTimeZone`。
 - `env` 照抄厂商给 Claude Code 的配置（比如智谱 coding plan 的 `ANTHROPIC_BASE_URL`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_DEFAULT_*_MODEL`）。只对这次会话的 claude 进程生效，加在命令前面（`env K=V claude …`），因为 `createSandbox` 里的 `sandbox.run` 不用 agent provider 的 env。
+- 每条 claude 命令都带 `--settings`（`NO_ATTRIBUTION_SETTINGS`）：关掉 Claude Code 自带的提交 / PR 署名，别家档案的提交不会被署名成 Anthropic 的模型；`--settings` 优先级高于项目的 `.claude/settings.json`（#94）。
 - 密钥不写进 `models.json`：值写成 `"${GLM_API_KEY}"`，在容器里从同名环境变量取。变量要列在 `.sandcastle/.env` 里，sandcastle 只把那里列出的变量带进容器。
 - 档案设了 `ANTHROPIC_BASE_URL` 就算别家，Claude 的凭据（`CLAUDE_CODE_OAUTH_TOKEN`、`ANTHROPIC_API_KEY`）不会发到别家的接口，范围是整个容器，不只 claude 进程：
   - 凭据不在容器级 env 里：sandcastle 会把 `.sandcastle/.env` 的键都放进 `podman run -e`，脚本在 sandbox env 里把这两个键覆盖成空串（`CLAUDE_CREDENTIALS_CLEARED`）。同一个容器会先后跑 Claude 和别家的会话（implement=glm、review=opus，或撞限额中途换档案），容器 env 在 `podman run` 时就定死了，所以只能按会话给。

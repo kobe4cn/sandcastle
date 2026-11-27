@@ -432,6 +432,28 @@ describe("N1d 别家档案的环境变量", () => {
     expect(m.CLAUDE_CREDENTIALS_CLEARED).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: "", ANTHROPIC_API_KEY: "" });
   });
 
+  it("命令带 --settings：关掉 Claude Code 自带的提交 / PR 署名，别家档案不留 Anthropic 模型名", () => {
+    project({ profiles: { glm: glm() }, phases: phasesAll(["glm"]) }, `${VAR}=k\nGH_TOKEN=x\n`);
+    const cmd = command(m.inspectModels().used[0]!);
+    const json = JSON.stringify(m.NO_ATTRIBUTION_SETTINGS);
+    expect(cmd).toContain(`claude --settings '${json}' `);
+    // 新旧两种署名开关都写上，命令里不出现 Anthropic 的模型名
+    expect(json).toContain(`"includeCoAuthoredBy":false`);
+    expect(json).toContain(`"attribution":{"commit":"","pr":""}`);
+    expect(cmd).not.toContain("Co-Authored");
+    expect(cmd).not.toContain("Opus");
+  });
+
+  it("Claude 档案的凭据分支和 resume 会话也带同样的 --settings", () => {
+    project({ profiles: { opus: claude() }, phases: phasesAll(["opus"]) }, "CLAUDE_CODE_OAUTH_TOKEN=tok\n");
+    const p = m.inspectModels().used[0]!;
+    const flag = `claude --settings '${JSON.stringify(m.NO_ATTRIBUTION_SETTINGS)}' `;
+    expect(command(p)).toContain(flag);
+    const r = m.agentFor(p, {}, "revise").buildPrintCommand({ prompt: "go", dangerouslySkipPermissions: true, resumeSession: "sess-1" });
+    expect(r.command).toContain(flag);
+    expect(r.command).toContain("--resume 'sess-1'");
+  });
+
   it("Claude 档案 + .env 有 token：token 从 stdin 第一行送进 claude，命令行里没有值", () => {
     project({ profiles: { glm: glm(), opus: claude() }, phases: phasesAll(["opus", "glm"]) }, `CLAUDE_CODE_OAUTH_TOKEN=tok-secret\nANTHROPIC_API_KEY=\n${VAR}=k\n`);
     const used = m.inspectModels().used;
