@@ -57,6 +57,8 @@ sandpipe doctor --fix     # 逐项检查，顺带建好标签
 sandpipe baseline         # 在沙箱里对 main 跑一次完整门槛
 ```
 
+这里涉及两套凭据，互不相干。`sandpipe onboard` 补全 `.sandcastle/PROJECT.md` 时在本机跑 `claude -p`，用本机 Claude Code 登录的账号，不是 `.sandcastle/.env` 里的 token；流水线在沙箱里跑 agent，用的是 `.sandcastle/.env` 里的 token：`CLAUDE_CODE_OAUTH_TOKEN`（`claude setup-token` 生成）或 `ANTHROPIC_API_KEY`，流水线只用这里面的 token，与本机 Claude Code 登录无关。本机 Claude Code 登录过期的提醒不影响流水线的 token。
+
 然后给 issue 打上 `Sandcastle` 标签，运行：
 
 ```bash
