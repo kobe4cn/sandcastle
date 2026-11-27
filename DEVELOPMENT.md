@@ -40,7 +40,7 @@
 | `templates/.sandcastle/` | 装到新项目的 PROJECT.md 模板、配置模板、Containerfile、models.json |
 | `claude/` | 上下文预算 hook、screenshot-checker 子代理、prep-ticket 和 fill-project-docs skill（后者附 NOTICE，改编自 mattpocock/skills，MIT） |
 | `examples/duckdb_crm/` | 第一个接入方的完整配置 |
-| `docs/` | 用户手册（中英两份）；`docs/internal/` 是内部文档 |
+| `docs/` | 用户手册（中英两份）；`docs/internal/` 是内部文档；`docs/agents/` 是给 agent skills 用的配置（issue tracker、triage 标签、领域文档） |
 
 ## 在项目里用
 
