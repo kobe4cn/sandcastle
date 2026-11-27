@@ -109,6 +109,14 @@ describe("用 duckdb_crm 的 PROJECT.md 渲染", () => {
     expect(out.prep).toContain("/fill-project-docs");
   });
 
+  it("Blocked by 的写法：一个 blocker 一行列表项，不写在标题行上（#100）", () => {
+    expect(out.prep).toContain("`- #{{TASK_ID}}`");
+    expect(out.prep).not.toContain("## Blocked by #{{TASK_ID}}");
+    for (const name of ["prep", "implement", "review"] as const) {
+      expect(out[name], name).toContain("单独写一行列表项");
+    }
+  });
+
   it("票里写了待决定项但没写明选了哪个时，不从标签推断、交给人（#18）", () => {
     expect(out.prep).toContain("不代表待决定项已经选好");
     expect(out.prep).toContain("先看正文有没有没决定的选项");

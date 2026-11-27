@@ -3,6 +3,7 @@
 ## Unreleased
 
 - onboard 的 agent 段收成摘要：开始一行（沿用凭据说明，`agentStartHint`）、完成一行（新增纯函数 `agentDoneLine`：doc 写「完成，笔记见 .sandcastle/logs/onboard.md」，questions 写「完成」）；claude 的 stderr 和 agent 笔记全文只在 `--verbose` 打（stderr 末尾几行照收进失败警告），`--questions-only` 的输出同样收拢、也认 `--verbose`；agent 失败（没装 claude、非零退出、超时、超上限）的警告照旧单独成醒目一行（`src/onboard.ts` 的 `runAgent` 加 `verbose` 参数，`questionsOnlyRun`、onboard 的 agent 段；src/cli.ts 中英 help、README 中英命令表、DEVELOPMENT.md 同步）（closes #97）
+- 给 agent 的提示词和 prep-ticket skill 写明 `## Blocked by` 的写法：每个 blocker 单独写一行列表项 `- #n`，列表项外的票号（说明段落、续行、括号里）不算，与 `blockersOf` 只认列表项（#99）的解析对齐；`prompts/prep.md`「上下文不够」一段原先写「每张子票都写 `## Blocked by #{{TASK_ID}}`」，票号写在标题行上、解析时整行被吃掉，这个 blocker 一直没生效，改成标题下单独一行 `- #{{TASK_ID}}`（`prompts/prep.md`、`prompts/decisions.md`、`prompts/ticket-sizing.md`、`claude/skills/prep-ticket/SKILL.md`；docs/internal/ticket-sizing.md 同步）（closes #100）
 
 ## 0.3.1
 

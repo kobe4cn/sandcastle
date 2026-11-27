@@ -8,7 +8,7 @@ One `/implement` session should fit inside the ~150k context budget. Writing the
 - At most **4 existing files changed** (the `Change` lines of the guide; new files, tests, migrations, ADRs and docs don't count). Three acceptance criteria can still fan out across six modules, and every existing file costs context to read before it can be edited.
 - When a ticket breaks this limit, split it into thinner end-to-end slices. For example, "write a source view and preview it" first, then "two-person publish" on top.
 - Split vertically. Each child ticket is a thin end-to-end slice that can be demoed or tested on its own. Never split by layer (one for "backend" and one for "UI").
-- The parent keeps the original body. It gains a `## Split into` list and loses its `ready-for-agent` label. Each child gets `## Parent`, `## Blocked by` and `ready-for-agent`.
+- The parent keeps the original body. It gains a `## Split into` list and loses its `ready-for-agent` label. Each child gets `## Parent`, `## Blocked by` and `ready-for-agent`. Under `## Blocked by`, write one list item per blocker (`- #n`); issue numbers outside list items (prose, continuation lines) don't count.
 - Point other tickets that are blocked by the parent at the right child.
 
 ## Split just in time

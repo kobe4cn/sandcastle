@@ -68,7 +68,7 @@ Use the template in `ticket-sizing.md` next to this file. Before publishing, `gr
 
 Write bodies to temp files and pass them with `--body-file`.
 
-- Create children blockers-first with `gh issue create --label <ready label>`. Each child body has `## Parent` #<n>, `## What to build`, `## Acceptance criteria`, `## Blocked by` (the parent's blockers and/or sibling numbers), and `## Implementation guide`.
+- Create children blockers-first with `gh issue create --label <ready label>`. Each child body has `## Parent` #<n>, `## What to build`, `## Acceptance criteria`, `## Blocked by` (the parent's blockers and/or sibling numbers), and `## Implementation guide`. Under `## Blocked by`, write one list item per blocker (`- #n`); issue numbers outside list items (prose, continuation lines) don't count.
 - Parent: append `## Split into` with a checklist of children, and remove the ready label.
 - Dependents: find open issues whose `## Blocked by` lists the parent (`gh issue list --state open --search "#<n>" --json number,body`). Repoint them to the right child, or comment if it's only a mention.
 - Guide only (no split): append the section with `gh issue edit <n> --body-file`.
