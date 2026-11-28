@@ -104,6 +104,7 @@ describe("diagnose", () => {
       // onboard 生成的配置 autoMerge: false
       合并条件: "ok",
       受保护路径: "ok",
+      花费上限: "ok",
       项目知识: "warn",
       "models.json": "ok",
       ".env": "fail",
@@ -524,6 +525,43 @@ describe("diagnose：受保护路径", () => {
     const root = readyRepo();
     writeFileSync(join(root, ".sandcastle/sandcastle.config.ts"), "export default {;\n");
     expect(check(await run(root), "受保护路径")).toBeUndefined();
+  });
+});
+
+describe("diagnose：花费上限", () => {
+  const run = (root: string) => diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+
+  /** 造一行 usage.jsonl：只写读取要用的字段，at 用本地时间构造，offset 天是相对今天。 */
+  const usageLine = (offsetDays: number, input: number) => {
+    const now = new Date();
+    const at = new Date(now.getFullYear(), now.getMonth(), now.getDate() + offsetDays, 0, 1);
+    return JSON.stringify({ at: at.toISOString(), issue: "41", phase: "implement", input, cacheCreation: 0, cacheRead: 0, output: 0 });
+  };
+
+  it("配了两个上限：原样带出，今日已用只算本地今天的记录（昨天的不算）", async () => {
+    const root = readyRepo();
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(config, readFileSync(config, "utf8").replace("  appendOnlyFiles: [],\n", "  appendOnlyFiles: [],\n  spendLimit: { ticketTokens: 2_000_000, dayTokens: 5_000_000 },\n"));
+    const logs = join(root, ".sandcastle/logs");
+    mkdirSync(logs, { recursive: true });
+    writeFileSync(join(logs, "usage.jsonl"), `${usageLine(0, 1500)}\n${usageLine(-1, 999_000)}\n`);
+    expect(check(await run(root), "花费上限")).toMatchObject({ level: "ok", detail: "单票 2000.0k；当天 5000.0k；今日已用 1.5k" });
+  });
+
+  it("没配：写不限，没有 usage.jsonl 时今日已用 0.0k", async () => {
+    expect(check(await run(readyRepo()), "花费上限")).toMatchObject({ level: "ok", detail: "单票 不限；当天 不限；今日已用 0.0k" });
+  });
+
+  it("没配：写 unlimited（英文项目用英文）", async () => {
+    const root = pythonRepo();
+    installFiles(root, detectProject(root));
+    expect(check(await run(root), "Spend limits")).toMatchObject({ level: "ok", detail: expect.stringContaining("unlimited") });
+  });
+
+  it("配置加载失败：没有这一项", async () => {
+    const root = readyRepo();
+    writeFileSync(join(root, ".sandcastle/sandcastle.config.ts"), "export default {;\n");
+    expect(check(await run(root), "花费上限")).toBeUndefined();
   });
 });
 

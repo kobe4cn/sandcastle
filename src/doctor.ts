@@ -1,9 +1,9 @@
 // doctor：跑流水线之前把能在宿主机上查的都查一遍，每项给出结论和修法。
-// 查：仓库根目录、配置能加载、宿主机依赖与 env 文件、PROJECT.md 与提示词能渲染、浏览器验收、合并条件（有 CI workflow 却不等检查时警告）、项目知识（缺口清单）、models.json、.env 的 token、通知 webhook（--notify-test 时发一条测试消息）、平台登录与权限、
+// 查：仓库根目录、配置能加载、宿主机依赖与 env 文件、PROJECT.md 与提示词能渲染、浏览器验收、合并条件（有 CI workflow 却不等检查时警告）、受保护路径、花费上限、项目知识（缺口清单）、models.json、.env 的 token、通知 webhook（--notify-test 时发一条测试消息）、平台登录与权限、
 // 标签、镜像（--fix 时补建 / 直接建，与 Containerfile 不一致时报过期、--fix 重建）、Sandcastle 票的 Blocked by 引用、开着的 main-broken 票、远端基础分支、沙箱镜像、门槛依赖的服务、磁盘剩余空间（工作目录、容器存储）、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
 // 有一项 ✗ 退出码就是 1。
 // doctor: before running the pipeline, check everything that can be checked on the host, giving a verdict and a fix for each.
-// Checks: repository root, config loads, host dependencies and env files, PROJECT.md and prompts render, browser check, merge requirements (warns when there are CI workflows but checks aren't awaited), project knowledge (open questions list), models.json, .env tokens, the notify webhook (a test message with --notify-test), forge login and permissions,
+// Checks: repository root, config loads, host dependencies and env files, PROJECT.md and prompts render, browser check, merge requirements (warns when there are CI workflows but checks aren't awaited), protected paths, spend limits, project knowledge (open questions list), models.json, .env tokens, the notify webhook (a test message with --notify-test), forge login and permissions,
 // labels and the image (created / built with --fix, reported stale and rebuilt with --fix when it doesn't match the Containerfile), Blocked by references in Sandcastle tickets, open main-broken tickets, remote base branch, sandbox image, gate services, free disk space (working directory, container storage), context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
 // Exit code 1 if any check is ✗.
 
@@ -13,12 +13,13 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parseEnv } from "node:util";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { browserSetupWarning } from "./browser-gate.ts";
+import { daySpend } from "./budget.ts";
 import { detectProject } from "./detect.ts";
 import type { Forge, IssueState } from "./forge.ts";
 import { blockersOf } from "./guide.ts";
 import { messages } from "./i18n.ts";
 import { buildImageArgs, containerfileHash, findContainerfile, imageLabel } from "./lifecycle.ts";
-import { inspectModels } from "./models.ts";
+import { formatK, inspectModels, readAllUsage } from "./models.ts";
 import { createNotifier } from "./notify.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { CLAUDE_FILES, fillDocsHint, manual, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
@@ -298,6 +299,21 @@ export async function diagnose(opts: {
       "ok",
       project.protectedPaths.length ? project.protectedPaths.map(String).join(t("、", ", ")) : t("未配置", "not configured"),
     );
+
+  // ---- 花费上限 ---- / Spend limits
+  // 只展示不检查：超没超由开新会话前的预检拦，doctor 是否通过不随当天用量变。今日已用按本地日期算，读仓库根的 usage.jsonl（同项目知识一项：读 cwd 不读 dir）。配置加载失败时没有这一项。
+  // Display only, no verdict: going over is caught before a new session opens, so doctor's pass/fail doesn't move with the day's spend. Used-today is by local date, read from the usage.jsonl at the repo root (like the project knowledge check: read cwd, not dir). Absent when the config fails to load.
+  if (project) {
+    const cap = (n: number | undefined) => (n === undefined ? t("不限", "unlimited") : formatK(n));
+    const ticket = cap(project.spendLimit.ticketTokens);
+    const day = cap(project.spendLimit.dayTokens);
+    const used = formatK(withCwd(cwd, () => daySpend(readAllUsage(), new Date())));
+    add(
+      t("花费上限", "Spend limits"),
+      "ok",
+      t(`单票 ${ticket}；当天 ${day}；今日已用 ${used}`, `Per ticket ${ticket}; per day ${day}; used today ${used}`),
+    );
+  }
 
   // ---- 项目知识 ---- / Project knowledge
   // 没有 PROJECT.md 时不查：上面已经提示先跑 onboard，这里再提示 --questions-only 会误导；清单路径相对仓库根，所以读 cwd 不读 dir。
