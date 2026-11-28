@@ -18,7 +18,7 @@
     - 有网页界面时，把浏览器 e2e 接进合并门槛：装 `@playwright/test`，用 Playwright 配置里的 `webServer` 在门槛内起 dev server，e2e 命令接进 `gate.script`，依赖的服务写进 `gate.services`，步骤见 [config 的「浏览器验收」](config.zh-CN.md#浏览器验收)；没接上时 `sandpipe doctor` 的「浏览器 e2e」一项会提示
   - `gate.script` 就是你愿意据此合并的门槛；有迁移时考虑配 `integrity`
   - 保持 onboard 生成的 `autoMerge: false`、`maxParallel: 1`
-- [ ] `cp .sandcastle/.env.example .sandcastle/.env`，填好流水线用的 token（`CLAUDE_CODE_OAUTH_TOKEN`，`claude setup-token` 生成，或 `ANTHROPIC_API_KEY`；GitLab 上换成 `GITLAB_TOKEN`——个人或项目访问令牌，要 `api` scope、对项目至少 Developer）；流水线只用这里面的 token，与本机 Claude Code 登录无关
+- [ ] `cp .sandcastle/.env.example .sandcastle/.env`，填好流水线用的 token（`CLAUDE_CODE_OAUTH_TOKEN`，`claude setup-token` 生成，或 `ANTHROPIC_API_KEY`；GitLab 上还要填 `GITLAB_TOKEN`——个人或项目访问令牌，要 `api` scope、对项目至少 Developer）；流水线只用这里面的 token，与本机 Claude Code 登录无关
 - [ ] 跑 `sandpipe doctor --fix` 建镜像（第一次要几分钟）
 
 ## 1. doctor 全过
