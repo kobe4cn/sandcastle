@@ -54,7 +54,7 @@ export default defineProject({
     /^\.claude\//,
     /^scripts\//,
     /^package\.json$/,
-    /^src\/(merge-checks|merge-flow|re-review|browser-gate|gate-queue|trust|protected-paths)\.ts$/,
+    /^src\/(merge-checks|merge-flow|re-review|browser-gate|gate-queue|trust|protected-paths|waiting-main)\.ts$/,
     /^src\/forges\/github\.ts$/,
   ],
 

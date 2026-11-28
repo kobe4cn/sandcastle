@@ -7,7 +7,7 @@ sandpipe 的能力已经够处理真实的票，我们打算让它处理 sandcas
 ## 决定
 
 - **运行版本只来自发版**。自举时流水线一律用固定版本号的 npm 包，用 `pnpm dlx sandpipe@<版本>` 跑（不能装成本仓库的依赖：包名和本仓库同名）；不用 `npm link`，也不用本地 `dist/` 跑 main。流水线合进 main 的改动，要等人手动发版、并用新版跑通一张试点票后把命令里的版本号改过去，才变成运行版本。
-- **决定"能不能合进来"的东西不让 agent 自己批准**。本仓库的 `protectedPaths`（ADR 0003）覆盖：`.github/workflows/`、`prompts/`、`.sandcastle/`、`claude/`、`.claude/`、`scripts/`、`package.json`，以及判合并、判票来源的 `src/merge-checks.ts`、`src/merge-flow.ts`、`src/re-review.ts`、`src/browser-gate.ts`、`src/gate-queue.ts`、`src/trust.ts`、`src/protected-paths.ts`、`src/forges/github.ts`（以 `.sandcastle/sandcastle.config.ts` 为准）。`src/` 的其余部分不保护，否则自动合并就没有意义了；删测试、放宽断言交给复审。
+- **决定"能不能合进来"的东西不让 agent 自己批准**。本仓库的 `protectedPaths`（ADR 0003）覆盖：`.github/workflows/`、`prompts/`、`.sandcastle/`、`claude/`、`.claude/`、`scripts/`、`package.json`，以及判合并、判票来源的 `src/merge-checks.ts`、`src/merge-flow.ts`、`src/re-review.ts`、`src/browser-gate.ts`、`src/gate-queue.ts`、`src/trust.ts`、`src/protected-paths.ts`、`src/waiting-main.ts`、`src/forges/github.ts`（以 `.sandcastle/sandcastle.config.ts` 为准）。`src/` 的其余部分不保护，否则自动合并就没有意义了；删测试、放宽断言交给复审。
 - **`.claude/` 里的副本跟运行版本走**。onboard / update 装进 `.claude/` 的 hook 和 skills 提交进仓库（沙箱从仓库 clone，要能看到），只在升级运行版本后用 `sandpipe update` 同步。它们和 `claude/` 下的源文件不一致是正常的，不要改成软链接，否则 agent 用的就是 main 上的最新 skill。
 - **自动合并分阶段放开**。先只开 PR（`autoMerge: false`）；#57（全部子票）、#60、#64 做完，并且只开 PR 的模式下连续 5 张 PR 人没改就直接合了，才对本仓库开自动合并。#64 由人手动做，不交给流水线。
 
