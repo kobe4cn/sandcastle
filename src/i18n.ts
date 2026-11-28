@@ -211,6 +211,8 @@ const zh = {
     `连续 3 次撞上认证失效、凭据一直没换（\`${line}\`）。这不是代码的问题：换好凭据（Claude 档案用 claude setup-token 生成新 token 填进 \`.sandcastle/.env\`，别家换 .env 里的 key）后去掉 ${stuckLabel}，票会在原分支上重跑。`,
   agentIdleTimeout: (seconds: number, stuckLabel: string) =>
     `agent 连续 ${seconds} 秒没有输出，按卡住处理（AgentIdleTimeoutError）。如果测试或构建本来就要跑这么久，在 \`.sandcastle/sandcastle.config.ts\` 里调大 \`agentIdleTimeoutS\`（现在是 ${seconds}），然后去掉 ${stuckLabel} 再运行。`,
+  ticketBudget: (used: string, limit: string, stuckLabel: string) =>
+    `这张票已经用掉 ${used} 个 token，达到 \`spendLimit.ticketTokens\` 的上限 ${limit}，不再开新的会话。先在 \`.sandcastle/sandcastle.config.ts\` 里调大 \`spendLimit.ticketTokens\` 再去掉 ${stuckLabel}；不调大的话，去掉标签后下一个会话会马上再次停下。`,
   pushedTo: (branch: string) => `已有的提交推到了分支 \`${branch}\`。`,
   pushedHere: "已有的提交推到了这个分支。",
   notPushed: "提交没能推上去，留在宿主机的本地分支上。",
@@ -436,6 +438,8 @@ const en: Messages = {
     `Hit an authentication failure 3 times in a row with the credentials never replaced (\`${line}\`). This isn't a code problem: once the credentials are fixed (for Claude profiles, generate a new token with claude setup-token and put it in \`.sandcastle/.env\`; for other vendors, swap the key in .env), remove ${stuckLabel} and the ticket reruns on its branch.`,
   agentIdleTimeout: (seconds, stuckLabel) =>
     `The agent produced no output for ${seconds} seconds and was treated as stuck (AgentIdleTimeoutError). If tests or builds legitimately take this long, raise \`agentIdleTimeoutS\` in \`.sandcastle/sandcastle.config.ts\` (currently ${seconds}), then remove ${stuckLabel} and run again.`,
+  ticketBudget: (used, limit, stuckLabel) =>
+    `This ticket has already spent ${used} tokens, reaching its \`spendLimit.ticketTokens\` cap of ${limit}; no further session will start. Raise \`spendLimit.ticketTokens\` in \`.sandcastle/sandcastle.config.ts\` before removing ${stuckLabel} — without raising it, the next session stops again right away.`,
   pushedTo: (branch) => `Existing commits were pushed to \`${branch}\`. `,
   pushedHere: "Existing commits were pushed to this branch.",
   notPushed: "The commits could not be pushed and remain on the local branch on the host. ",

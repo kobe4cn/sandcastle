@@ -1,5 +1,9 @@
 # 更新记录
 
+## Unreleased
+
+- 花费上限之一：新配置 `spendLimit.ticketTokens`（可选，不配不限）给一张票的累计 token 设上限。开每个会话之前（implement、review、rebase、re-review、prep 都算）把 `usage.jsonl` 里这张票的全部记录折算求和——每条有 `models` 取各模型四项之和、没有取主行，输入 / 缓存写 / 缓存读 / 输出四项相加（缓存读也计，上限要按这个口径设），`limited` 记录和第三方档案的记录同样计入，跨运行、重启后照旧有效；已用 ≥ 上限就不开这个会话，票打 `sandcastle:stuck`、评论（中英）写明已用多少、上限多少，并提示先调大上限再去掉标签，否则去掉后下一个会话马上再次停下（prep 这样停下时也写重试标记，不会每轮重跑）；会话中途超出不打断，下一个会话才停（`src/budget.ts` 新增 `recordTokens` / `ticketSpend` / `BudgetExceeded`，`src/profile.ts` 加 `spendLimit`，`src/models.ts` 的用量格式化 `k` 改名导出为 `formatK` 供评论共用；docs/config 中英、docs/internal、DEVELOPMENT.md 同步）（closes #151）
+
 ## 0.3.5
 
 - 通知发送失败时等 5 秒重试一次（fetch 抛错、5xx、429；4xx 不重试），重试也失败才打一行警告、按最后一次的结果写文案（HTTP 状态码或 #147 的错误类型），仍 fire-and-forget、从不 reject、不阻塞主流程；`run` 异常退出的 crashed 通知和 `doctor --notify-test` 不重试（总等待仍封顶 10 秒、交互命令马上出结论）（`src/notify.ts` 的 `createNotifier` 新增 `sleep` / `retry` 选项；docs/config 中英、docs/internal、DEVELOPMENT.md 同步）（closes #148）

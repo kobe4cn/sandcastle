@@ -38,6 +38,7 @@
 | `src/shell.ts` | 宿主机命令（超时、远端重试） |
 | `src/guide.ts` `src/pr-body.ts` `src/models.ts` | 票正文解析、空转退出原因、PR 正文、模型档案 |
 | `src/limit-wait.ts` | 撞用量限额后等到重置、醒来重读 models.json 再重跑 |
+| `src/budget.ts` | 单票花费上限（#151）：`recordTokens` / `ticketSpend` 把 `usage.jsonl` 里一张票的记录折算成 token（有 `models` 取各模型合计、没有取主行，四项相加，`limited` 也算），`BudgetExceeded` 由 runAgent 在开会话之前检查 `spendLimit.ticketTokens` 时抛出，落地的失败分支和 prep 的 catch 都打 stuck |
 | `src/resume-state.ts` | 评审已过的状态（#49）：标记评论的写 / 解析、重启后是否直接跑门槛 |
 | `src/re-review.ts` | fix / rebase 之后的复审（#70、#71、#72）：要不要复审、只看 fix 提交或 rebase 变化的 diff 命令、复审结论解析、复审前后 HEAD 不同或取不到按不通过 |
 | `src/waiting-main.ts` | main-broken 修好后的恢复（#86）：waiting-main 候选里没有被开着的 main-broken 票挡住的票号（复用 merge-flow 的 `mainBrokenBlocker`） |

@@ -83,9 +83,10 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import type { SandboxExecOptions } from "@ai-hero/sandcastle";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import {
-  CLAUDE_CREDENTIALS_CLEARED, agentFor, credentialsFingerprint, missingCredentials, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
+  CLAUDE_CREDENTIALS_CLEARED, agentFor, credentialsFingerprint, formatK, missingCredentials, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
   type AgentRun, type AllProfilesLimited, type ModelUsageEntry, type Phase, type UsageRecord,
 } from "./models.ts";
+import { BudgetExceeded, ticketSpend } from "./budget.ts";
 import { limitWait, sleepUntil, untilAfterLimit } from "./limit-wait.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
 import { acceptanceSection, browserSection, checkAcceptanceNotes, pageChangedByReview, replaceGenerated, replaceSection, restSections, sectionOf } from "./pr-body.ts";
@@ -213,6 +214,17 @@ async function runAgent<T extends AgentRun>(
   // The modelUsage of this attempt's session result lines (collected by agentFor's onModelUsage callback, subagent models included);
   // reset at the start of every (p) => call: after a limit switches profiles, the limited record carries only its own, the final one none of the failed attempts'.
   let modelUsage: Record<string, ModelUsageEntry>[] = [];
+  // 单票花费上限（#151）：开每个会话之前先算这张票已经用掉的 token（usage.jsonl 里它的全部记录，各阶段、各次运行、limited 的都算），
+  // 已用 ≥ 上限就不开这个会话，BudgetExceeded 抛给调用方——implement / review 等走落地的失败分支、prep 走自己的 catch，都打 stuck。
+  // 会话中途超出不打断，下一个会话才停；rebase、re-review 也走这里，同样受检。
+  // Per-ticket spend cap (#151): before each session starts, sum what this ticket has already spent (all its records in usage.jsonl — every phase, every run, limited ones included);
+  // at or over the cap the session doesn't open and BudgetExceeded goes to the caller — implement / review etc. take the landing's failure branch, prep its own catch, both marking the ticket stuck.
+  // A session already running is never cut short; the next one just doesn't start. Rebase and re-review go through here too and are checked the same way.
+  const cap = project.spendLimit.ticketTokens;
+  if (cap !== undefined) {
+    const used = ticketSpend(readUsage(issue));
+    if (used >= cap) throw new BudgetExceeded(used, cap);
+  }
   const { run, profile } = await runWithProfile(
     phase,
     name,
@@ -1766,7 +1778,10 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
     const envDown = gateEnvReason(outcome.reason);
     const authLine = agentAuthReason(outcome.reason);
     let stuckMessage: string;
-    if (isAgentIdleTimeout(outcome.reason)) stuckMessage = M.agentIdleTimeout(AGENT_IDLE_TIMEOUT_S, LABEL.stuck);
+    // 单票花费上限（#151）：runAgent 开会话之前抛的 BudgetExceeded 一路传到这里（本进程内创建，没跨沙箱，instanceof 认得出）。
+    // Per-ticket spend cap (#151): a BudgetExceeded thrown by runAgent before a session starts reaches here unchanged (created inside this process, never crossing the sandbox, so instanceof works).
+    if (outcome.reason instanceof BudgetExceeded) stuckMessage = M.ticketBudget(formatK(outcome.reason.used), formatK(outcome.reason.limit), LABEL.stuck);
+    else if (isAgentIdleTimeout(outcome.reason)) stuckMessage = M.agentIdleTimeout(AGENT_IDLE_TIMEOUT_S, LABEL.stuck);
     else if (authLine !== null) stuckMessage = M.authExhausted(authLine, LABEL.stuck);
     else if (envDown !== null) stuckMessage = M.gateEnvDown(envDown, LABEL.stuck);
     else if (PODMAN_TRANSIENT.test(String(outcome.reason))) stuckMessage = M.podmanDown(errorLine(outcome.reason));
@@ -2532,34 +2547,43 @@ async function schedule(): Promise<ScheduleResult> {
       if (s.ok && s.value) void notifier({ event: "stuck", issue: String(issue.number), url: forge.issueUrl?.(String(issue.number)), reason: M.notifyPrepStuck });
       else if (!s.ok) console.warn(t(`  ⚠ 查 #${issue.number} 有没有打上 ${LABEL.stuck} 失败：`, `  ⚠ Checking whether #${issue.number} got ${LABEL.stuck} failed: `) + s.out.slice(0, 200));
     } catch (e) {
-      const limit = limitWait(e);
-      if (limit) {
-        const until = new Date(limit.until).toLocaleString();
-        console.log(t(`  ⏸ prep #${issue.number} 撞上用量限额，${limit.why}${until} 前不再 prep`, `  ⏸ prep #${issue.number} hit the usage limit; ${limit.why}no more prep until ${until}`));
-        prepLimitedUntil = limit.until;
-        if (!prepLimitNotified) {
-          void notifier({ event: "limited", issue: String(issue.number), url: forge.issueUrl?.(String(issue.number)), reason: M.notifyPrepLimited(until) });
-          prepLimitNotified = true;
-        }
-        break;
-      }
-      // 认证失效（#62 之三）：环境类错误，不算失败——置标志（主循环暂停开新会话）后 break，跳过下面的 prepTried.set，凭据好了下次调度重新 prep。
-      // An auth failure (#62 part 3): an environment-style error, not a failure — set the flag (the main loop pauses new sessions) and break, skipping prepTried.set below so prep reruns next pass once the credentials work.
-      // 凭据一直没换时最多撞 3 次（含第一次）：到上限清掉暂停标志、删掉计数，落到下面的普通失败出口（记错误、写 prepTried），不再每 30 分钟重跑卡住整条运行。
-      // With the credentials never replaced it hits at most 3 times (the first included): at the cap, clear the pause flag and the count and fall through to the ordinary failure exit below (log the error, write prepTried) instead of rerunning every 30 minutes and hanging the whole run.
-      const auth = agentAuthReason(e);
-      if (auth !== null) {
-        const hits = nextAuthHits(prepAuthHits.get(issue.number), credentialsFingerprint());
-        if (!authHitCapped(hits)) {
-          prepAuthHits.set(issue.number, hits);
-          onAuthDown(auth);
+      // 单票花费上限（#151）：prep 会话没开成（runAgent 开会话之前抛的 BudgetExceeded）。票停下——markStuck 评论写明
+      // 已用和上限、发 stuck 通知——但不走下面的错误出口：照常落到 prepTried.set，本轮不再重跑这张票。
+      // Per-ticket spend cap (#151): the prep session never started (a BudgetExceeded thrown by runAgent before a session opens). The ticket is stopped —
+      // markStuck comments the spend and the cap and sends the stuck notification — without taking the error exit below: it still falls through to prepTried.set, so this pass doesn't retry the ticket.
+      if (e instanceof BudgetExceeded) {
+        markStuck(String(issue.number), M.ticketBudget(formatK(e.used), formatK(e.limit), LABEL.stuck));
+        console.log(t(`  ✋ prep #${issue.number} 花费超限，打 ${LABEL.stuck}`, `  ✋ prep #${issue.number} is over its spend cap; labelled ${LABEL.stuck}`));
+      } else {
+        const limit = limitWait(e);
+        if (limit) {
+          const until = new Date(limit.until).toLocaleString();
+          console.log(t(`  ⏸ prep #${issue.number} 撞上用量限额，${limit.why}${until} 前不再 prep`, `  ⏸ prep #${issue.number} hit the usage limit; ${limit.why}no more prep until ${until}`));
+          prepLimitedUntil = limit.until;
+          if (!prepLimitNotified) {
+            void notifier({ event: "limited", issue: String(issue.number), url: forge.issueUrl?.(String(issue.number)), reason: M.notifyPrepLimited(until) });
+            prepLimitNotified = true;
+          }
           break;
         }
-        prepAuthHits.delete(issue.number);
-        onAuthCapped();
+        // 认证失效（#62 之三）：环境类错误，不算失败——置标志（主循环暂停开新会话）后 break，跳过下面的 prepTried.set，凭据好了下次调度重新 prep。
+        // An auth failure (#62 part 3): an environment-style error, not a failure — set the flag (the main loop pauses new sessions) and break, skipping prepTried.set below so prep reruns next pass once the credentials work.
+        // 凭据一直没换时最多撞 3 次（含第一次）：到上限清掉暂停标志、删掉计数，落到下面的普通失败出口（记错误、写 prepTried），不再每 30 分钟重跑卡住整条运行。
+        // With the credentials never replaced it hits at most 3 times (the first included): at the cap, clear the pause flag and the count and fall through to the ordinary failure exit below (log the error, write prepTried) instead of rerunning every 30 minutes and hanging the whole run.
+        const auth = agentAuthReason(e);
+        if (auth !== null) {
+          const hits = nextAuthHits(prepAuthHits.get(issue.number), credentialsFingerprint());
+          if (!authHitCapped(hits)) {
+            prepAuthHits.set(issue.number, hits);
+            onAuthDown(auth);
+            break;
+          }
+          prepAuthHits.delete(issue.number);
+          onAuthCapped();
+        }
+        logErrorDetail(ERROR_LOG, `prep #${issue.number}`, e, appendFileSync);
+        console.error(t(`  ✗ prep #${issue.number} 出错：`, `  ✗ prep #${issue.number} error: `) + errorLine(e) + t(`（详情见 ${ERROR_LOG}）`, ` (details in ${ERROR_LOG})`));
       }
-      logErrorDetail(ERROR_LOG, `prep #${issue.number}`, e, appendFileSync);
-      console.error(t(`  ✗ prep #${issue.number} 出错：`, `  ✗ prep #${issue.number} error: `) + errorLine(e) + t(`（详情见 ${ERROR_LOG}）`, ` (details in ${ERROR_LOG})`));
     }
     const after = attempt(() => forge.issueUpdatedAt(String(issue.number)));
     if (after.ok) prepTried.set(issue.number, after.value);
