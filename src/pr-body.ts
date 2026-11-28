@@ -174,3 +174,52 @@ export const replaceSection = (body: string, title: string, content: string): st
   const end = stop === -1 ? lines.length : stop;
   return [...lines.slice(0, start), ...section, ...(end < lines.length ? [""] : []), ...lines.slice(end)].join("\n");
 };
+
+/**
+ * 取正文里 `## <title>` 一节（标题行到下一个二级标题行之前，含标题行）；正文里没有这一节时 undefined。
+ * 供落地时读回核对：读回的正文和本轮的 rest 各取一次 Review 一节比对，两边切到同一个边界即一致
+ * （评审摘要里可能有 `## ` 二级标题，两边都在它那儿截断，不影响比较）。
+ * The `## <title>` section of the body (from the heading to before the next level-2 heading, heading included); undefined when absent.
+ * For the read-back check at landing: take the Review section once from the read-back body and once from this round's rest and compare —
+ * both cut at the same boundary, so they match (a review summary may contain `## ` headings; both sides truncate there, which doesn't affect the comparison).
+ */
+export const sectionOf = (body: string, title: string): string | undefined => {
+  const lines = body.split("\n");
+  const start = lines.findIndex((line) => (headingOf(line) ?? "").startsWith(title));
+  if (start === -1) return undefined;
+  const stop = lines.findIndex((line, i) => i > start && headingOf(line) !== undefined);
+  return lines.slice(start, stop === -1 ? lines.length : stop).join("\n");
+};
+
+/**
+ * 把正文里由工具生成的各节整段换成本轮的 rest（restSections 的输出，以 `## Review` 开头）：
+ * 从 `## Review` 标题行起、到 `## Commits` 标题行之前（没有 Commits 就到末尾），前后各留一个空行。
+ * PR 再走一轮时上一轮的结论不在正文里保留（只留在更新评论里）：上一轮有、这一轮没有的节（如 Browser check）随整段消失，
+ * 不能对每节单独 replaceSection——Gate / Budget / Usage 的 `<details>` 挂在最后一个 `##` 节下会被重复或误删，缺失的节会被插到 Closes 后面。
+ * `## Commits` 及之后（含首次开 PR 时 gh --attach 追加的截图行）逐字保留；正文里没有 `## Review` 时插在 `## Commits` 之前
+ * （没有 Commits 就追加到末尾），不走 replaceSection 的「插在 Closes 后面」。评审摘要里可能有 `## ` 二级标题，
+ * 所以只认 `## Commits` 这一个终点、不靠中间的二级标题。
+ * Wholesale-replace the tool-generated sections in the body with this round's rest (restSections output, starting with `## Review`):
+ * from the `## Review` heading to before the `## Commits` heading (to the end when there's no Commits), a blank line on each side.
+ * On a redo the previous round's conclusions don't stay in the body (they live on in the update comments): sections present last round
+ * but not this one (e.g. Browser check) vanish with the whole span — per-section replaceSection won't do: the Gate / Budget / Usage
+ * `<details>` hang off the last `##` section and would be duplicated or dropped, and missing sections would be inserted after Closes.
+ * `## Commits` and everything after (including screenshot lines gh --attach appended when the PR was first opened) stays verbatim;
+ * with no `## Review` in the body, insert before `## Commits` (append at the end when there's no Commits) instead of replaceSection's
+ * "insert after Closes". A review summary may contain `## ` headings, so `## Commits` is the only end marker, not any intermediate heading.
+ */
+export const replaceGenerated = (body: string, rest: string): string => {
+  const lines = body.split("\n");
+  const section = rest.replace(/\s+$/, "").split("\n"); // 收尾空行不进正文，与下一节之间统一空一行 / trailing blank lines are dropped; exactly one blank line before the next section
+  const start = lines.findIndex((line) => (headingOf(line) ?? "").startsWith("Review"));
+  const commits = lines.findIndex((line) => (headingOf(line) ?? "").startsWith("Commits"));
+  if (start === -1) {
+    const at = commits === -1 ? lines.length : commits; // 插入点：Commits 之前，没有就到末尾 / insertion point: before Commits, or the end when absent
+    const before = at > 0 && lines[at - 1]!.trim() !== "" ? [""] : []; // 前面留一个空行（前面已是空行就不重复）/ one blank line before (skip when the line above is already blank)
+    const after = at < lines.length ? [""] : [];
+    return [...lines.slice(0, at), ...before, ...section, ...after, ...lines.slice(at)].join("\n");
+  }
+  // Review 一节在 Commits 之后时按没有终点处理（不会出现在真实正文里，只求不切错）。 / When Review sits after Commits (never in real bodies), treat it as having no end marker.
+  const end = commits > start ? commits : lines.length;
+  return [...lines.slice(0, start), ...section, ...(end < lines.length ? [""] : []), ...lines.slice(end)].join("\n");
+};

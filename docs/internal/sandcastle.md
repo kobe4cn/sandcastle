@@ -180,5 +180,5 @@ Sandcastle 处理期间，PR 作者不要往这个分支推提交。本地和远
 和 Browser check 的区别：Browser check 是 implementer **在沙箱里**做过的验证记录（临时验收库、playwright 截图），沙箱关掉就没法照着重做；验收说明是写给**人在宿主机上照做**的步骤（开发库 `crm_platform`、`npm run dev`）。脚本把固定的准备段落拼在文件内容前面——`git checkout <分支>`；改了页面的票（worktree 里有 `.browser-check/`，或 reviewer 输出的 `<browser-check>` 标签是 `done` / `missing`）再加起 dev server、`scripts/browser-lab.ts` 建验收租户、Magic Link 登录（项目没配 `acceptancePrep` 时只写「本票改了页面，需要起 dev server（项目没配准备步骤）」）——拼装与格式检查是 `.sandcastle/pr-body.ts` 的纯函数。
 
 - 缺失或格式不对：正文该节写「⚠️ implementer 没有写验收说明」或「⚠️ 验收说明格式不对：<问题>」，**不自动合并**（「什么时候自动合并」的第 4 条），打 `sandcastle:pr-open` 并在 PR 上评论原因。reviewer 也会独立核对验收说明（对照 diff 和验收标准，不执行步骤），不合格给 `revise`——两道检查互不替代。
-- 重做（人在 PR 上打回）时：implementer 每次会话完整重写这个文件（新 worktree 里旧文件已经没了），脚本用 `gh pr edit` **只替换**正文里的 `## 验收说明` 一节，其余逐字保留，更新评论里注明「验收说明已更新」。
+- 重做（人在 PR 上打回）时：implementer 每次会话完整重写这个文件（新 worktree 里旧文件已经没了），脚本用 `gh pr edit` 替换正文里的 `## 验收说明` 一节，并把其余由工具生成的各节（`## Review` 到 `## Commits` 之前的 Review / Browser check / Protected paths 及 Gate / Budget / Usage）**整段换成本轮的**：上一轮有、这一轮没有的节（如 Browser check）不再保留，旧结论只留在「验收说明已更新」的评论里。写完后读回正文，核对 Review 一节与本轮结论一致才继续；不一致（编辑没保存上）抛错、打 `sandcastle:stuck`，不合并。
 - 外部 PR：不改正文（那是 PR 作者写的），验收说明贴在「Sandcastle 更新了这个分支」的评论里。

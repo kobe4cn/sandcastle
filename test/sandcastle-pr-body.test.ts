@@ -1,7 +1,7 @@
 // test/sandcastle-pr-body.test.ts —— Sandcastle PR 正文的验收说明（`.sandcastle/pr-body.ts`，纯函数、不连库）：
 // 格式检查（三个小标题、编号步骤、不出现二级标题）、准备段落的三种形态（配了准备步骤、改了页面但没配、没改页面）、正文各节顺序与折叠、只替换一节。
 import { describe, expect, it } from 'vitest';
-import { acceptanceSection, browserSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from '../src/pr-body.ts';
+import { acceptanceSection, browserSection, checkAcceptanceNotes, pageChangedByReview, replaceGenerated, replaceSection, restSections, sectionOf } from '../src/pr-body.ts';
 import { messages } from '../src/i18n.ts';
 import crm from '../examples/duckdb_crm/sandcastle.config.ts';
 
@@ -207,5 +207,67 @@ describe('Sandcastle 只替换正文一节 replaceSection', () => {
     expect(replaceSection('Closes #7', '验收说明', '## 验收说明\n\n内容\n\n### 做了什么\n\n…')).toBe(
       'Closes #7\n\n## 验收说明\n\n内容\n\n### 做了什么\n\n…',
     );
+  });
+});
+
+describe('Sandcastle 每轮替换正文的工具生成节 replaceGenerated', () => {
+  const zh = messages('zh');
+  // 第一轮：无 Browser check / Protected paths。 / Round one: no Browser check / Protected paths.
+  const first = restSections({ review: '第一轮摘要。', gate: '第一轮门槛。', budget: '第一轮预算。', usage: '第一轮用量。' });
+  // 第二轮：带 Browser check（评审结论 + RESULT.md）和 Protected paths。 / Round two: with Browser check (verdict + RESULT.md) and Protected paths.
+  const second = restSections({
+    review: '第二轮摘要。',
+    browser: browserSection({ result: '- ✅ 列表正常（list.png）', shots: ['/tmp/list.png'] }, false, zh, '- ✅ 列表正常：截图里列表正确'),
+    protected: 'src/trust.ts（**Protected** 放行）',
+    gate: '第二轮门槛。', budget: '第二轮预算。', usage: '第二轮用量。',
+  });
+  // 已有 PR 的正文：验收说明 + 第一轮各节 + Commits 及 gh --attach 追加在末尾的截图行。
+  // Body of the existing PR: acceptance notes + round-one sections + Commits and the screenshot lines gh --attach appended at the end.
+  const tail = ['## Commits', '', '- 第一轮提交', '', '![shot](https://example.com/a.png)'].join('\n');
+  const body = `Closes #7\n\n## 验收说明\n\n旧的验收说明。\n\n${first}\n\n${tail}`;
+
+  it('整段换成本轮的内容：新出现的节在、消失的节不在，Gate 等不重复，验收说明与 Commits 起逐字不变', () => {
+    const replaced = replaceGenerated(body, second);
+    // 新出现的节带本轮的评审结论和 RESULT.md（验收标准 2）。 / Newly present sections carry this round's verdict and RESULT.md (criterion 2).
+    expect(replaced).toContain('## Browser check');
+    expect(replaced).toContain('- ✅ 列表正常：截图里列表正确');
+    expect(replaced).toContain('- ✅ 列表正常（list.png）');
+    expect(replaced).toContain('## Protected paths');
+    // 上一轮的结论不在正文里保留。 / Last round's conclusions don't stay in the body.
+    expect(replaced).not.toContain('第一轮摘要。');
+    // `<details>` 挂在最后一个 `##` 节下，整段替换后不重复。 / `<details>` hangs off the last `##` section; no duplicates after the wholesale replace.
+    expect(replaced.split('<details><summary>Gate</summary>').length).toBe(2);
+    // 验收说明（replaceSection 单独替换的那节）不受影响。 / The acceptance notes (replaced separately by replaceSection) are untouched.
+    expect(replaced).toContain('旧的验收说明。');
+    // `## Commits` 及之后（含 gh 追加的截图行）逐字不变。 / `## Commits` and everything after (including gh-appended screenshot lines) stay verbatim.
+    expect(replaced.slice(replaced.indexOf('## Commits'))).toBe(tail);
+    // 落地读回核对的两边：读回正文与本轮 rest 各取一次 Review 一节，一样。 / The two sides of the landing read-back check: the Review section of the edited body and of this round's rest match.
+    expect(sectionOf(replaced, 'Review')).toBe(sectionOf(second, 'Review'));
+  });
+
+  it('上一轮有、这一轮没有的节随整段消失', () => {
+    const replaced = replaceGenerated(body.replace(first, restSections({
+      review: '第一轮摘要。',
+      browser: browserSection({ result: '- ✅ 列表正常（list.png）', shots: ['/tmp/list.png'] }, false, zh),
+      gate: '第一轮门槛。', budget: '第一轮预算。', usage: '第一轮用量。',
+    })), first);
+    expect(replaced).not.toContain('## Browser check');
+    expect(replaced).toContain('## Review');
+  });
+
+  it('正文里没有 `## Review` 时插在 `## Commits` 之前，不走 replaceSection 的「插在 Closes 后面」', () => {
+    const noReview = `Closes #7\n\n## 验收说明\n\n旧的验收说明。\n\n${tail}`;
+    expect(replaceGenerated(noReview, second)).toBe(`Closes #7\n\n## 验收说明\n\n旧的验收说明。\n\n${second}\n\n${tail}`);
+  });
+
+  it('没有 `## Commits` 时追加到末尾', () => {
+    expect(replaceGenerated(`Closes #7\n\n## 验收说明\n\n旧的验收说明。`, second)).toBe(
+      `Closes #7\n\n## 验收说明\n\n旧的验收说明。\n\n${second}`,
+    );
+  });
+
+  it('sectionOf 取 `## 标题` 一节到下一个二级标题前（含节与下一节之间的空行），没有这一节时 undefined', () => {
+    expect(sectionOf(`Closes #7\n\n## Review\n\n摘要。\n\n## Commits\n\n- 提交`, 'Review')).toBe('## Review\n\n摘要。\n');
+    expect(sectionOf('Closes #7', 'Review')).toBeUndefined();
   });
 });

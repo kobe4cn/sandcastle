@@ -87,7 +87,7 @@ import {
 } from "./models.ts";
 import { limitWait, sleepUntil, untilAfterLimit } from "./limit-wait.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
-import { acceptanceSection, browserSection, checkAcceptanceNotes, pageChangedByReview, replaceSection, restSections } from "./pr-body.ts";
+import { acceptanceSection, browserSection, checkAcceptanceNotes, pageChangedByReview, replaceGenerated, replaceSection, restSections, sectionOf } from "./pr-body.ts";
 import type { ForgeComment, ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { mainBrokenBlocker, type MergeFlowDeps, type MergeResult, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
 import { loadProject } from "./profile.ts";
@@ -839,15 +839,35 @@ async function pushAndOpenPr(issue: Issue, notes: PrNotes, shots: string[]): Pro
   if (!pushed.ok) throw new Error(`push ${issue.branch} ${t("失败：", "failed: ")}${pushed.out.slice(0, 500)}`);
   const existing = forge.findPr(issue.branch, "open");
   if (existing) {
-    // 已有 PR：自己的分支只替换正文里的「验收说明」一节，其余（上次的 Review / Gate 记录）逐字保留；
+    // 已有 PR：自己的分支替换正文里的「验收说明」一节，其余工具生成的各节（Review / Browser check / Gate…）整段换成本轮的，
+    // 上一轮的结论只留在更新评论里；写完读回核对 Review 一节，和本轮不一致就不往下走（不合并）。
     // 外部 PR 不动别人写的正文，验收说明贴在评论里。
-    // Existing PR: for our own branch, replace only the acceptance notes section, keeping the rest (earlier Review / Gate records) verbatim;
-    // for an external PR, don't touch the author's body; post the acceptance notes as a comment.
+    // Existing PR: for our own branch, replace the acceptance notes section and wholesale-replace the tool-generated sections
+    // (Review / Browser check / Gate…) with this round's; last round's conclusions live on only in the update comments.
+    // After writing, read the body back and check the Review section; a mismatch stops the flow (no merge).
+    // For an external PR, don't touch the author's body; post the acceptance notes as a comment.
     if (isExternal(issue)) {
       forge.commentPr(existing, `${M.prUpdated}\n\n## ${M.notesTitle}\n\n${notes.acceptance}\n\n${notes.rest}`, shots);
     } else {
       const body = forge.prBody(existing);
-      forge.editPrBody(existing, replaceSection(body, M.notesTitle, `## ${M.notesTitle}\n\n${notes.acceptance}`));
+      forge.editPrBody(
+        existing,
+        replaceGenerated(replaceSection(body, M.notesTitle, `## ${M.notesTitle}\n\n${notes.acceptance}`), notes.rest),
+      );
+      // 读回核对（编辑可能没保存上）：两边各取 Review 一节，去首尾空白、\r\n 归一后不一致就抛错，
+      // 由落地的兜底打 stuck、评论原因，不会合并。文案避开 TRANSIENT 会匹配的词（不能被当临时错误重跑）。
+      // Read-back check (the edit may not have stuck): take the Review section from both sides, and throw on mismatch after
+      // trimming and normalizing \r\n; the landing guard then marks it stuck and comments why, so it won't merge.
+      // The wording avoids words TRANSIENT matches (it must not be retried as a transient error).
+      const norm = (s: string | undefined) => s?.replace(/\r\n/g, "\n").trim();
+      if (norm(sectionOf(forge.prBody(existing), "Review")) !== norm(sectionOf(notes.rest, "Review"))) {
+        throw new Error(
+          t(
+            `PR #${existing} 正文读回核对失败：Review 一节与本次结论不一致（编辑可能没有保存上），不合并。`,
+            `PR #${existing} body read-back check failed: its Review section differs from this round's conclusion (the edit may not have stuck); not merging.`,
+          ),
+        );
+      }
       forge.commentPr(existing, `${M.prUpdatedNotes}\n\n${notes.rest}`, shots);
     }
     return existing;
