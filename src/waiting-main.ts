@@ -29,3 +29,15 @@ export function resumableWaitingMain(
 export function labelsToRemoveOnLeave(labels: Pick<Labels, "prOpen" | "merging" | "waitingMain">, from: "prOpen" | "merging"): string[] {
   return [labels[from], labels.waitingMain];
 }
+
+/**
+ * 恢复时打完 merging 之后要不要去 pr-open：打 merging 失败就不去，保留 pr-open，下一轮再试。
+ * 否则票只剩 picked + prepped + waiting-main，plan 会重新实现它；重新实现后若因别的原因留 PR，
+ * 票又同时带 waiting-main 和 pr-open，下一轮会被 resumeWaitingMain 自动合并（fail-open）。
+ * Whether to remove pr-open on resume once merging was added: if adding merging failed, keep pr-open and retry next pass.
+ * Otherwise the ticket is left with picked + prepped + waiting-main and plan reimplements it; a PR then left for another
+ * reason would carry waiting-main and pr-open again and be auto-merged by resumeWaitingMain next pass (fail-open).
+ */
+export function shouldRemovePrOpenOnResume(mergingLabelled: boolean): boolean {
+  return mergingLabelled;
+}

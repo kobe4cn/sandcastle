@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { labelsToRemoveOnLeave, resumableWaitingMain } from "../src/waiting-main.ts";
+import { labelsToRemoveOnLeave, resumableWaitingMain, shouldRemovePrOpenOnResume } from "../src/waiting-main.ts";
 import { DEFAULT_LABELS } from "../src/profile.ts";
 
 /** main-broken 修好后的恢复（#86）：waiting-main 候选里哪些票这一轮可以回到合并流程。 */
@@ -27,5 +27,16 @@ describe("labelsToRemoveOnLeave", () => {
 
   it("没有开着的 PR 交回调度（离开 merging）→ 去掉 merging 和 waiting-main", () => {
     expect(labelsToRemoveOnLeave(DEFAULT_LABELS, "merging")).toEqual(["sandcastle:merging", "sandcastle:waiting-main"]);
+  });
+});
+
+/** 恢复时先打 merging 再去 pr-open：打 merging 失败就不去 pr-open，免得票只剩 picked 被 plan 重新实现。 */
+describe("shouldRemovePrOpenOnResume", () => {
+  it("打 merging 成功 → 去 pr-open", () => {
+    expect(shouldRemovePrOpenOnResume(true)).toBe(true);
+  });
+
+  it("打 merging 失败 → 不去 pr-open，下一轮再试", () => {
+    expect(shouldRemovePrOpenOnResume(false)).toBe(false);
   });
 });

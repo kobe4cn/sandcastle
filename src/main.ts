@@ -111,7 +111,7 @@ import { detectProject } from "./detect.ts";
 import { probeTcp, servicesProblem } from "./preflight.ts";
 import { manual } from "./onboard.ts";
 import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
-import { labelsToRemoveOnLeave, resumableWaitingMain } from "./waiting-main.ts";
+import { labelsToRemoveOnLeave, resumableWaitingMain, shouldRemovePrOpenOnResume } from "./waiting-main.ts";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -934,13 +934,15 @@ function reopenRequestedRevisions() {
  * 在 resumeMerging 里强制 rebase、重跑门槛后合并。
  * 标签顺序：先加 merging、再去 pr-open。中途崩了的票同时带两个标签，恢复循环会排除它，但这里的筛选
  * 不排除 merging，下一轮会把 pr-open 去掉补完；反过来先去 pr-open 的话，崩了会被 plan 重新实现。
+ * 打 merging 失败时同理不去 pr-open（shouldRemovePrOpenOnResume），下一轮再试。
  * 列 main-broken 票出错时这一轮不恢复（fail-closed，和挡住时的判定同口径）。
  * The resume after main-broken was fixed (#86, ADR 0007 "Resume"): tickets with waiting-main + pr-open and no open
  * main-broken holding them go back to the merge flow — labelled merging, pr-open removed — and the merging-resume
  * loop below picks them up in the same pass, where resumeMerging forces the rebase and reruns the gate before merging.
  * Label order: merging on first, pr-open off second. A ticket crashed in between carries both labels; the resume loop
  * skips it, but the filter here doesn't exclude merging, so the next pass finishes removing pr-open. Removing pr-open
- * first would let plan reimplement a crashed ticket. A main-broken listing error skips resuming for the pass
+ * first would let plan reimplement a crashed ticket. Likewise, if adding merging fails pr-open stays on
+ * (shouldRemovePrOpenOnResume) and the next pass retries. A main-broken listing error skips resuming for the pass
  * (fail-closed, the same call the hold itself makes).
  */
 function resumeWaitingMain() {
@@ -952,7 +954,9 @@ function resumeWaitingMain() {
   const candidates = listIssues([LABEL.picked, LABEL.waitingMain, LABEL.prOpen], [LABEL.stuck]);
   const resumable = resumableWaitingMain(candidates, open.value).filter((n) => allowed(n) && !running.has(String(n)));
   for (const n of resumable) {
-    markMerging(String(n), true);
+    // 打 merging 失败就不去 pr-open，下一轮再试：否则票只剩 picked，会被 plan 重新实现，带着 waiting-main 留下的新 PR 会被自动合并。
+    // If adding merging failed, keep pr-open and retry next pass: otherwise plan would reimplement the ticket and a new PR left with waiting-main would be auto-merged.
+    if (!shouldRemovePrOpenOnResume(markMerging(String(n), true))) continue;
     const off = attempt(() => forge.removeLabel(String(n), LABEL.prOpen));
     if (!off.ok && !issueClosed(String(n)))
       console.warn(t(`  ⚠ 去掉 #${n} 的 ${LABEL.prOpen} 失败：`, `  ⚠ Removing ${LABEL.prOpen} from #${n} failed: `) + off.out.slice(0, 200));
@@ -1609,8 +1613,10 @@ let mergingLabelEnsured = false;
 /**
  * 打 / 去 sandcastle:merging：第一次用时先建标签（老项目没有，和 flaky、main-broken 一样由脚本自己建）。出错只警告。
  * Add / remove sandcastle:merging: create the label on first use (older projects lack it; like flaky and main-broken the script creates it). Errors only warn.
+ * 返回打 / 去标签是否成功（resumeWaitingMain 用它决定要不要去 pr-open）。
+ * Returns whether the label change succeeded (resumeWaitingMain uses it to decide whether to remove pr-open).
  */
-function markMerging(issueId: string, on: boolean) {
+function markMerging(issueId: string, on: boolean): boolean {
   if (on && !mergingLabelEnsured) {
     mergingLabelEnsured = true;
     attempt(() => forge.ensureLabel(LABEL.merging, "bfdadc", M.mergingLabelDesc));
@@ -1621,7 +1627,7 @@ function markMerging(issueId: string, on: boolean) {
       on
         ? t(`  ⚠ 给 #${issueId} 打 ${LABEL.merging} 失败（中断后重启会重新实现）：`, `  ⚠ Labelling #${issueId} ${LABEL.merging} failed (a restart after an interrupt would reimplement it): `) + r.out.slice(0, 200)
         : t(`  ⚠ 去掉 #${issueId} 的 ${LABEL.merging} 失败：`, `  ⚠ Removing ${LABEL.merging} from #${issueId} failed: `) + r.out.slice(0, 200),
-    );
+    );  return r.ok;
 }
 
 let waitingMainLabelEnsured = false;
