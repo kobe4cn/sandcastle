@@ -541,6 +541,45 @@ describe("N1d 别家档案的环境变量", () => {
 });
 
 // ---------------------------------------------------------------------------
+describe("missingCredentials（run 每轮预检用的凭据检查，#62）", () => {
+  const VAR = "SC_MODELS_TEST_GLM_KEY";
+  const glm = () => ({
+    model: "glm-4.6",
+    limitPattern: "quota",
+    env: { ANTHROPIC_BASE_URL: "https://glm.example/api", ANTHROPIC_AUTH_TOKEN: `\${${VAR}}`, ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.5-air" },
+  });
+  // 宿主机上的 Claude 凭据会被当成 .env 空值的来源，用例里先拿掉，结束时还原。
+  let savedCreds: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    delete process.env[VAR];
+    savedCreds = Object.fromEntries(m.CLAUDE_CREDENTIALS.map((k) => [k, process.env[k]]));
+    for (const k of m.CLAUDE_CREDENTIALS) delete process.env[k];
+  });
+  afterEach(() => {
+    for (const k of m.CLAUDE_CREDENTIALS) {
+      if (savedCreds[k] === undefined) delete process.env[k];
+      else process.env[k] = savedCreds[k];
+    }
+  });
+
+  it("没调 reloadModels（config 还没读）或只有别家档案：不算缺失，返回空", () => {
+    expect(m.missingCredentials()).toEqual([]);
+    project({ profiles: { glm: glm() }, phases: phasesAll(["glm"]) }, `${VAR}=k\nGH_TOKEN=x\n`);
+    m.reloadModels();
+    expect(m.missingCredentials()).toEqual([]);
+  });
+
+  it("被用到的档案里有 Claude 的、.env 没有任何 Claude 凭据：返回变量名；补上 token 后恢复为空", () => {
+    project({ profiles: { glm: glm(), opus: claude() }, phases: phasesAll(["opus"]) }, `${VAR}=k\nGH_TOKEN=x\n`);
+    m.reloadModels();
+    expect(m.missingCredentials()).toEqual(["CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY"]);
+    writeFileSync(".sandcastle/.env", `CLAUDE_CODE_OAUTH_TOKEN=tok\n${VAR}=k\nGH_TOKEN=x\n`);
+    m.reloadModels();
+    expect(m.missingCredentials()).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe("N1e 热重载 reloadModels", () => {
   it("改 models.json 后再 reloadModels 生效", async () => {
     project({ profiles: { opus: claude(), sonnet: claude("claude-sonnet-4-5") }, phases: phasesAll(["opus"]) });

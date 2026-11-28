@@ -273,6 +273,19 @@ export function inspectModels(): { phases: Record<Phase, readonly string[]>; use
 }
 
 /**
+ * 被阶段用到的档案里有 Claude（非别家）的、而 .sandcastle/.env 里一个 Claude 凭据都没有：返回 [变量名]（join 成一句）；其他情况返回空。
+ * run 每轮预检用（#62）。config 还没读过（没调 reloadModels）时不算缺失。别家档案缺 ${VAR} 的警告 reloadModels 已经在打。
+ * A Claude (non-third-party) profile is used but .sandcastle/.env has none of the Claude credentials: returns [the variable names] (joined into one); empty otherwise.
+ * Used by run's per-pass preflight (#62). An unread config (reloadModels not called yet) doesn't count as missing. Warnings about another vendor's missing ${VAR} are already printed by reloadModels.
+ */
+export function missingCredentials(): string[] {
+  const c = config;
+  if (!c) return [];
+  const used = [...new Set(Object.values(c.phases).flat())].map((name) => c.profiles.get(name)!);
+  return used.some((p) => !p.thirdParty) && claudeCredentials().length === 0 ? [CLAUDE_CREDENTIALS.join(" / ")] : [];
+}
+
+/**
  * 每轮开头调用。第一次读不成直接抛（运行起不来）；之后读不成就警告并沿用上一份，不打断正在跑的运行（这个提示每轮都打，要人去修）。
  * 模型行启动时打印一次，之后只在 models.json 内容变化时打「模型配置已更新」；警告只在警告文本变化时重打。
  * 内容按 JSON 解析后再序列化来比：空白和缩进不算变化，键的顺序变了算；改坏后又改回原样不算变化。

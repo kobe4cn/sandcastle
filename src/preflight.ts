@@ -1,5 +1,7 @@
 // 启动预检：门槛依赖的服务（gate.services）在宿主机上能不能连上、磁盘剩余空间够不够。sandpipe run 启动时和 doctor 都用。
 // Startup preflight: whether the services the gate depends on (gate.services) are reachable from the host, and whether there's enough free disk space. Used at sandpipe run startup and by doctor.
+// run 每轮调度前的预检也在这里（preflightProblems）：平台登录、Claude 凭据、磁盘。
+// The per-pass preflight of run (preflightProblems) lives here too: forge login, Claude credentials, disk.
 
 import { statfsSync } from "node:fs";
 import { connect } from "node:net";
@@ -95,4 +97,45 @@ export function containerStorePath(run: Run = trySh): string | null {
   const r = run("podman", ["info", "--format", "{{.Store.GraphRoot}}"], 60_000);
   const path = r.ok ? r.out.trim() : "";
   return path === "" ? null : path;
+}
+
+/** 报错的文字：Error 只取 message，不带「Error: 」前缀。 / An error's text: just the message for an Error, without the "Error: " prefix. */
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** 预检发现的一个问题：原因（写明是哪一项、差多少）和处理方法（写具体命令）。 / One preflight problem: its reason (which item, by how much) and its fix (concrete commands). */
+export type PreflightProblem = { reason: string; fix: string };
+
+/**
+ * run 每轮调度前的预检（#62 之二）：平台登录（checkAccess 抛错算一条，错误文本自带说明）、Claude 凭据（missingCredentials 非空算一条）、
+ * 磁盘剩余空间（disk() 里只有 status: "low" 的算问题）。依赖全部可注入，空数组 = 全部通过。
+ * 量不到的磁盘不算失败（只在启动时警告一次）；别家档案缺 ${VAR} 的警告 reloadModels 已经在打，这里不管。
+ * The preflight before each scheduling pass of run (#62 part 2): the forge login (a throwing checkAccess counts, its error text explains itself), the Claude credentials
+ * (a non-empty missingCredentials counts) and free disk space (only a status of "low" from disk() is a problem). All deps are injectable; an empty array means all clear.
+ * An unmeasurable disk isn't a failure (warned once at startup); warnings about another vendor's missing ${VAR} are already printed by reloadModels, so they're not here.
+ */
+export function preflightProblems(deps: { checkAccess: () => string; missingCredentials: () => string[]; disk: () => DiskResult[] }): PreflightProblem[] {
+  const problems: PreflightProblem[] = [];
+  try {
+    deps.checkAccess();
+  } catch (e) {
+    problems.push({
+      reason: t(`平台访问检查没过：${errText(e)}`, `Forge access check failed: ${errText(e)}`),
+      fix: t("重新 gh auth login，登录过期用 gh auth refresh（sandpipe doctor 可以检查）", "Run gh auth login again, or gh auth refresh to renew an expired login (sandpipe doctor can check)"),
+    });
+  }
+  const missing = deps.missingCredentials();
+  if (missing.length > 0)
+    problems.push({
+      reason: t(`Claude 档案的凭据缺失：${missing.join("；")} 都没有值`, `Claude profiles' credentials are missing: none of ${missing.join("; ")} has a value`),
+      fix: t("claude setup-token 生成 token，填进 .sandcastle/.env（sandpipe doctor 可以检查）", "Generate a token with claude setup-token and put it into .sandcastle/.env (sandpipe doctor can check)"),
+    });
+  const gb = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
+  for (const d of deps.disk()) {
+    if (d.status !== "low") continue;
+    problems.push({
+      reason: t(`${d.path} 剩余 ${gb(d.freeBytes)} GB，少于 preflight.minFreeGb 的阈值`, `${d.path}: ${gb(d.freeBytes)} GB free, below the preflight.minFreeGb threshold`),
+      fix: t("腾出空间：podman image prune、podman system prune、git worktree prune", "Free up space: podman image prune, podman system prune, git worktree prune"),
+    });
+  }
+  return problems;
 }

@@ -1,6 +1,6 @@
 import { createServer, type Server } from "node:net";
 import { describe, expect, it } from "vitest";
-import { checkServices, containerStorePath, DEFAULT_MIN_FREE_GB, diskProblems, probeTcp, servicesProblem } from "../src/preflight.ts";
+import { checkServices, containerStorePath, DEFAULT_MIN_FREE_GB, diskProblems, preflightProblems, probeTcp, servicesProblem, type DiskResult } from "../src/preflight.ts";
 import { setTermLanguage } from "../src/term.ts";
 
 const listen = () =>
@@ -120,6 +120,73 @@ describe("diskProblems（磁盘剩余空间）", () => {
 
   it("默认阈值是 5 GB", () => {
     expect(DEFAULT_MIN_FREE_GB).toBe(5);
+  });
+});
+
+describe("preflightProblems（run 每轮的预检）", () => {
+  // 依赖全部注入；不传的那项用「通过」的默认值（checkAccess 不抛、凭据齐全、没有要量的路径）
+  const deps = (over: { checkAccess?: () => string; missingCredentials?: () => string[]; disk?: () => DiskResult[] } = {}) => ({
+    checkAccess: (): string => "gh logged in",
+    missingCredentials: () => [],
+    disk: (): DiskResult[] => [],
+    ...over,
+  });
+
+  it("全部通过（登录有效、凭据齐全、磁盘够或量不到）：空数组", () => {
+    expect(
+      preflightProblems(
+        deps({ disk: () => [{ path: "/a", status: "enough", freeBytes: 6 * GB }, { path: "/b", status: "unknown", error: "boom" }] }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("checkAccess 抛错：一条，原因带错误文本，处理方法提 gh auth", () => {
+    const problems = preflightProblems(deps({ checkAccess: (): string => { throw new Error("gh 没登录（先 gh auth login）：not logged in"); } }));
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.reason).toBe("平台访问检查没过：gh 没登录（先 gh auth login）：not logged in");
+    expect(problems[0]!.fix).toContain("gh auth login");
+    expect(problems[0]!.fix).toContain("gh auth refresh");
+  });
+
+  it("缺 Claude 凭据：一条，原因带变量名（不带值），处理方法提 claude setup-token 和 .sandcastle/.env", () => {
+    const problems = preflightProblems(deps({ missingCredentials: () => ["CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY"] }));
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.reason).toBe("Claude 档案的凭据缺失：CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY 都没有值");
+    expect(problems[0]!.fix).toContain("claude setup-token");
+    expect(problems[0]!.fix).toContain(".sandcastle/.env");
+  });
+
+  it("磁盘不够：一条，原因带路径和剩余 GB（按 1024^3 换算），处理方法给清理命令", () => {
+    const problems = preflightProblems(deps({ disk: () => [{ path: "/var/lib/containers", status: "low", freeBytes: 4 * GB }] }));
+    expect(problems).toHaveLength(1);
+    expect(problems[0]!.reason).toBe("/var/lib/containers 剩余 4.0 GB，少于 preflight.minFreeGb 的阈值");
+    expect(problems[0]!.fix).toContain("podman image prune");
+    expect(problems[0]!.fix).toContain("git worktree prune");
+  });
+
+  it("磁盘量不到（unknown）：不算问题（量不到只在启动时警告一次）", () => {
+    expect(preflightProblems(deps({ disk: () => [{ path: "/vm", status: "unknown", error: "ENOENT" }] }))).toEqual([]);
+  });
+
+  it("英文文案：三项都失败时按 平台 → 凭据 → 磁盘 的顺序各一条", () => {
+    setTermLanguage("en", {});
+    try {
+      const problems = preflightProblems(
+        deps({
+          checkAccess: (): string => { throw new Error("gh isn't logged in"); },
+          missingCredentials: () => ["CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY"],
+          disk: () => [{ path: "/work", status: "low", freeBytes: 4 * GB }],
+        }),
+      );
+      expect(problems.map((p) => p.reason)).toEqual([
+        "Forge access check failed: gh isn't logged in",
+        "Claude profiles' credentials are missing: none of CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY has a value",
+        "/work: 4.0 GB free, below the preflight.minFreeGb threshold",
+      ]);
+      expect(problems.every((p) => p.fix.length > 0)).toBe(true);
+    } finally {
+      setTermLanguage("zh", {});
+    }
   });
 });
 
