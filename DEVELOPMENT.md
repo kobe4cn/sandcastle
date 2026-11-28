@@ -57,7 +57,7 @@
    - 早于缺口清单接入的项目跑 `onboard --questions-only`：提示词是 `prompts/onboard-questions.md`，agent 读现有 PROJECT.md 和代码，只许写缺口清单；
      不生成其他文件、不写 logs。清单已存在或没有 PROJECT.md 时打印提示后退出。
 2. 看一遍 `PROJECT.md`（项目知识，给 agent 看）与 `sandcastle.config.ts`（怎么跑：测试隔离、门槛），填 `.sandcastle/.env`，建镜像。
-3. `npx tsx <本仓库>/src/cli.ts doctor`：逐项给出 ✓ / ⚠ / ✗ 和修法，有 ✗ 退出码为 1；`--fix` 把缺的标签建上、按 Containerfile 建好缺的镜像（只有这一项会写东西）。
+3. `npx tsx <本仓库>/src/cli.ts doctor`：逐项给出 ✓ / ⚠ / ✗ 和修法，有 ✗ 退出码为 1；`--fix` 把缺的标签建上、按 Containerfile 建好缺的镜像（只有这两项会写东西）。
 4. `npx tsx <本仓库>/src/cli.ts baseline`：在沙箱里对 `origin/main` 跑一次完整门槛，只报告、不开票。
 5. 跑：`npx tsx <本仓库>/src/cli.ts`（`SANDCASTLE_ONLY=12,13` 只做这几张票）。onboard 生成的配置是 `autoMerge: false`、`maxParallel: 1`：
    全部通过的票也只留 PR。金丝雀票、真实小票都没问题后再放开，完整步骤见 [docs/onboarding-checklist.md](docs/onboarding-checklist.md)。
