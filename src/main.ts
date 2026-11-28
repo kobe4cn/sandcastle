@@ -1577,8 +1577,10 @@ function issueClosed(id: string) {
 }
 
 /**
- * 给 untilAfterLimit 的 deps.comment：全部档案撞限额时在票上评论一次。已关的票不发；可信作者的最后一条评论已经带 LIMITED_MARK 不发（#80）；失败只警告。
- * deps.comment for untilAfterLimit: comment once on the ticket when every profile hit its limit. Not on closed tickets, not when the last trusted author's comment already has LIMITED_MARK (#80); failures only warn.
+ * 给 untilAfterLimit 的 deps.comment：全部档案撞限额时在票上评论一次，并随之发一条 limited 通知（#133）。
+ * 已关的票不发；可信作者的最后一条评论已经带 LIMITED_MARK 不发（#80）；失败只警告。
+ * deps.comment for untilAfterLimit: comment once on the ticket when every profile hit its limit, and send one limited notification with it (#133).
+ * Not on closed tickets, not when the last trusted author's comment already has LIMITED_MARK (#80); failures only warn.
  */
 function limitedComment(issueId: string) {
   return (limited: AllProfilesLimited) => {
@@ -1587,6 +1589,9 @@ function limitedComment(issueId: string) {
       // 看可信作者的最后一条（#80） / Look at the last trusted comment (#80)
       if (trustedBodies(forge.issueComments(issueId)).at(-1)?.includes(LIMITED_MARK)) return;
       forge.commentIssue(issueId, M.limitedWaiting(limited.phase, limited.profiles, new Date(limited.until).toLocaleString(), LIMITED_MARK));
+      // 通知跟评论一起去重：只有评论真的发出去了才发，所以同一次等待只发一次、重启后不重复（#80）。
+      // The notification deduplicates with the comment: sent only when the comment actually went out, so one per wait and none again after a restart (#80).
+      void notifier({ event: "limited", issue: issueId, url: forge.issueUrl?.(issueId), reason: M.notifyLimited(limited.phase, limited.profiles, new Date(limited.until).toLocaleString()) });
     });
     if (!r.ok) console.warn(t(`  ⚠ #${issueId} 限额等待的评论没发出去：${r.out}`, `  ⚠ #${issueId}: couldn't post the limit-wait comment: ${r.out}`));
   };
@@ -2235,6 +2240,8 @@ async function runMainFullCheck() {
   if (open[0]) {
     forge.commentIssue(String(open[0].number), M.mainBrokenAgain(short, summary));
     console.log(t(`  🛡 main 兜底完整测试失败：${short}，已记在 #${open[0].number}`, `  🛡 Fallback full run on main failed: ${short}, recorded on #${open[0].number}`));
+    // 通知不 await（forge 调用是同步的），失败只警告（notify.ts）。 / Not awaited (forge calls are synchronous); failures only warn (notify.ts).
+    void notifier({ event: "mainBroken", issue: String(open[0].number), url: forge.issueUrl?.(String(open[0].number)), reason: short });
     return;
   }
   attempt(() => forge.ensureLabel(LABEL.mainBroken, "d73a4a", M.mainBrokenLabelDesc));
@@ -2244,6 +2251,8 @@ async function runMainFullCheck() {
     labels: [LABEL.mainBroken, LABEL.picked, LABEL.readyForAgent],
   });
   console.log(t(`  🛡 main 兜底完整测试失败：${short}，已开票 #${id}`, `  🛡 Fallback full run on main failed: ${short}, opened #${id}`));
+  // 通知不 await（forge 调用是同步的），失败只警告（notify.ts）。 / Not awaited (forge calls are synchronous); failures only warn (notify.ts).
+  void notifier({ event: "mainBroken", issue: id, url: forge.issueUrl?.(id), reason: short });
 }
 
 // ---------------------------------------------------------------------------
@@ -2386,6 +2395,15 @@ function start(issue: Issue, resume = false) {
  */
 const prepTried = new Map<number, string>();
 
+/**
+ * prep 撞限额的通知这次进程里发过没有：`prepLimitedUntil` 是 schedule() 的局部变量、每轮从 undefined 开始，
+ * 不能拿它判断「从无到有」；撞限额后置 true，任一张票的 prep 正常返回（限额已过）置回 false。重启后会再发一次，可以接受。
+ * Whether the prep limit notification already went out in this process: prepLimitedUntil is local to schedule() and starts
+ * from undefined every pass, so it can't tell "just became limited"; set to true on a hit, back to false once any prep returns
+ * normally (the limit has passed). After a restart it sends again; acceptable.
+ */
+let prepLimitNotified = false;
+
 type ScheduleResult = { started: number; split: boolean; prepLimitedUntil?: number };
 
 /** 一次调度：整理 → prep → plan，把空位补满。在 withHost 里跑。 / One pass: tidy → prep → plan, filling the slots. Runs inside withHost. */
@@ -2460,12 +2478,23 @@ async function schedule(): Promise<ScheduleResult> {
         promptFile: PROMPTS.prep,
         promptArgs: { TASK_ID: issue.number, REPREP_MARK, BASE: BASE_REF },
       }));
+      // 正常返回说明限额已过，下次再撞要重新通知。 / A normal return means the limit has passed; the next hit notifies again.
+      prepLimitNotified = false;
+      // prep 会话在沙箱里打的 stuck 宿主机看不到，结束后查一次标签补发通知（#133）；prep 前这张票一定没带 stuck（toPrep 已排除）。
+      // A stuck label the prep session added in the sandbox is invisible to the host; check the label once after it ends and notify (#133). Before prep the ticket never carries stuck (toPrep excludes it).
+      const s = attempt(() => forge.listOpenIssues([LABEL.stuck]).some((i) => i.number === issue.number));
+      if (s.ok && s.value) void notifier({ event: "stuck", issue: String(issue.number), url: forge.issueUrl?.(String(issue.number)), reason: M.notifyPrepStuck });
+      else if (!s.ok) console.warn(t(`  ⚠ 查 #${issue.number} 有没有打上 ${LABEL.stuck} 失败：`, `  ⚠ Checking whether #${issue.number} got ${LABEL.stuck} failed: `) + s.out.slice(0, 200));
     } catch (e) {
       const limit = limitWait(e);
       if (limit) {
         const until = new Date(limit.until).toLocaleString();
         console.log(t(`  ⏸ prep #${issue.number} 撞上用量限额，${limit.why}${until} 前不再 prep`, `  ⏸ prep #${issue.number} hit the usage limit; ${limit.why}no more prep until ${until}`));
         prepLimitedUntil = limit.until;
+        if (!prepLimitNotified) {
+          void notifier({ event: "limited", issue: String(issue.number), url: forge.issueUrl?.(String(issue.number)), reason: M.notifyPrepLimited(until) });
+          prepLimitNotified = true;
+        }
         break;
       }
       logErrorDetail(ERROR_LOG, `prep #${issue.number}`, e, appendFileSync);

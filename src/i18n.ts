@@ -281,6 +281,13 @@ const zh = {
    */
   notifyText: (event: NotifyEvent, issue: string | undefined, url: string | undefined, reason: string) =>
     notifyLine(zhEventNames[event], issue, url, reason, "Sandcastle："),
+  /** 通知 limited 事件的原因：全部档案撞限额进入等待（#133）。 / The limited event's reason: every profile hit its limit and the run waits (#133). */
+  notifyLimited: (phase: string, profiles: readonly string[], until: string) =>
+    `阶段 ${phase} 的档案（${profiles.join("、")}）都撞上了用量限额，预计 ${until}（本地时间）恢复后接着跑。`,
+  /** 通知 limited 事件的原因：prep 撞限额，只写恢复时间（#133）。 / The limited event's reason: prep hit its limit, the reset time only (#133). */
+  notifyPrepLimited: (until: string) => `prep 撞上了用量限额，预计 ${until}（本地时间）恢复后接着跑。`,
+  /** 通知 stuck 事件的原因：prep 会话在沙箱里打的 stuck（#133）。 / The stuck event's reason: a stuck label the prep session added in the sandbox (#133). */
+  notifyPrepStuck: "prep 要人拍板或缺信息，见票上的评论。",
 
   // —— 给 agent 的输出语言规则（渲染进每个提示词开头，以及内联的 revise / fix 提示词） ——
   // Output language rule for the agent (rendered at the top of every prompt, and in the inline revise / fix prompts)
@@ -491,6 +498,10 @@ const en: Messages = {
    * The webhook message's text: one human-readable line, compatible with receivers that only read text (Slack / Lark).
    */
   notifyText: (event, issue, url, reason) => notifyLine(enEventNames[event], issue, url, reason, "Sandcastle: "),
+  notifyLimited: (phase, profiles, until) =>
+    `every profile for phase ${phase} (${profiles.join(", ")}) hit its usage limit; the run resumes around ${until} (local time).`,
+  notifyPrepLimited: (until) => `prep hit its usage limit; it resumes around ${until} (local time).`,
+  notifyPrepStuck: "prep needs a human decision or more information; see the comments on the ticket.",
 
   outputLanguage:
     "Output language: write everything that goes onto the issue tracker or a PR in English: ticket titles and bodies, progress comments, acceptance notes, the review summary (translate the fixed labels in the output templates below, but keep `<tags>`, HTML comments, `## Implementation guide`, `## Blocked by`, `## Acceptance criteria` and the other `##` section names exactly as written). Commit messages follow the “提交” section of PROJECT.md. The instructions below are in Chinese; read them, but answer in English.",

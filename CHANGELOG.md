@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 主动通知（二，#63 之一）：main 兜底完整测试失败（`src/main.ts` 的 `runMainFullCheck`：新开 main-broken 票和在已有票上追加评论都发，票号用对应的票，原因只写失败的短 sha）、一个阶段的全部档案撞限额进入等待（`limitedComment`：和限额评论一起去重，评论被跳过就不发，同一次等待只发一条、重启后不重复）、prep 撞限额（每个进程一条，任一张票的 prep 正常返回后重置）、prep 会话正常结束后票新带 stuck（`schedule` 的 prep 循环：查一次标签，查询失败只警告）时也向 webhook POST 一条 JSON（事件分别是 `mainBroken` / `limited` / `stuck`）；`run` 异常退出（`src/cli.ts` 顶层 catch）在退出前发 `crashed`（原因取错误第一行，最多等 10 秒，发不出去照常退出码 1）——cli 不加载项目配置，只认默认变量名 `SANDPIPE_NOTIFY_WEBHOOK`，自定义了 `notify.env` 的项目异常退出时收不到（docs/config 中英同步）（closes #133）
 - 主动通知（一，#63 之一）：新增可选配置 `notify`（`notify.env`，默认 `SANDPIPE_NOTIFY_WEBHOOK`），URL 从 `.sandcastle/.env` 读（值为空时取宿主机同名环境变量，没配时什么都不发）。票打 stuck、留 PR 给人时向 webhook POST 一条 JSON：`text` 是给人看的一行（兼容 Slack / 飞书这类只认 `text` 的接收端），`event` / `issue` / `url` / `reason` 给自建接收端；forge 实现了可选的 `issueUrl` 时带链接，中英按 `language`。发送失败只打一行警告、不阻塞主流程，URL 不进日志，且在所有沙箱的 env 里清空、agent 拿不到（`src/notify.ts` 的 `readNotifyUrl` / `createNotifier`；GitHub 的 `issueUrl` 见后续票）（closes #132）
 
 ## 0.3.3

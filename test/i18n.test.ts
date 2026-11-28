@@ -131,6 +131,22 @@ describe("limitedWaiting（#48）", () => {
   });
 });
 
+describe("通知原因（#133）", () => {
+  it("全部档案撞限额：中英都写明阶段、档案名和恢复时间", () => {
+    expect(messages("zh").notifyLimited("implement", ["opus", "glm"], "2026/11/26 11:02:00"))
+      .toBe("阶段 implement 的档案（opus、glm）都撞上了用量限额，预计 2026/11/26 11:02:00（本地时间）恢复后接着跑。");
+    expect(messages("en").notifyLimited("implement", ["opus", "glm"], "2026/11/26 11:02:00"))
+      .toBe("every profile for phase implement (opus, glm) hit its usage limit; the run resumes around 2026/11/26 11:02:00 (local time).");
+  });
+
+  it("prep 撞限额只写恢复时间；prep stuck 让人看票上的评论", () => {
+    expect(messages("zh").notifyPrepLimited("2026/11/26 11:02:00")).toBe("prep 撞上了用量限额，预计 2026/11/26 11:02:00（本地时间）恢复后接着跑。");
+    expect(messages("en").notifyPrepLimited("2026/11/26 11:02:00")).toBe("prep hit its usage limit; it resumes around 2026/11/26 11:02:00 (local time).");
+    expect(messages("zh").notifyPrepStuck).toBe("prep 要人拍板或缺信息，见票上的评论。");
+    expect(messages("en").notifyPrepStuck).toBe("prep needs a human decision or more information; see the comments on the ticket.");
+  });
+});
+
 describe("gateEnvDown（#54）", () => {
   it("中英文都写明匹配到的那一行，并提示去掉 stuck", () => {
     const line = "connect ECONNREFUSED 127.0.0.1:5432";
