@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 浏览器 e2e 沉淀（四）：开了浏览器验收但没接浏览器 e2e 的项目（「浏览器验收」一节没写 e2e 目录和单跑命令、仓库里也没有已有的 e2e 测试），implement 跳过把 Browser check 沉淀成 Playwright 测试——不装依赖、不建 e2e 配置、不写测试，浏览器验收照旧做，`RESULT.md` 末尾单独写一行普通文字「本项目没接浏览器 e2e，未沉淀测试」；review 按同样条件跳过核对、不因缺测试打回（摘要的「浏览器验收」一行写明「项目没接 e2e，未沉淀」），判断依据是渲染进 review 提示词的「本项目的浏览器验收」一节（`prompts/implement.md`、`prompts/review.md`；docs/config 中英、docs/internal 同步）（closes #164）
+
 - 花费上限之三：`sandpipe doctor` 多一项「花费上限」（Spend limits），只展示不检查（状态总是 ok，doctor 是否通过不随当天用量变）：列出单票上限 `spendLimit.ticketTokens`、当天上限 `spendLimit.dayTokens`（没配写「不限」/ unlimited），以及今日已用 token（按本地日期算 `usage.jsonl` 里当天全部票的记录，没有文件时是 0），配上限之前先在这里看一眼现在的用量；配置加载失败时没有这一项（`src/doctor.ts` 复用 `daySpend` / `readAllUsage` / `formatK` 新增这一项；docs/config 中英的 `spendLimit.*` 两行同步）（closes #153）
 
 - 日志轮转（一直运行的配套）：`.sandcastle/logs/` 里的 `.log` 文件（agent 会话日志、门槛日志、`errors.log`）和 `errors.log.1` 最后修改超过 14 天自动删除，`errors.log` 超过 10 MB 轮转为 `errors.log.1`（覆盖旧备份；报错走追加写，之后自动从空文件开始），守护进程长跑不再把日志目录堆到无限大；`usage.jsonl`（花费上限、prep 用量靠它整份读回）、`flaky.json`、`main-check.json`、`run.lock`、`onboard.md` 不碰。启动拿到运行锁之后和主循环每轮开头各清一次，清理出错只警告一行、不中断运行（新增 `src/log-rotate.ts`；DEVELOPMENT.md、docs/internal 同步）（closes #155）

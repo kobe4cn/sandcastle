@@ -173,7 +173,7 @@ Sandcastle 处理期间，PR 作者不要往这个分支推提交。本地和远
 
 截图和 `RESULT.md`（每一步的结论）写在 worktree 的 `.browser-check/`，不提交。关沙箱前脚本把它拷到宿主机 `$TMPDIR/sandcastle-browser-check/issue-<n>/`，开 PR 时正文的 **Browser check** 一节先写评审结论（reviewer 自己看截图、对照票的 Browser check 逐条给的 `<browser-verdict>`，没给时写明「评审没有给出逐条结论」），再写 implement 自评（`RESULT.md`），截图用 `gh --attach` 上传，显示在 Browser check 一节里（首次开 PR 和再走一轮都是）。reviewer 只在自己逐条全 ✅、且与 `RESULT.md` 一致时给 `browser-check` 的 `done`。
 
-除了截图，implement 还把票里 Browser check 的关键步骤沉淀成 Playwright 测试提交到仓库（2026-11-28，#159）：测试等待页面稳定——等元素可见或可交互、等网络空闲或等具体响应、web-first 断言，不用 `waitForTimeout` / sleep 固定延时，动画用断言等它结束或在测试里关掉；本地跑通后才写 `RESULT.md`。放哪、怎么单跑按 PROJECT.md「浏览器验收」一节写的来（`templates/.sandcastle/PROJECT.md` 的注释提示要写 e2e 目录和单跑命令）；prep 拆票时 Browser check 的每一步要写成可断言的结果（`prompts/ticket-sizing.md`）。review 核对这两点：改了页面却没提交对应的测试、或测试里用固定延时代替等待的，都是要修的问题，给 `revise` 打回 implementer（`prompts/implement.md`、`prompts/review.md`）。
+除了截图，implement 还把票里 Browser check 的关键步骤沉淀成 Playwright 测试提交到仓库（2026-11-28，#159）：测试等待页面稳定——等元素可见或可交互、等网络空闲或等具体响应、web-first 断言，不用 `waitForTimeout` / sleep 固定延时，动画用断言等它结束或在测试里关掉；本地跑通后才写 `RESULT.md`。放哪、怎么单跑按 PROJECT.md「浏览器验收」一节写的来（`templates/.sandcastle/PROJECT.md` 的注释提示要写 e2e 目录和单跑命令）；prep 拆票时 Browser check 的每一步要写成可断言的结果（`prompts/ticket-sizing.md`）。review 核对这两点：改了页面却没提交对应的测试、或测试里用固定延时代替等待的，都是要修的问题，给 `revise` 打回 implementer（`prompts/implement.md`、`prompts/review.md`）。接没接 e2e 的判断（#164）：「浏览器验收」一节没写 e2e 目录和单跑命令、仓库里也没有已有的 e2e 测试，才算项目没接浏览器 e2e——implement 跳过沉淀（不装依赖、不建配置、不写测试，验收照旧做），`RESULT.md` 末尾单独写一行普通文字「本项目没接浏览器 e2e，未沉淀测试」（不能带 ❌ / ⚠、不能是列表项，否则过不了 browser-gate）；review 的判断依据是渲染进提示词的「本项目的浏览器验收」一节（`{{P_BROWSER}}`），第 4 步按同样条件跳过、不因缺测试打回，只核对那一行在不在。
 
 改了页面的票：`RESULT.md` 每一步都是 ✅、reviewer 自己看截图的结论也逐条全 ✅ 时可以自动合并（2026-11-24 放宽）；有 ❌、⚠️ 或没验证到的步骤才留 PR，由你看截图和结论后合并。
 
