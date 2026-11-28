@@ -163,7 +163,7 @@ Sandcastle 处理期间，PR 作者不要往这个分支推提交。本地和远
 
 ## 浏览器验收
 
-改了页面的票，implementer 在沙箱里用 `playwright-cli`（无头 Chromium，镜像里装好，带中文字体）照票里的 **Browser check** 做验收，步骤在 `.sandcastle/implement-prompt.md`。和宿主机上的 ego-browser 流程（`test/README.md`「浏览器验收」）的区别：
+改了页面的票，implementer 在沙箱里用 `playwright-cli`（无头 Chromium，镜像里装好，带中文字体）照票里的 **Browser check** 做验收，步骤在 `prompts/implement.md`。和宿主机上的 ego-browser 流程（`test/README.md`「浏览器验收」）的区别：
 
 - 不连开发库 `crm_platform`。每张票一个验收库 `crm_platform_browser_i<n>`，`scripts/browser-lab.ts` 在里面建空的 `crmlab-smoke` 租户和 `admin@` / `eng@` / `an@crmlab-smoke.test`。需要数据时 agent 在页面上自己建。
 - dev server 在沙箱里起（5180），`MAILER=console`，Magic Link 从它的日志里取。
@@ -175,7 +175,7 @@ Sandcastle 处理期间，PR 作者不要往这个分支推提交。本地和远
 
 ## 验收说明
 
-每个 Sandcastle PR 的正文都以 `## 验收说明` 一节开头，写给验收 PR 的人：这个 PR 做了什么、在宿主机上怎么一步步验证、最终效果。来源是 implementer 写在 worktree `.pr-notes/验收说明.md`（不提交）的中文说明，格式要求在 `.sandcastle/implement-prompt.md`：`### 做了什么`、`### 怎么验证`（编号步骤，每条验收标准至少一步）、`### 最终效果` 三个小标题，不能出现 `## ` 二级标题（替换这一节时会切错）。
+每个 Sandcastle PR 的正文都以 `## 验收说明` 一节开头，写给验收 PR 的人：这个 PR 做了什么、在宿主机上怎么一步步验证、最终效果。来源是 implementer 写在 worktree `.pr-notes/验收说明.md`（不提交）的中文说明，格式要求在 `prompts/implement.md`：`### 做了什么`、`### 怎么验证`（编号步骤，每条验收标准至少一步）、`### 最终效果` 三个小标题，不能出现 `## ` 二级标题（替换这一节时会切错）；多行命令或多行内容用代码块写，行内代码只放不换行的短片段——行内代码跨不过空行，跨空行的内容会被当成 Markdown 渲染（图片语法会变成破图）。
 
 和 Browser check 的区别：Browser check 是 implementer **在沙箱里**做过的验证记录（临时验收库、playwright 截图），沙箱关掉就没法照着重做；验收说明是写给**人在宿主机上照做**的步骤（开发库 `crm_platform`、`npm run dev`）。脚本把固定的准备段落拼在文件内容前面——`git checkout <分支>`；改了页面的票（worktree 里有 `.browser-check/`，或 reviewer 输出的 `<browser-check>` 标签是 `done` / `missing`）再加起 dev server、`scripts/browser-lab.ts` 建验收租户、Magic Link 登录（项目没配 `acceptancePrep` 时只写「本票改了页面，需要起 dev server（项目没配准备步骤）」）——拼装与格式检查是 `.sandcastle/pr-body.ts` 的纯函数。
 

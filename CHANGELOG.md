@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 验收说明里的多行命令改用代码块写，不再塞进行内代码：implement 提示词的「怎么验证」写法加一条——多行命令或多行内容（带多行参数的命令、多行输出、示例文本）一律用代码块（三个反引号围起来）写，行内代码（单个反引号）只用于不换行的短片段；行内代码跨不过空行，中间有空行时反引号失效，后面的内容被当成 Markdown 渲染（图片语法会变成破图）。review 提示词核对验收说明的格式清单同步加「行内代码里没有换行、多行内容都在代码块里」，发现多行内容放进了行内代码照旧写进 `<revise>`（`prompts/implement.md`、`prompts/review.md`，docs/internal/sandcastle.md 同步）（closes #125）
+
 - `sandpipe doctor` 和 `sandpipe run` 启动时发现沙箱镜像与 Containerfile 不一致会报「镜像过期」，`doctor --fix` 重建：镜像构建时打的 `sandpipe.containerfile` label（Containerfile 文件字节的 sha256）与当前文件对不上——包括没打过 label 的老镜像——时，doctor 的「沙箱镜像」一项从 ✓ 变 ⚠「Containerfile 改过，镜像过期」、fix 提示 `sandpipe doctor --fix`，带 `--fix` 时按当前 Containerfile 重建（成功 ✓「重建了镜像」、失败 ✗ 给 stderr 前几行）；label 一致时照旧 ✓，镜像不存在的行为不变。`sandpipe run` 启动时（默认 podman 沙箱、podman 可用）发现过期用 `⚠` 警告一次、不挡运行，镜像不在本地时不在这里报。docs/config 中英写明哈希算法、label 名和运行前只警告不挡（`src/lifecycle.ts` 新增 `imageLabel` / `imageStaleWarning` / `findContainerfile`，`src/doctor.ts` 的镜像一项，`src/main.ts` 的启动检查）（closes #116）
 
 - `sandpipe onboard` 结尾的「下一步」不再让人手动 `podman build`：建镜像交给 `sandpipe doctor --fix`，那一步写明「顺带建好标签和镜像，第一次建镜像要几分钟」（onboard 中途仍不建镜像，生成的 Containerfile 是草稿）；README 中英「Onboard a project」、docs/onboarding-checklist 中英、DEVELOPMENT.md 的接入步骤同步（closes #117）
