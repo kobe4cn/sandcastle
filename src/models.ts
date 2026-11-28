@@ -792,12 +792,12 @@ export function recordUsage(
 }
 
 /**
- * 从 .sandcastle/logs/usage.jsonl 读回这张票的用量记录（可只要某个阶段），按文件顺序即时间顺序。
+ * 从 .sandcastle/logs/usage.jsonl 读回全部票的全部用量记录，按文件顺序即时间顺序（当天合计 #152 在它上面筛）。
  * 文件不存在返回空数组；坏行和并发写入时写了一半的末行跳过。
- * Read this ticket's usage records back from .sandcastle/logs/usage.jsonl (optionally for one phase), in file order, i.e. time order.
+ * Read every ticket's usage records back from .sandcastle/logs/usage.jsonl, in file order, i.e. time order (the day total #152 filters on this).
  * A missing file gives an empty array; broken lines and a half-written last line from concurrent writers are skipped.
  */
-export function readUsage(issue: string, phase?: Phase): UsageRecord[] {
+export function readAllUsage(): UsageRecord[] {
   if (!existsSync(USAGE_LOG)) return [];
   let text: string;
   try {
@@ -811,12 +811,20 @@ export function readUsage(issue: string, phase?: Phase): UsageRecord[] {
     try {
       const r = JSON.parse(line);
       if (typeof r?.issue !== "string" || typeof r.phase !== "string") continue;
-      if (r.issue === issue && (phase === undefined || r.phase === phase)) records.push(r);
+      records.push(r);
     } catch {
       // 半行或损坏的行跳过 / Skip half-written or broken lines
     }
   }
   return records;
+}
+
+/**
+ * 从 readAllUsage 的结果里筛出这张票的用量记录（可只要某个阶段）。
+ * The records of one ticket filtered out of readAllUsage's result (optionally for one phase).
+ */
+export function readUsage(issue: string, phase?: Phase): UsageRecord[] {
+  return readAllUsage().filter((r) => r.issue === issue && (phase === undefined || r.phase === phase));
 }
 
 /** token 数格式化成「123.4k」，PR 用量表和花费上限的评论共用这个写法。 / Formats a token count as "123.4k", shared by the PR usage table and the spend-cap comment. */

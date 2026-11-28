@@ -83,10 +83,10 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import type { SandboxExecOptions } from "@ai-hero/sandcastle";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import {
-  CLAUDE_CREDENTIALS_CLEARED, agentFor, credentialsFingerprint, formatK, missingCredentials, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
+  CLAUDE_CREDENTIALS_CLEARED, agentFor, credentialsFingerprint, formatK, missingCredentials, readAllUsage, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
   type AgentRun, type AllProfilesLimited, type ModelUsageEntry, type Phase, type UsageRecord,
 } from "./models.ts";
-import { BudgetExceeded, ticketSpend } from "./budget.ts";
+import { BudgetExceeded, daySpend, nextLocalMidnight, ticketSpend } from "./budget.ts";
 import { limitWait, sleepUntil, untilAfterLimit } from "./limit-wait.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
 import { acceptanceSection, browserSection, checkAcceptanceNotes, pageChangedByReview, replaceGenerated, replaceSection, restSections, sectionOf } from "./pr-body.ts";
@@ -194,6 +194,19 @@ const byUrgency = (a: { number: number; labels: string[] }, b: { number: number;
 const claudeEnv = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(CONTEXT_BUDGET) };
 
 /**
+ * 当天 token 合计是否已到上限（spendLimit.dayTokens，#152）：未配或没到返回 undefined，已到返回已用和上限。
+ * 每次现算（usage.jsonl 全量读回再筛本地日期），不缓存——别的并行票随时在追加记录。
+ * Whether today's token total is over the day cap (spendLimit.dayTokens, #152): undefined when unconfigured or under it, the spend and the cap once reached.
+ * Always computed fresh (usage.jsonl read back in full, then filtered to the local date), never cached — parallel tickets append records at any time.
+ */
+function dayCapHit(): { used: number; limit: number } | undefined {
+  const limit = project.spendLimit.dayTokens;
+  if (limit === undefined) return undefined;
+  const used = daySpend(readAllUsage(), new Date());
+  return used >= limit ? { used, limit } : undefined;
+}
+
+/**
  * 跑一次 agent 会话：阶段用哪个档案（模型、厂商）由 .sandcastle/models.json 决定，撞限额换下一个（models.ts）。
  * 用量追加到 .sandcastle/logs/usage.jsonl，也放进 usage（撞限额换档案的那次也记一条 limited）；build 收集的会进 PR 的用量表，prep 的落地时从 usage.jsonl 读回，rebase 的不进表（rebase 之后的复审没通过时，它的用量表附在留 PR 的评论里，#71）。
  * 各模型的用量（含子代理，如第三方档案下看截图的小模型）从 stream-json 的 result 行收进记录的 models 字段（#53）。
@@ -220,6 +233,18 @@ async function runAgent<T extends AgentRun>(
   // Per-ticket spend cap (#151): before each session starts, sum what this ticket has already spent (all its records in usage.jsonl — every phase, every run, limited ones included);
   // at or over the cap the session doesn't open and BudgetExceeded goes to the caller — implement / review etc. take the landing's failure branch, prep its own catch, both marking the ticket stuck.
   // A session already running is never cut short; the next one just doesn't start. Rebase and re-review go through here too and are checked the same way.
+  // 当天合计上限（#152）：放在单票检查之前——睡到本地 0 点醒来后，单票检查读到的才是醒来后的用量（0 点后别的票新开的会话已在 usage.jsonl 里）。
+  // 等的时候这张票占着空位（#61 决定 5 接受的代价）；正在跑的其他会话照常做完。
+  // The day total cap (#152): ahead of the per-ticket check — after sleeping to local midnight, the per-ticket check reads the post-midnight spend (sessions other tickets opened after midnight are already in usage.jsonl).
+  // While waiting this ticket holds its slot (the accepted cost of #61 decision 5); other sessions already running finish normally.
+  for (let day = dayCapHit(); day !== undefined; day = dayCapHit()) {
+    const next = nextLocalMidnight(new Date());
+    console.log(t(
+      `  ⏸ 当天 token 合计已到上限：已用 ${formatK(day.used)} / 上限 ${formatK(day.limit)}，本地 0 点（${new Date(next).toLocaleString()}）后恢复，先不开这个会话`,
+      `  ⏸ Today's token total is over the day cap: used ${formatK(day.used)} / cap ${formatK(day.limit)}, resuming after local midnight (${new Date(next).toLocaleString()}); holding this session`,
+    ));
+    await sleepUntil(next);
+  }
   const cap = project.spendLimit.ticketTokens;
   if (cap !== undefined) {
     const used = ticketSpend(readUsage(issue));
@@ -2503,6 +2528,18 @@ async function schedule(): Promise<ScheduleResult> {
   let prepLimitedUntil: number | undefined;
   const slots = MAX_PARALLEL - busy();
   for (const issue of toPrep) {
+    // 当天合计上限（#152）：超限时不再 prep——prep 持着宿主机锁，在 runAgent 里睡到 0 点会卡住所有落地和合并。
+    // 打一行说明就跳出循环：不调 runAgent、不打 stuck、不写 prepTried，下一轮由主循环预检挡住，过了本地 0 点自然恢复（代拍板选 A）。
+    // Day total cap (#152): over it no more prep — prep holds the host lock, and sleeping to midnight inside runAgent would block every landing and merge.
+    // Print a line and break out: no runAgent call, no stuck label, no prepTried entry; the main loop's preflight blocks next passes and it recovers on its own after local midnight (decision A).
+    const day = dayCapHit();
+    if (day !== undefined) {
+      console.log(t(
+        `  ⏸ 当天 token 合计已到上限：已用 ${formatK(day.used)} / 上限 ${formatK(day.limit)}，本轮不再 prep，本地 0 点后恢复`,
+        `  ⏸ Today's token total is over the day cap: used ${formatK(day.used)} / cap ${formatK(day.limit)}; no more prep this pass, resuming after local midnight`,
+      ));
+      break;
+    }
     // 已有够填满空位的可开工票就先开工，剩下的票等下次调度（有票做完或轮询）再 prep。
     // 否则一下子建了二十多张票时，要把它们逐张 prep 完（每张几分钟）才开工，空位空等一两个小时（2026-11-23）。
     // When there are already enough startable tickets to fill the slots, start them first and prep the rest next pass (when a ticket finishes or on the poll).
@@ -2727,6 +2764,16 @@ for (let pass = 1; ; pass++) {
       disk: () => diskProblems([process.cwd(), ...(containerStore ? [containerStore] : [])], project.preflight.minFreeGb * 1024 ** 3),
     });
     if (agentAuthDown !== undefined) problems.push({ reason: authReasonLine(agentAuthDown.reason), fix: authFixLine() });
+    // 当天 token 合计到上限（#152）也并进预检问题：本轮不调度、不打 stuck、不算空转，过了本地 0 点下一轮自然恢复（恢复的那轮打「预检通过」）。
+    // reason 用固定文本、不放已用 / 上限这类会变的数字：preflightFailed 按文本去重，带数字会每轮重打一遍。
+    // The day token cap reached (#152) joins the preflight problems too: no scheduling this pass, no stuck label, no idle counting, and the next pass after local midnight recovers on its own (printing "preflight passed" above).
+    // The reason is fixed text without varying numbers like the spend or the cap: preflightFailed dedupes by text, and numbers would re-print every pass.
+    if (dayCapHit() !== undefined) {
+      problems.push({
+        reason: t("当天 token 合计已到上限（spendLimit.dayTokens），本地 0 点后恢复", "Today's token total is over the day cap (spendLimit.dayTokens); it recovers after local midnight"),
+        fix: t("等到次日，或调大 spendLimit.dayTokens", "Wait until tomorrow, or raise spendLimit.dayTokens"),
+      });
+    }
     if (problems.length > 0) {
       const text = problems.map((p) => `${p.reason}\n${p.fix}`).join("\n");
       if (text !== preflightFailed)

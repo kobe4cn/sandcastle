@@ -1,11 +1,13 @@
-// 花费上限（#61 之一，#151）：单票累计 token 的口径和超限的报错。
+// 花费上限（#61 之一，#151、#152）：单票累计和当天合计的 token 口径，以及单票超限的报错。
 // 口径是 #61 决定评论定的：只按 token（别家档案的记录没有 costUSD，按金额算等于不计费）；
 // 四项相加（输入、缓存写、缓存读、输出——缓存读往往比其他几项大一个数量级，上限要按这个口径设）；
 // 算这张票在 usage.jsonl 里的全部记录（各阶段、各次运行、limited 的都算），重启后照样有效。
-// Spend caps (#61 part 1, #151): how one ticket's cumulative tokens are counted, and the over-cap error.
+// 当天合计（#152）按运行机器的本地日期筛当天的记录，超限时暂停开新会话、本地 0 点后恢复。
+// Spend caps (#61 part 1, #151, #152): how tokens are counted, per ticket cumulatively and per day, plus the per-ticket over-cap error.
 // The counting follows #61's decision comment: tokens only (other vendors' records carry no costUSD, so a money cap would bill nothing);
 // four fields summed (input, cache write, cache read, output — cache reads are often an order of magnitude larger, so set the cap with this in mind);
 // every record of this ticket in usage.jsonl counts (all phases, all runs, limited ones included), so it survives restarts.
+// The day total (#152) picks the current day's records by the running machine's local date; over the cap new sessions pause and resume after local midnight.
 
 import type { UsageRecord } from "./models.ts";
 
@@ -27,6 +29,30 @@ export function recordTokens(r: UsageRecord): number {
  */
 export function ticketSpend(records: readonly UsageRecord[]): number {
   return records.reduce((sum, r) => sum + recordTokens(r), 0);
+}
+
+/**
+ * 当天（#152）已经用掉的 token：按运行机器的本地日期筛出 `at` 和 `now` 同一本地日的记录，各条折算后相加。
+ * `at` 是 UTC 的 ISO 串，不能截前 10 位比——本地日期和 UTC 日期常常不是同一天；全部票、全部阶段的记录都算。
+ * Tokens already spent today (#152): records whose `at` falls on `now`'s local date (the running machine's), each converted and summed.
+ * `at` is a UTC ISO string, so its first 10 characters can't be compared — the local date is often not the UTC date; every ticket's and phase's records count.
+ */
+export function daySpend(records: readonly UsageRecord[], now: Date): number {
+  return records.reduce((sum, r) => {
+    // 本地日比较用 Date 的年月日分量，时区无关 / Compare local dates via the Date's y/m/d components, timezone-independent
+    const at = new Date(r.at);
+    return at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate()
+      ? sum + recordTokens(r)
+      : sum;
+  }, 0);
+}
+
+/**
+ * 下一个本地 0 点的时刻（epoch 毫秒，#152 超限恢复点）。用年月日 +1 天构造，不用 +24h——夏令时切换日不是 24 小时。
+ * The next local midnight (epoch ms; where an over-cap day recovers, #152). Built as y/m/d plus one day, not by adding 24h — a DST transition day isn't 24 hours long.
+ */
+export function nextLocalMidnight(now: Date): number {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).getTime();
 }
 
 /**

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 花费上限之二：新配置 `spendLimit.dayTokens`（可选，不配不限）给一天（运行机器的本地日期）全部票的合计 token 设上限，口径同 `ticketTokens`（输入 / 缓存写 / 缓存读 / 输出四项相加，全部记录、`limited` 和第三方档案都算）。已用 ≥ 上限时不再开新会话：主循环每轮预检加一条（固定文本，不打 stuck、不算空转，过本地 0 点自然恢复）；`runAgent` 开会话之前查到超限就在终端写明当天已用、上限和恢复时间，睡到下一个本地 0 点醒来重查再开（等的时候票占着空位）；prep 持宿主机锁、不睡——超限时本轮剩余 prep 跳过。正在跑的会话做完为止（`src/budget.ts` 新增 `daySpend` / `nextLocalMidnight`，`src/models.ts` 抽出 `readAllUsage`；docs/config 中英、docs/internal、DEVELOPMENT.md 同步）（closes #152）
+
 - 一直运行模式（#65 之一）：`maxIdlePolls` 配 `Infinity` 时不空闲退出，供 systemd / launchd 守护下长跑（空闲退出码 0 不会触发 `Restart=on-failure`，`Restart=always` 又会每约 2 小时退出重启一次、重新拿锁清孤儿容器）；空转进度文案在这个模式下只写次数（「空转 3 次」/「idle 3」），不再打「/Infinity」，有限值（含默认 12）的行为和文案不变。守护进程停服务发的 SIGTERM 走 Ctrl-C 同一路径收尾：打 interruptNotice、exit 事件里释放运行锁，退出码 143（`src/lifecycle.ts` 新增纯函数 `idleStop` / `idleProgress`，`onInterrupt` 同时接 SIGINT/SIGTERM；`src/main.ts` 空转分支改用它们；docs/config 中英、docs/internal 同步）（closes #154）
 
 - 花费上限之一：新配置 `spendLimit.ticketTokens`（可选，不配不限）给一张票的累计 token 设上限。开每个会话之前（implement、review、rebase、re-review、prep 都算）把 `usage.jsonl` 里这张票的全部记录折算求和——每条有 `models` 取各模型四项之和、没有取主行，输入 / 缓存写 / 缓存读 / 输出四项相加（缓存读也计，上限要按这个口径设），`limited` 记录和第三方档案的记录同样计入，跨运行、重启后照旧有效；已用 ≥ 上限就不开这个会话，票打 `sandcastle:stuck`、评论（中英）写明已用多少、上限多少，并提示先调大上限再去掉标签，否则去掉后下一个会话马上再次停下（prep 这样停下时也写重试标记，不会每轮重跑）；会话中途超出不打断，下一个会话才停（`src/budget.ts` 新增 `recordTokens` / `ticketSpend` / `BudgetExceeded`，`src/profile.ts` 加 `spendLimit`，`src/models.ts` 的用量格式化 `k` 改名导出为 `formatK` 供评论共用；docs/config 中英、docs/internal、DEVELOPMENT.md 同步）（closes #151）

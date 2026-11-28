@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BudgetExceeded, recordTokens, ticketSpend } from "../src/budget.ts";
+import { BudgetExceeded, daySpend, nextLocalMidnight, recordTokens, ticketSpend } from "../src/budget.ts";
 import type { UsageRecord } from "../src/models.ts";
 
 /** 造一条用量记录：只填要断言的字段，其余给 0 / 占位值。 / Make a usage record: only the asserted fields matter, the rest get 0 / placeholders. */
@@ -53,6 +53,34 @@ describe("ticketSpend（#61 决定 3 的口径）", () => {
 
   it("没有记录时是 0", () => {
     expect(ticketSpend([])).toBe(0);
+  });
+});
+
+describe("daySpend（#152 当天口径，按本地日期）", () => {
+  it("只把本地日期等于 now 的记录相加：别的票、别的阶段都算，本地前一天 23:59 / 次日 00:01 的不算", () => {
+    // now 和 at 都用本地时间构造再转 ISO，不依赖运行机器的时区（vitest 没固定 TZ）。
+    // Both now and at are built from local wall-clock times, so the test doesn't depend on the machine's timezone (vitest doesn't pin TZ).
+    const now = new Date(2026, 10, 28, 23, 59);
+    const records = [
+      rec({ at: new Date(2026, 10, 28, 0, 1).toISOString(), issue: "41", input: 100 }),
+      rec({ at: new Date(2026, 10, 28, 23, 58).toISOString(), issue: "42", phase: "review", input: 20 }),
+      rec({ at: new Date(2026, 10, 27, 23, 59).toISOString(), input: 999 }),
+      rec({ at: new Date(2026, 10, 29, 0, 1).toISOString(), input: 888 }),
+    ];
+    expect(daySpend(records, now)).toBe(120);
+  });
+
+  it("当天没有记录时是 0", () => {
+    expect(daySpend([rec({ at: new Date(2026, 10, 27, 23, 59).toISOString(), input: 100 })], new Date(2026, 10, 28))).toBe(0);
+  });
+});
+
+describe("nextLocalMidnight", () => {
+  it("当天任意时刻都指向次日本地 0 点（不用 +24h，夏令时切换日不是 24 小时）", () => {
+    expect(nextLocalMidnight(new Date(2026, 10, 28, 23, 59))).toBe(new Date(2026, 10, 29).getTime());
+    expect(nextLocalMidnight(new Date(2026, 10, 28, 0, 0))).toBe(new Date(2026, 10, 29).getTime());
+    // 夏令时切换的日期也按本地日历 +1 天 / A DST transition day still advances one local calendar day
+    expect(nextLocalMidnight(new Date(2026, 2, 8, 1, 0))).toBe(new Date(2026, 2, 9).getTime());
   });
 });
 
