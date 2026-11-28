@@ -24,7 +24,7 @@ import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { CLAUDE_FILES, fillDocsHint, manual, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
 import { OPEN_QUESTIONS, readOpenQuestions } from "./open-questions.ts";
 import { CONFIG_FILE, configDir, loadProject, type Labels, type Project } from "./profile.ts";
-import { containerStorePath, DEFAULT_MIN_FREE_GB, diskProblems, probeTcp, type Probe, type Statfs } from "./preflight.ts";
+import { containerStorePath, DEFAULT_MIN_FREE_GB, diskProblems, errText, probeTcp, type Probe, type Statfs } from "./preflight.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { trySh, type TryResult } from "./shell.ts";
 import { latestVersion, newer, VERSION } from "./version.ts";
@@ -64,7 +64,6 @@ const LABEL_META: Record<keyof Labels, [color: string, zh: string, en: string]> 
 const AUTO_LABELS: (keyof Labels)[] = ["flaky", "mainBroken", "waitingMain", "merging", "reviewed", "needsTriage", "trusted"];
 
 const firstLine = (s: string) => s.trim().split("\n")[0] ?? "";
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
  * 没声明 hostEnvFiles 时的启发式：取 config 源码里引号包着的 .env 或 .env.<后缀> 路径（.envrc 这类不算），去掉 .sandcastle/ 下的和示例文件；读不了源码就当没有。

@@ -83,7 +83,7 @@ export function diskProblems(paths: readonly string[], thresholdBytes: number, s
       const s = statfs(path);
       freeBytes = Number(s.bavail) * Number(s.bsize);
     } catch (e) {
-      return { path, status: "unknown", error: e instanceof Error ? e.message : String(e) };
+      return { path, status: "unknown", error: errText(e) };
     }
     return { path, status: freeBytes >= thresholdBytes ? "enough" : "low", freeBytes };
   });
@@ -100,7 +100,7 @@ export function containerStorePath(run: Run = trySh): string | null {
 }
 
 /** 报错的文字：Error 只取 message，不带「Error: 」前缀。 / An error's text: just the message for an Error, without the "Error: " prefix. */
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+export const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** 预检发现的一个问题：原因（写明是哪一项、差多少）和处理方法（写具体命令）。 / One preflight problem: its reason (which item, by how much) and its fix (concrete commands). */
 export type PreflightProblem = { reason: string; fix: string };
