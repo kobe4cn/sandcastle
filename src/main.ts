@@ -83,7 +83,7 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import type { SandboxExecOptions } from "@ai-hero/sandcastle";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import {
-  CLAUDE_CREDENTIALS_CLEARED, agentFor, missingCredentials, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
+  CLAUDE_CREDENTIALS_CLEARED, agentFor, credentialsFingerprint, missingCredentials, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
   type AgentRun, type AllProfilesLimited, type ModelUsageEntry, type Phase, type UsageRecord,
 } from "./models.ts";
 import { limitWait, sleepUntil, untilAfterLimit } from "./limit-wait.ts";
@@ -93,8 +93,8 @@ import type { ForgeComment, ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { mainBrokenBlocker, type MergeFlowDeps, type MergeResult, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
 import { configDir, loadProject } from "./profile.ts";
 import {
-  acquireRunLock, errorLine, exitWhenDone, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GATE_INFRA_PREFIX, GateInfraError, imageExists, isAgentIdleTimeout, isGateInfraFailure, imageStaleWarning, logErrorDetail, missingImage, onInterrupt,
-  podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath, waitForPodman,
+  acquireRunLock, agentAuthReason, authRecovered, errorLine, exitWhenDone, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GATE_INFRA_PREFIX, GateInfraError, imageExists, isAgentIdleTimeout, isGateInfraFailure, imageStaleWarning, logErrorDetail, missingImage, onInterrupt,
+  podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath, untilAuthRecovered, waitForPodman,
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
 import { createNotifier, readNotifyUrl } from "./notify.ts";
@@ -401,6 +401,9 @@ async function retryTransient<T>(what: string, fn: () => Promise<T>): Promise<T>
       return await fn();
     } catch (e) {
       const message = String((e as { stderr?: unknown }).stderr || e);
+      // 认证失效不按临时错误重跑（重试也是同样的 401，白等约 21 分钟）：直接抛给 untilAuthRecovered 等凭据更换（#62 之三）。
+      // An auth failure isn't retried as transient (each retry would just 401 again, wasting ~21 minutes): thrown straight out to untilAuthRecovered to wait for new credentials (#62 part 3).
+      if (agentAuthReason(e) !== null) throw e;
       const wait = TRANSIENT_RETRY_WAITS_MS[attempt];
       if (wait === undefined || !TRANSIENT.test(message)) throw e;
       const first = message.split("\n")[0].slice(0, 160);
@@ -2339,6 +2342,23 @@ const ciWaiting = new Set<string>();
 /** 占着空位的票数。 / Number of tickets holding a slot. */
 const busy = () => running.size - ciWaiting.size;
 
+// 会话中途认证失效的状态（#62 之三）：置上后主循环把它并进每轮预检，暂停开新会话；build 的 untilAuthRecovered 重跑成功（onUp）或预检发现凭据换过 / 等满 30 分钟时清掉。
+// State of a mid-session auth failure (#62 part 3): while set, the main loop folds it into the pass preflight, pausing new sessions; cleared when build's untilAuthRecovered reruns successfully (onUp) or the preflight sees the credentials replaced / the 30 minutes elapsed.
+let agentAuthDown: { reason: string; fingerprint: string; since: number } | undefined;
+/** 预检问题里的原因行：固定文本加那一行原因，不带时间——带了时间去重会失效，每轮都重打一遍。 / The reason line for preflight problems: fixed text plus the reason line, no timestamp — a timestamp would break dedup and reprint every pass. */
+const authReasonLine = (reason: string) => t(`会话撞上认证错误：${reason}`, `a session hit an authentication error: ${reason}`);
+const authFixLine = () =>
+  t("Claude 档案用 claude setup-token 生成新 token，填进 .sandcastle/.env；别家档案换 .env 里的 key。凭据换过或满 30 分钟后自动在原分支上重跑", "for Claude profiles, generate a new token with claude setup-token and put it in .sandcastle/.env; for other vendors, swap the key in .env. Sessions rerun on the same branch once the credentials change or after 30 minutes");
+/**
+ * 会话撞上认证失效：终端写明原因和处理方法，置标志让主循环暂停开新会话。不发通知（#62 定了凭据失效只写终端）。
+ * A session hit an authentication failure: print the reason and the fix to the terminal, and set the flag that pauses new sessions in the main loop. No notification (decided in #62: dead credentials only go to the terminal).
+ */
+function onAuthDown(reason: string) {
+  console.log(`  ⛔ ${authReasonLine(reason)}`);
+  console.log(t(`     处理：${authFixLine()}`, `     Fix: ${authFixLine()}`));
+  agentAuthDown = { reason, fingerprint: credentialsFingerprint(), since: Date.now() };
+}
+
 /**
  * 一张票独立跑完 build → 落地，做完就让出空位，不等同批的其他票。
  * One ticket runs build → land on its own and frees its slot when done, without waiting for others in the same batch.
@@ -2347,11 +2367,19 @@ function start(issue: Issue, resume = false) {
   running.set(issue.id, issue);
   void (async () => {
     // 撞上限额的票等重置后在原分支上重跑，不打 stuck。接着等合并的票（resume）不 build。
+    // 认证失效（#62 之三）在最外层等：凭据换过或满 30 分钟后在原分支上重跑，限额等待和临时错误重试都在它里面；不算失败、不打 stuck、不进 land 的 rejected 分支。
     // Tickets that hit a usage limit rerun on the same branch after the reset, without being marked stuck. Tickets resuming a merge (resume) skip build.
+    // An auth failure (#62 part 3) waits at the outermost layer: rerun on the same branch once the credentials change or after 30 minutes, with the limit wait and transient retries inside it; not a failure, no stuck, never reaching land's rejected branch.
     const [outcome] = resume
       ? [undefined]
       : await Promise.allSettled([
-          untilAfterLimit(`#${issue.id}`, () => retryTransient(`#${issue.id}`, () => build(issue)), () => pushIfAhead(issue), { comment: limitedComment(issue.id) }),
+          untilAuthRecovered(`#${issue.id}`, () => untilAfterLimit(`#${issue.id}`, () => retryTransient(`#${issue.id}`, () => build(issue)), () => pushIfAhead(issue), { comment: limitedComment(issue.id) }), {
+            fingerprint: credentialsFingerprint,
+            onDown: onAuthDown,
+            onUp: () => {
+              agentAuthDown = undefined;
+            },
+          }),
         ]);
     // 落地在宿主机上做：用宿主机的 git / 平台凭据，沙箱没有写仓库的权限。
     // 每张票单独兜底：一张票落地出错（网络、人在运行中途合并或删了分支等）不让整个运行崩掉。
@@ -2497,6 +2525,13 @@ async function schedule(): Promise<ScheduleResult> {
         }
         break;
       }
+      // 认证失效（#62 之三）：环境类错误，不算失败——置标志（主循环暂停开新会话）后 break，跳过下面的 prepTried.set，凭据好了下次调度重新 prep。
+      // An auth failure (#62 part 3): an environment-style error, not a failure — set the flag (the main loop pauses new sessions) and break, skipping prepTried.set below so prep reruns next pass once the credentials work.
+      const auth = agentAuthReason(e);
+      if (auth !== null) {
+        onAuthDown(auth);
+        break;
+      }
       logErrorDetail(ERROR_LOG, `prep #${issue.number}`, e, appendFileSync);
       console.error(t(`  ✗ prep #${issue.number} 出错：`, `  ✗ prep #${issue.number} error: `) + errorLine(e) + t(`（详情见 ${ERROR_LOG}）`, ` (details in ${ERROR_LOG})`));
     }
@@ -2633,11 +2668,15 @@ for (let pass = 1; ; pass++) {
     console.log(t(`\n=== 调度 ${pass}（${now}，${busy()}/${MAX_PARALLEL} 个空位已占）===\n`, `\n=== Pass ${pass} (${now}, ${busy()}/${MAX_PARALLEL} slots taken) ===\n`));
     // 每轮调度前预检（#62 之二）：平台登录、Claude 凭据、磁盘。失败时这一轮不开任何新会话（prep / implement 都不开）——schedule 一开头就 fetch，凭据失效会让整个运行崩掉；不打 stuck、不算空转，已在跑的票不受影响。
     // The preflight before each pass (#62 part 2): forge login, Claude credentials, disk. A failure means no new sessions this pass (neither prep nor implement) — schedule fetches first, and dead credentials would crash the whole run; no stuck label, no idle counting, already-running tickets are unaffected.
+    // 会话中途认证失效的标志（#62 之三）先看能不能清：凭据换过或等满 30 分钟就清掉（prep 置的标志没有 onUp 去清，靠这里）；还在的话并进预检问题，同样暂停开新会话。
+    // First see whether the mid-session auth-failure flag (#62 part 3) can be cleared: gone once the credentials changed or the 30 minutes elapsed (a flag set by prep has no onUp; this is what clears it); while set it joins the preflight problems and pauses new sessions the same way.
+    if (agentAuthDown !== undefined && authRecovered(agentAuthDown, credentialsFingerprint(), Date.now())) agentAuthDown = undefined;
     const problems = preflightProblems({
       checkAccess: () => forge.checkAccess(),
       missingCredentials,
       disk: () => diskProblems([process.cwd(), ...(containerStore ? [containerStore] : [])], project.preflight.minFreeGb * 1024 ** 3),
     });
+    if (agentAuthDown !== undefined) problems.push({ reason: authReasonLine(agentAuthDown.reason), fix: authFixLine() });
     if (problems.length > 0) {
       const text = problems.map((p) => `${p.reason}\n${p.fix}`).join("\n");
       if (text !== preflightFailed)

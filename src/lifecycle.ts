@@ -146,6 +146,82 @@ export function gateEnvReason(e: unknown): string | null {
   return i === -1 ? null : text.slice(i + GATE_ENV_PREFIX.length).split("\n")[0].trim();
 }
 
+/** 会话中途认证失效的报错前缀（main.ts 的 TRANSIENT 不认它，#62 之三）。 / Prefix of mid-session authentication failures (not matched by TRANSIENT in main.ts, #62 part 3). */
+export const AGENT_AUTH_PREFIX = "agent auth:";
+
+/**
+ * 会话中途认证失效（401、token 过期、要 /login）：凭据的问题，不是代码的错——不换档案、不记限额、不算票失败，抛给 untilAuthRecovered 等凭据更换后重跑。
+ * A mid-session authentication failure (401, expired token, /login required): the credentials' problem, not the code's — no profile switch, no limit record, not a ticket failure; thrown to untilAuthRecovered to wait for new credentials and rerun.
+ */
+export class AgentAuthError extends Error {
+  constructor(line: string) {
+    super(`${AGENT_AUTH_PREFIX} ${line}`);
+    this.name = "AgentAuthError";
+  }
+}
+
+/**
+ * 报错是 AgentAuthError 时取出匹配的那一行（截到 200 个字符），否则 null。
+ * 照 gateEnvReason 用 indexOf、不靠 instanceof：错误可能被 Effect 包成 (FiberFailure)。
+ * The matched line when the error is an AgentAuthError (truncated to 200 characters), otherwise null.
+ * Like gateEnvReason it uses indexOf, not instanceof: the error may be wrapped by Effect as (FiberFailure).
+ */
+export function agentAuthReason(e: unknown): string | null {
+  const text = String((e as { message?: unknown } | undefined)?.message ?? e);
+  const i = text.indexOf(AGENT_AUTH_PREFIX);
+  return i === -1 ? null : text.slice(i + AGENT_AUTH_PREFIX.length).split("\n")[0].trim().slice(0, 200);
+}
+
+/**
+ * 认证失效算不算恢复了：凭据指纹变了（.sandcastle/.env 换过），或者等满 maxWaitMs（默认 30 分钟）兜底重跑。
+ * Whether an auth failure has recovered: the credentials fingerprint changed (.sandcastle/.env was swapped), or maxWaitMs has elapsed (30 minutes by default) as a fallback rerun.
+ */
+export function authRecovered(down: { fingerprint: string; since: number }, fingerprint: string, now: number, maxWaitMs = 30 * 60_000): boolean {
+  return fingerprint !== down.fingerprint || now - down.since >= maxWaitMs;
+}
+
+/**
+ * 跑 fn，撞上会话中途的认证失效就等到凭据换过（或满 30 分钟兜底）再重跑；其他错误照抛。
+ * fn 要能从头重跑：build 重跑时在原分支上接着做。onDown 在等之前调用（打印原因、置主循环的暂停标志），fn 成功后调 onUp。
+ * deps 给测试注入假的 fingerprint / sleep / now。
+ * Run fn; on a mid-session auth failure wait until the credentials are replaced (or the 30-minute fallback) and rerun; other errors are rethrown.
+ * fn must be rerunnable from the start: a rerun of build continues on the same branch. onDown is called before waiting (print the reason, set the main loop's pause flag); onUp after fn succeeds.
+ * deps lets tests inject a fake fingerprint / sleep / now.
+ */
+export async function untilAuthRecovered<T>(
+  what: string,
+  fn: () => Promise<T>,
+  deps: {
+    fingerprint: () => string;
+    onDown: (reason: string) => void;
+    onUp: () => void;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+    pollMs?: number;
+    maxWaitMs?: number;
+  },
+): Promise<T> {
+  const { fingerprint, onDown, onUp, sleep: sleepFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, pollMs = 60_000, maxWaitMs } = deps;
+  for (;;) {
+    try {
+      const out = await fn();
+      onUp();
+      return out;
+    } catch (e) {
+      const reason = agentAuthReason(e);
+      if (reason === null) throw e;
+      onDown(reason);
+      // down 记在 catch 里面：放外面 TS 对 fingerprint() 的收窄过不了。 / down is recorded inside the catch: outside it, TS can't narrow fingerprint() through.
+      const down = { fingerprint: fingerprint(), since: now() };
+      while (!authRecovered(down, fingerprint(), now(), maxWaitMs)) await sleepFor(pollMs);
+      const how = fingerprint() !== down.fingerprint
+        ? t("凭据已换过", "the credentials were replaced")
+        : t("等满 30 分钟", "the 30-minute fallback elapsed");
+      console.log(t(`  ↻ ${what}：${how}，在原分支上重跑`, `  ↻ ${what}: ${how}; rerunning on the same branch`));
+    }
+  }
+}
+
 /**
  * 门槛结束后判断是不是基础设施故障，是就返回一行原因，否则 null。
  * 退出码 125 / 255（podman 自己出错）、stderr 命中连接类错误、或此刻 `podman info` 不通，都算；退出码 137 只有 podman 不通时才算（podman 正常时多半是 OOM，按门槛失败处理）。

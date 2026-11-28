@@ -3,11 +3,13 @@
 // Which model each Sandcastle phase uses: reads .sandcastle/models.json, picks a profile per phase, moves to the next one on a usage limit, and records each session's token usage.
 // Format and rules: "模型配置" in docs/internal/sandcastle.md.
 
+import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { parseEnv } from "node:util";
 import * as sandcastle from "@ai-hero/sandcastle";
 import { messages, type Messages } from "./i18n.ts";
+import { AgentAuthError } from "./lifecycle.ts";
 import { t } from "./term.ts";
 
 export const PHASES = ["prep", "implement", "review", "revise", "fix", "rebase", "re-review"] as const;
@@ -98,6 +100,16 @@ export const CLAUDE_CREDENTIALS_CLEARED: Readonly<Record<string, string>> = Obje
 
 /** claude-code 撞订阅限额的报错，如「You've hit your 5-hour limit · resets 6:20am (UTC)」。 */
 export const CLAUDE_LIMIT_PATTERN = /hit your .*?limit/i;
+/**
+ * 会话中途的认证失效（401、token 过期、要 /login、authentication_error）：对所有档案生效，不新增 models.json 配置项（#62 之三）。
+ * review 和 prep 会话没有 completionSignal，命中只能从输出文本里认，所以不能只匹配 401。
+ * A mid-session authentication failure (401, expired token, /login required, authentication_error): applies to every profile, no new models.json option (#62 part 3).
+ * Review and prep sessions have no completionSignal, so a hit can only be spotted in the output text — matching bare 401s isn't enough.
+ */
+export const AGENT_AUTH_PATTERN = /invalid api key|please run \/login|oauth token (?:has )?expired|authentication_error|API Error: 401/i;
+/** 文本里第一条命中认证失效的行（截到 200 个字符），没有返回 undefined。 / The first line matching an auth failure (truncated to 200 characters); undefined when none. */
+const authLine = (text: string): string | undefined =>
+  text.split("\n").map((l) => l.trim()).find((l) => AGENT_AUTH_PATTERN.test(l))?.slice(0, 200);
 /** 认不出重置时间时跳过这个档案多久。 / How long to skip a profile when the reset time can't be read. */
 const UNKNOWN_RESET_SKIP_MS = 60 * 60_000;
 const RESET_SLACK_MS = 2 * 60_000;
@@ -138,6 +150,18 @@ const sandcastleEnvKeys = () => new Set(Object.keys(sandcastleEnv()));
 function claudeCredentials(): [string, string][] {
   const env = sandcastleEnv();
   return CLAUDE_CREDENTIALS.flatMap((k): [string, string][] => (env[k] ? [[k, env[k]]] : []));
+}
+
+/**
+ * 凭据指纹：对 sandcastleEnv()（.sandcastle/.env 列出的键）按键排序后的 JSON 求 sha256。
+ * 只用来比较「凭据换过没有」（#62 之三）；不打印、不写日志——它概括了全部凭据的值。没有挂载 ~/.claude 一类的凭据文件，算这一份就够。
+ * Credentials fingerprint: sha256 of sandcastleEnv()'s JSON (.sandcastle/.env's keys) with keys sorted.
+ * Only used to compare "have the credentials changed" (#62 part 3); never printed or logged — it summarizes every credential's value. No ~/.claude-style credential files are mounted, so this one source is enough.
+ */
+export function credentialsFingerprint(): string {
+  const env = sandcastleEnv();
+  const sorted = Object.fromEntries(Object.keys(env).sort().map((k) => [k, env[k]]));
+  return createHash("sha256").update(JSON.stringify(sorted)).digest("hex");
 }
 
 function parseProfile(name: string, raw: unknown, warn: (m: string) => void): Profile & { readonly refs: readonly { where: string; variable: string }[] } {
@@ -525,8 +549,12 @@ const limitText = (run: AgentRun, p: Profile) =>
 /**
  * 用这个阶段第一个没在等限额的档案跑一次会话。撞上限额就记下重置时间（认不出跳过 1 小时）、换下一个；
  * 都在等时抛 AllProfilesLimited。其他错误照抛。撞限额时先调 onLimited（限额文本作为输出返回的带上那次 run，抛错的不带）。
+ * 会话撞上认证失效（AGENT_AUTH_PATTERN，不管是抛出来的还是作为最后输出、不带完成信号返回的）改抛 AgentAuthError：
+ * 不换档案、不记限额、不调 onLimited，由调用方（untilAuthRecovered）等凭据更换后重跑（#62 之三）。
  * Run one session with this phase's first profile that isn't waiting on a limit. On a limit, record the reset time (skip 1 hour if unreadable) and try the next;
  * throw AllProfilesLimited when all are waiting. Other errors are rethrown. On a limit, onLimited is called first (with the run when the limit text came back as output, without when it was thrown).
+ * A session hitting an authentication failure (AGENT_AUTH_PATTERN, whether thrown or returned as the final output without the completion signal) throws AgentAuthError instead:
+ * no profile switch, no limit record, no onLimited; the caller (untilAuthRecovered) waits for new credentials and reruns (#62 part 3).
  */
 export async function runWithProfile<T extends AgentRun>(
   phase: Phase,
@@ -546,11 +574,20 @@ export async function runWithProfile<T extends AgentRun>(
     let limitedRun: T | undefined;
     try {
       const run = await fn(profile);
+      // 认证失效要赶在限额之前认：401 一类不是限额，换了档案也一样失败。
+      // An auth failure must be caught before a limit: a 401 isn't a limit, and switching profiles would fail the same way.
+      const auth = run.completionSignal === undefined ? authLine(run.stdout.slice(-2000)) : undefined;
+      if (auth !== undefined) throw new AgentAuthError(auth);
       message = limitText(run, profile);
       if (message === undefined) return { run, profile };
       limitedRun = run;
     } catch (e) {
+      // 上面输出那条路抛的 AgentAuthError 直接照抛，不再包一层前缀。 / An AgentAuthError thrown on the output path above is rethrown as is, without another prefix.
+      if (e instanceof AgentAuthError) throw e;
       message = String(e);
+      // 认证那一行不带「Error: 」前缀，reason 打出来干净。 / The auth line drops the "Error: " prefix so the printed reason stays clean.
+      const auth = authLine(errorText(e));
+      if (auth !== undefined) throw new AgentAuthError(auth);
       if (!profile.limitPattern.test(message)) throw e;
     }
     onLimited?.(profile, limitedRun);
