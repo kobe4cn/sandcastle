@@ -436,12 +436,20 @@ describe("gitlabForge 发给 glab 的参数", () => {
     expect(calls).toEqual([["api", "projects/:id/merge_requests/12"]]);
   });
 
-  it("prChecks：MR 头提交（新 push）的 pipeline 还没建出来、head_pipeline 还是旧提交的时返回空数组，不去查旧 pipeline 的 job", () => {
+  it("prChecks：MR 头提交（新 push）的 pipeline 还没建出来、head_pipeline 还是旧提交的时返回一个 pending 占位检查（项目有 CI、只是还没跑完，fail-closed），不去查旧 pipeline 的 job", () => {
     const { forge, calls } = fakeGlab(
       JSON.stringify({ iid: 12, state: "opened", source_branch: "b", sha: "new", head_pipeline: { id: 77, sha: "old" } }),
       JSON.stringify({ name: "build", status: "success", allow_failure: false }),
     );
-    expect(forge.prChecks!("12", false)).toEqual([]);
+    expect(forge.prChecks!("12", false)).toEqual([{ name: "pipeline", state: "pending" }]);
+    expect(calls).toEqual([["api", "projects/:id/merge_requests/12"]]);
+  });
+
+  it("prChecks：MR 缺 sha 但有 head_pipeline 时也返回 pending 占位检查", () => {
+    const { forge, calls } = fakeGlab(
+      JSON.stringify({ iid: 12, state: "opened", source_branch: "b", head_pipeline: { id: 77, sha: "old" } }),
+    );
+    expect(forge.prChecks!("12", false)).toEqual([{ name: "pipeline", state: "pending" }]);
     expect(calls).toEqual([["api", "projects/:id/merge_requests/12"]]);
   });
 
