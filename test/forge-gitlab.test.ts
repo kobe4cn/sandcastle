@@ -393,7 +393,7 @@ describe("gitlabForge 发给 glab 的参数", () => {
     expect(failingGlab("HTTP 404").viewPr("sandcastle/issue-9")).toBeNull();
   });
 
-  it("prChecks 取最新 pipeline 的 job 并归一状态：success / skipped→pass，failed / canceled→fail，manual 看 allow_failure，其余 pending；requiredOnly 去掉 allow_failure 的", () => {
+  it("prChecks 取 MR 头提交 pipeline（head_pipeline）的 job 并归一状态：success / skipped→pass，failed / canceled→fail，manual 看 allow_failure，其余 pending；requiredOnly 去掉 allow_failure 的", () => {
     const jobs = [
       { name: "build", status: "success", web_url: "https://x/build", allow_failure: false },
       { name: "lint", status: "skipped", allow_failure: false },
@@ -404,10 +404,11 @@ describe("gitlabForge 发给 glab 的参数", () => {
       { name: "wait", status: "waiting_for_resource", allow_failure: false },
       { name: "run", status: "running", allow_failure: false },
     ];
+    const mr = JSON.stringify({ iid: 12, state: "opened", source_branch: "b", sha: "abc", head_pipeline: { id: 77, sha: "abc" } });
     const { forge, calls } = fakeGlab(
-      JSON.stringify([{ id: 77 }]),
+      mr,
       jobs.map((j) => JSON.stringify(j)).join("\n"),
-      JSON.stringify([{ id: 77 }]),
+      mr,
       [JSON.stringify(jobs[0]), JSON.stringify(jobs[4])].join("\n"),
     );
     expect(forge.prChecks!("12", false)).toEqual([
@@ -422,17 +423,26 @@ describe("gitlabForge 发给 glab 的参数", () => {
     ]);
     expect(forge.prChecks!("12", true)).toEqual([{ name: "build", state: "pass", link: "https://x/build" }]);
     expect(calls).toEqual([
-      ["api", "projects/:id/merge_requests/12/pipelines?per_page=1"],
+      ["api", "projects/:id/merge_requests/12"],
       ["api", "projects/:id/pipelines/77/jobs", "--paginate", "--output", "ndjson"],
-      ["api", "projects/:id/merge_requests/12/pipelines?per_page=1"],
+      ["api", "projects/:id/merge_requests/12"],
       ["api", "projects/:id/pipelines/77/jobs", "--paginate", "--output", "ndjson"],
     ]);
   });
 
   it("prChecks：MR 还没有 pipeline 时返回空数组（没有检查），不用再查 job", () => {
-    const { forge, calls } = fakeGlab("[]");
+    const { forge, calls } = fakeGlab(JSON.stringify({ iid: 12, state: "opened", source_branch: "b", sha: "abc", head_pipeline: null }));
     expect(forge.prChecks!("12", false)).toEqual([]);
-    expect(calls).toEqual([["api", "projects/:id/merge_requests/12/pipelines?per_page=1"]]);
+    expect(calls).toEqual([["api", "projects/:id/merge_requests/12"]]);
+  });
+
+  it("prChecks：MR 头提交（新 push）的 pipeline 还没建出来、head_pipeline 还是旧提交的时返回空数组，不去查旧 pipeline 的 job", () => {
+    const { forge, calls } = fakeGlab(
+      JSON.stringify({ iid: 12, state: "opened", source_branch: "b", sha: "new", head_pipeline: { id: 77, sha: "old" } }),
+      JSON.stringify({ name: "build", status: "success", allow_failure: false }),
+    );
+    expect(forge.prChecks!("12", false)).toEqual([]);
+    expect(calls).toEqual([["api", "projects/:id/merge_requests/12"]]);
   });
 
   it.each([
