@@ -10,7 +10,7 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { messages } from "../src/i18n.ts";
 import {
   acquireRunLock, AGENT_AUTH_PREFIX, AgentAuthError, agentAuthReason, AUTH_MAX_HITS, authHitCapped, authRecovered, buildImageArgs, nextAuthHits, containerfileHash, errorLine, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GateInfraError, idleProgress, idleStop, IMAGE_LABEL, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, imageLabel, imageStaleWarning, missingImage, orphanContainers,
-  parseContainers, podmanProblem, removeOrphanContainers, untilAuthRecovered, waitForPodman,
+  parseContainers, podmanProblem, removeOrphanContainers, retryTransient, untilAuthRecovered, waitForPodman,
 } from "../src/lifecycle.ts";
 import type { TryResult } from "../src/shell.ts";
 import { setTermLanguage } from "../src/term.ts";
@@ -195,6 +195,47 @@ describe("waitForPodman", () => {
     const sleeps: number[] = [];
     expect(await waitForPodman(() => ({ ok: false, out: "down" }), async (ms) => void sleeps.push(ms), 30_000, 15_000)).toBe(false);
     expect(sleeps).toEqual([15_000, 15_000]);
+  });
+});
+
+describe("临时错误重跑（#176）", () => {
+  it("沙箱初始化时 git 读配置失败（fatal: unknown error occurred …，退出码 128）：等 60 秒整步重跑，打 ⚠ 不打 stuck", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let calls = 0;
+    const sleeps: number[] = [];
+    const out = await retryTransient(
+      "#176",
+      async () => {
+        if (++calls === 1) throw new Error('Command failed (exit 128): git config --global user.name "x"\nfatal: unknown error occurred while reading the configuration files');
+        return "done";
+      },
+      { sleep: async (ms) => void sleeps.push(ms) },
+    );
+    expect(out).toBe("done");
+    expect(calls).toBe(2);
+    expect(sleeps).toEqual([60_000]);
+    // 匹配的是 String(e) 整段文本；⚠ 行只显示第一行。 / What's matched is the whole String(e) text; the ⚠ line only shows the first line.
+    expect(warn.mock.calls.flat().join("\n")).toContain("撞上临时错误");
+    expect(warn.mock.calls.flat().join("\n")).toContain("Command failed (exit 128): git config --global user.name");
+    warn.mockRestore();
+  });
+
+  it("其他退出码 128 的 git 错误（not a git repository）不算临时错误：原样抛出，不等待", async () => {
+    let calls = 0;
+    const sleeps: number[] = [];
+    const e = new Error("Command failed (exit 128): git rev-parse --abbrev-ref HEAD\nfatal: not a git repository (or any of the parent directories): .git");
+    await expect(
+      retryTransient(
+        "#176",
+        async () => {
+          calls++;
+          throw e;
+        },
+        { sleep: async (ms) => void sleeps.push(ms) },
+      ),
+    ).rejects.toBe(e);
+    expect(calls).toBe(1);
+    expect(sleeps).toEqual([]);
   });
 });
 
