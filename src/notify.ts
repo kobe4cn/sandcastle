@@ -126,6 +126,9 @@ export function createNotifier(opts: {
     if (last.ok) return;
     if (last.status !== undefined)
       warn(t(`  ⚠ 通知发送失败（HTTP ${last.status}），不影响运行`, `  ⚠ Notify webhook failed (HTTP ${last.status}); the run continues`));
-    else warn(t(`  ⚠ 通知发送失败（${failKind(last.error, url)}），不影响运行`, `  ⚠ Notify webhook failed (${failKind(last.error, url)}); the run continues`));
+    else {
+      const kind = failKind(last.error, url);
+      warn(t(`  ⚠ 通知发送失败（${kind}），不影响运行`, `  ⚠ Notify webhook failed (${kind}); the run continues`));
+    }
   };
 }
