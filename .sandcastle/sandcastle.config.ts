@@ -17,7 +17,9 @@ export default defineProject({
   autoMerge: true,
   // 同时实现几张票：受测试依赖的服务（连接数）与机器负载限制
   // How many tickets to implement at once: limited by the services the tests use (connections) and machine load
-  maxParallel: 1,
+  // 本仓库测试不依赖外部服务，并行度受模型额度和机器负载限制；2 张同时做。
+  // This repo's tests use no external services; parallelism is bounded by model quota and machine load, so 2 at a time.
+  maxParallel: 2,
 
   install: {
     // 沙箱建好后装依赖（容器是 linux，宿主机拷进来的原生包可能用不了）
@@ -62,5 +64,7 @@ export default defineProject({
 
   // 几张票会同时往末尾追加的索引文件（CHANGELOG、测试目录……），列在这里的不算「改同一个文件」，可以并行。
   // Index files several tickets append to at once (CHANGELOG, test catalog…); files listed here don't count as "changing the same file", so those tickets can run in parallel.
-  appendOnlyFiles: [],
+  // 几乎每张票都往 CHANGELOG 的 Unreleased 加一条，冲突时 rebase 两边都保留。
+  // Nearly every ticket adds an entry under CHANGELOG's Unreleased; rebase keeps both sides on conflict.
+  appendOnlyFiles: ["CHANGELOG.md"],
 });
