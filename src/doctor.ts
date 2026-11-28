@@ -1,14 +1,14 @@
 // doctor：跑流水线之前把能在宿主机上查的都查一遍，每项给出结论和修法。
 // 查：仓库根目录、配置能加载、宿主机依赖与 env 文件、PROJECT.md 与提示词能渲染、浏览器验收、合并条件（有 CI workflow 却不等检查时警告）、项目知识（缺口清单）、models.json、.env 的 token、通知 webhook（--notify-test 时发一条测试消息）、平台登录与权限、
-// 标签、镜像（--fix 时补建 / 直接建，与 Containerfile 不一致时报过期、--fix 重建）、Sandcastle 票的 Blocked by 引用、开着的 main-broken 票、远端基础分支、沙箱镜像、门槛依赖的服务、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
+// 标签、镜像（--fix 时补建 / 直接建，与 Containerfile 不一致时报过期、--fix 重建）、Sandcastle 票的 Blocked by 引用、开着的 main-broken 票、远端基础分支、沙箱镜像、门槛依赖的服务、磁盘剩余空间（工作目录、容器存储）、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
 // 有一项 ✗ 退出码就是 1。
 // doctor: before running the pipeline, check everything that can be checked on the host, giving a verdict and a fix for each.
 // Checks: repository root, config loads, host dependencies and env files, PROJECT.md and prompts render, browser check, merge requirements (warns when there are CI workflows but checks aren't awaited), project knowledge (open questions list), models.json, .env tokens, the notify webhook (a test message with --notify-test), forge login and permissions,
-// labels and the image (created / built with --fix, reported stale and rebuilt with --fix when it doesn't match the Containerfile), Blocked by references in Sandcastle tickets, open main-broken tickets, remote base branch, sandbox image, gate services, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
+// labels and the image (created / built with --fix, reported stale and rebuilt with --fix when it doesn't match the Containerfile), Blocked by references in Sandcastle tickets, open main-broken tickets, remote base branch, sandbox image, gate services, free disk space (working directory, container storage), context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
 // Exit code 1 if any check is ✗.
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, statfsSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parseEnv } from "node:util";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
@@ -24,7 +24,7 @@ import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { CLAUDE_FILES, fillDocsHint, manual, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
 import { OPEN_QUESTIONS, readOpenQuestions } from "./open-questions.ts";
 import { CONFIG_FILE, configDir, loadProject, type Labels, type Project } from "./profile.ts";
-import { probeTcp, type Probe } from "./preflight.ts";
+import { containerStorePath, DEFAULT_MIN_FREE_GB, diskProblems, probeTcp, type Probe, type Statfs } from "./preflight.ts";
 import { loadProjectDoc, renderPrompts } from "./project-doc.ts";
 import { trySh, type TryResult } from "./shell.ts";
 import { latestVersion, newer, VERSION } from "./version.ts";
@@ -100,6 +100,8 @@ export async function diagnose(opts: {
   latest?: () => Promise<string | undefined>;
   /** 连门槛依赖的服务；测试里换成假实现，默认 probeTcp / Connects to the gate's services; a fake in tests, probeTcp by default */
   probe?: Probe;
+  /** 量磁盘剩余空间；不给就跳过「磁盘」一节（测试里不碰真实磁盘） / Measures free disk space; the Disk section is skipped when absent (no real disk in tests) */
+  statfs?: Statfs;
   /** 检查通知 webhook；不给就跳过「通知」一节（测试里不连网） / Checks the notify webhook; the Notify section is skipped when absent (no network in tests) */
   notifyFetch?: typeof fetch;
   /** --notify-test：发一条测试消息（--fix 时不发，只做连通检查） / --notify-test: send a test message (not with --fix, which only checks reachability) */
@@ -544,6 +546,41 @@ export async function diagnose(opts: {
       );
   }
 
+  // ---- 磁盘 ---- / Disk
+  // 没给 statfs 就整节跳过（同 notifyFetch 的做法）：已有的 doctor 用例不碰真实磁盘，CI 上的剩余空间不确定。
+  // The whole section is skipped without a statfs (like notifyFetch): existing doctor cases don't touch the real disk, and free space on CI isn't deterministic.
+  if (opts.statfs) {
+    const statfs = opts.statfs;
+    const minFreeGb = project?.preflight.minFreeGb ?? DEFAULT_MIN_FREE_GB;
+    const gb = (bytes: number) => (bytes / 1024 ** 3).toFixed(1);
+    const diskRow = (name: string, path: string, unmeasurableFix?: string) => {
+      const r = diskProblems([path], minFreeGb * 1024 ** 3, statfs)[0]!;
+      if (r.status === "enough") add(name, "ok", t(`剩余 ${gb(r.freeBytes)} GB`, `${gb(r.freeBytes)} GB free`));
+      else if (r.status === "low")
+        add(
+          name,
+          "fail",
+          t(`剩余 ${gb(r.freeBytes)} GB，少于阈值 ${minFreeGb} GB`, `${gb(r.freeBytes)} GB free, below the ${minFreeGb} GB threshold`),
+          t("腾出空间：podman image prune、podman system prune、git worktree prune", "Free up space: podman image prune, podman system prune, git worktree prune"),
+        );
+      else add(name, "warn", t(`量不到：${r.error}`, `couldn't measure: ${r.error}`), unmeasurableFix);
+    };
+    diskRow(t("磁盘（工作目录）", "Disk (working dir)"), cwd);
+    // 自定义了 sandbox 就没有 podman 的容器存储可量（同上面「沙箱镜像」一节的判断）
+    // A custom sandbox means there's no podman container storage to measure (same judgement as the Sandbox image section above)
+    if (!project?.customSandbox) {
+      const name = t("磁盘（容器存储）", "Disk (container storage)");
+      const store = containerStorePath(run);
+      if (store === null) add(name, "warn", t("取不到容器存储路径（podman info 失败）", "couldn't get the container storage path (podman info failed)"));
+      else
+        diskRow(
+          name,
+          store,
+          t("macOS 的 podman machine 下 GraphRoot 在虚拟机里，宿主机上量不到，可以忽略", "under macOS's podman machine the GraphRoot is inside the VM, so the host can't measure it; safe to ignore"),
+        );
+    }
+  }
+
   // ---- 上下文预算 hook ---- / Context budget hook
   const settingsPath = join(cwd, ".claude/settings.json");
   const registered = existsSync(settingsPath) && readFileSync(settingsPath, "utf8").includes(HOOK_FILE);
@@ -660,7 +697,7 @@ export function formatChecks(checks: Check[]): string {
 }
 
 export async function doctor(argv: string[]) {
-  const checks = await diagnose({ fix: argv.includes("--fix"), latest: () => latestVersion(), notifyFetch: fetch, notifyTest: argv.includes("--notify-test") });
+  const checks = await diagnose({ fix: argv.includes("--fix"), latest: () => latestVersion(), notifyFetch: fetch, notifyTest: argv.includes("--notify-test"), statfs: statfsSync });
   console.log(formatChecks(checks));
   const failed = checks.filter((c) => c.level === "fail").length;
   const warned = checks.filter((c) => c.level === "warn").length;

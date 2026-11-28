@@ -1,5 +1,9 @@
 # 更新记录
 
+## Unreleased
+
+- `sandpipe doctor` 新增磁盘剩余空间检查：工作目录和容器存储（`podman info` 的 GraphRoot）各一行——够 ✓ 写剩余 GB；低于新配置 `preflight.minFreeGb`（可选，默认 5）时 ✗ 写剩余 / 阈值，fix 给清理命令（`podman image prune`、`podman system prune`、`git worktree prune`）；量不到只 ⚠（比如 macOS 的 podman machine 下 GraphRoot 在虚拟机里，宿主机上 statfs 不到，取不到 GraphRoot 时同样 ⚠）。配置里自定义了 `sandbox` 时不查容器存储（`src/preflight.ts` 新增 `diskProblems` / `containerStorePath` / `DEFAULT_MIN_FREE_GB`，statfs 可注入，供后续 `sandpipe run` 每轮预检复用；`src/doctor.ts` 的 diagnose 加 `statfs`，`doctor(argv)` 传 `statfsSync`；`src/profile.ts` 的 `ProjectProfile` 加可选 `preflight.minFreeGb`；docs/config 中英同步）（closes #140）
+
 ## 0.3.4
 
 - 主动通知（四，#63 之一）：通知里的票带上链接——GitHub forge 实现了可选的 `issueUrl`（`src/forges/github.ts`）：第一次用到时用 `gh repo view --json url` 探一次仓库链接并缓存（url 自带 host，GHE 也适用），gh 报错或输出为空时也缓存下来、返回 undefined 不抛错（通知照旧只带 `#N`），以后不再重试；`Forge.issueUrl` 的返回类型相应改为 `string | undefined`，8 处调用方不用改（closes #135）
