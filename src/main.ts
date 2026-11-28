@@ -88,6 +88,7 @@ import {
 } from "./models.ts";
 import { BudgetExceeded, daySpend, nextLocalMidnight, ticketSpend } from "./budget.ts";
 import { limitWait, sleepUntil, untilAfterLimit } from "./limit-wait.ts";
+import { LOG_MAX_AGE_DAYS, pruneLogs } from "./log-rotate.ts";
 import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage, idleSummary, splitChildren } from "./guide.ts";
 import { acceptanceSection, browserSection, checkAcceptanceNotes, pageChangedByReview, replaceGenerated, replaceSection, restSections, sectionOf } from "./pr-body.ts";
 import type { ForgeComment, ForgeIssue, ForgePr, IssueState } from "./forge.ts";
@@ -2680,6 +2681,9 @@ if (!runLock.ok)
     ),
   );
 process.on("exit", runLock.release);
+// 日志轮转（#155）：拿到锁之后清一次，主循环每轮开头再清一次，一直运行时 .sandcastle/logs/ 不再无限增长。
+// Log rotation (#155): prune once after taking the lock and again at the top of each main-loop pass, so an always-on run no longer grows .sandcastle/logs/ without bound.
+pruneLogDir();
 onInterrupt(() => ({
   inProgress: [...running.keys()].filter((id) => !ciWaiting.has(id)),
   waitingChecks: [...ciWaiting],
@@ -2733,6 +2737,23 @@ function reportOrphans(removed: string[]) {
   );
 }
 
+/** 清一次 .sandcastle/logs（log-rotate.ts）：删过期 .log、按大小轮转 errors.log；出错只警告一行，不中断运行。 / Prune .sandcastle/logs once (log-rotate.ts): expired .log removed, errors.log rotated by size; a failure warns one line and never stops the run. */
+function pruneLogDir() {
+  try {
+    const r = pruneLogs(".sandcastle/logs");
+    if (r.removed.length === 0 && r.rotated.length === 0) return;
+    const rotated = r.rotated.length > 0 ? t("，errors.log 超过 10 MB 已轮转", "; errors.log over 10 MB rotated") : "";
+    console.log(
+      t(
+        `  🧹 清理日志：删了 ${r.removed.length} 个超过 ${LOG_MAX_AGE_DAYS} 天的旧文件${rotated}`,
+        `  🧹 Log cleanup: removed ${r.removed.length} file(s) older than ${LOG_MAX_AGE_DAYS} days${rotated}`,
+      ),
+    );
+  } catch (e) {
+    console.warn(`  ⚠ ${t(`清理日志目录 .sandcastle/logs 失败：${errorLine(e)}`, `Failed to prune the logs directory .sandcastle/logs: ${errorLine(e)}`)}`);
+  }
+}
+
 if (process.env.SANDCASTLE_BASELINE === "1") {
   process.exitCode = (await runBaseline()) ? 0 : 1;
 } else {
@@ -2742,6 +2763,9 @@ let idlePolls = 0;
 let preflightFailed: string | undefined;
 let everStarted = false; // 这次运行开工过票没有 / whether this run ever started a ticket
 for (let pass = 1; ; pass++) {
+  // 日志轮转（#155）：每轮开头清一次（删过期 .log、按大小轮转 errors.log），失败只警告、不挡这一轮。
+  // Log rotation (#155): prune at the top of each pass (expired .log removed, errors.log rotated by size); a failure only warns and never blocks the pass.
+  pruneLogDir();
   // 每轮读一次 .sandcastle/models.json，不管有没有空位：改了配置不用重启，下一轮生效（#43：空位全满时也要读）。
   // Read .sandcastle/models.json every pass whether or not a slot is free: config changes apply next pass without a restart (#43: read even when every slot is taken).
   reloadModels();
