@@ -69,13 +69,6 @@ For a project with a web UI, the agent starts the dev server in the sandbox and 
 
 The Containerfile onboard generates installs playwright-cli and Chromium whether or not the project has a web UI. onboard first reads the project's existing acceptance material (README, test notes, old `.sandcastle` prompts, scripts under `scripts/` that create acceptance data); if it can piece together the four steps below it writes this section, otherwise it lists what's missing (dev server start command and port, how to create acceptance data, how to log in and with which account, the variables the dev server needs) in the open questions list. When a backend project adds a frontend: add this section to PROJECT.md (following the example below) and set `browser.pagePaths` (see Optional); the sandbox already has the browser.
 
-When the project has Playwright e2e (onboard detects a `playwright.config.{ts,js,mjs,cjs}` in the root, or a `test:e2e` / `e2e` script in package.json), onboard appends the e2e command to the end of `gate.script` so the merge gate runs it: broken pages are caught even when the diff misses `browser.pagePaths`. The Playwright baseline screenshot directory (`-snapshots/`) goes into `protectedPaths` at the same time — a ticket updating a baseline stays a PR for a human to confirm instead of auto-merging. Running e2e in the gate:
-
-- The dev server is started inside the gate by Playwright's `webServer` config; `gate.services` only does a TCP preflight on the host and starts nothing. Services the e2e run depends on (a database, …) go into `gate.services`.
-- The sandbox image ships Chromium (`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`) but not `@playwright/test`; on a version mismatch, add `playwright install chromium` to `install.onSandboxReady`.
-- Failing spec paths must be recognizable by the `gate.testFile` regex for the fix and flaky reruns to work (node's default `\S+\.(test|spec)\.[cm]?[jt]sx?` already covers `e2e/xxx.spec.ts`).
-- Don't add the e2e command to `gate.typecheck` (it only runs when a rebased PR is left for review).
-
 - **Put the dev server's variables in `isolation.env`**: every variable the dev server reads in the sandbox (database, session secret, object storage, etc.) must be in what `isolation.env` returns, or it won't start. Read them from the host env files with `readHostEnv` from the previous section, and pass values that point at local services through `toContainerHost`.
 - **Use a separate database**: as for tests, add a `` `_i${runId}` `` suffix to the database name with `withDbSuffix`, so acceptance data never touches the dev database and parallel tickets don't wipe each other's tables (see the example at the top).
 - **Acceptance data**: make the first step of this section the command that creates data (seed script, accounts); fixed setup steps for the human's acceptance go in `acceptancePrep` (see Optional).
@@ -91,6 +84,13 @@ Example (replace the commands, port and accounts with the project's own):
 3. Log in: `playwright-cli open http://localhost:3000/login`, log in with the account above; it only counts once the address leaves `/login`.
 4. To find errors, `grep -n -i error /tmp/dev.log`.
 ```
+
+When the project has Playwright e2e (onboard detects a `playwright.config.{ts,js,mjs,cjs}` in the root, or a `test:e2e` / `e2e` script in package.json), onboard appends the e2e command to the end of `gate.script` so the merge gate runs it: broken pages are caught even when the diff misses `browser.pagePaths`. The Playwright baseline screenshot directory (`-snapshots/`) goes into `protectedPaths` at the same time — a ticket updating a baseline stays a PR for a human to confirm instead of auto-merging. Running e2e in the gate:
+
+- The dev server is started inside the gate by Playwright's `webServer` config; `gate.services` only does a TCP preflight on the host and starts nothing. Services the e2e run depends on (a database, …) go into `gate.services`.
+- The sandbox image ships Chromium (`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`) but not `@playwright/test`; on a version mismatch, add `playwright install chromium` to `install.onSandboxReady`.
+- Failing spec paths must be recognizable by the `gate.testFile` regex for the fix and flaky reruns to work (node's default `\S+\.(test|spec)\.[cm]?[jt]sx?` already covers `e2e/xxx.spec.ts`).
+- Don't add the e2e command to `gate.typecheck` (it only runs when a rebased PR is left for review).
 
 ## Optional
 
