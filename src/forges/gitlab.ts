@@ -145,7 +145,7 @@ const GITLAB_AGENT_GUIDE = `平台是 GitLab，用 \`glab\`（沙箱里由 GITLA
 - 看票的评论（只列可信名单里的人、去掉 system note）：${trustedNotes("issues/<n>/notes", NOTE_HEADER)}
 - 评论 / 改正文：正文先写进临时文件，\`glab issue note <n> -m "$(cat <file>)"\` / \`glab issue update <n> --description "$(cat <file>)"\`
 - 加 / 去标签：\`glab issue update <n> --label "<label>"\` / \`glab issue update <n> --unlabel "<label>"\`
-- 开新票：\`glab api --method POST projects/:id/issues -f title="<标题>" -f description="$(cat <file>)" -f labels=a,b\`（多个标签逗号隔开），输出 JSON 的 \`iid\` 是编号、\`web_url\` 是链接（不要用 \`glab issue create\`：它输出的 /--/work_items/ 链接不是 issue 链接）
+- 开新票：\`glab api --method POST projects/:id/issues -f title="<标题>" -f description="$(cat <file>)" -f labels=a,b\`（多个标签逗号隔开），输出 JSON 的 \`iid\` 是编号、\`web_url\` 是链接（不要用 \`glab issue create\`：它输出的 /-/work_items/ 链接不是 issue 链接）
 - 搜票：\`glab issue list --search "<文本>" --output json\`；带标签的已关闭票：\`glab issue list --closed --label <label> --search "<文本>" --output json\`
 - 分支上的 MR：\`glab mr view <分支>\`
 - MR 的评论（同票的评论一样过滤）：${trustedNotes("merge_requests/<iid>/notes", NOTE_HEADER)}
