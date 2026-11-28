@@ -85,9 +85,9 @@ onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-
 4. 查错时 `grep -n -i error /tmp/dev.log`。
 ```
 
-项目有 Playwright e2e（onboard 探测到根目录的 `playwright.config.{ts,js,mjs,cjs}`，或 package.json 有 `test:e2e` / `e2e` script）时，onboard 把 e2e 命令接在 `gate.script` 末尾由合并门槛跑：改坏了页面、即使 diff 没命中 `browser.pagePaths`，也会被门槛拦下。Playwright 的基准截图目录（`-snapshots/`）同时默认进 `protectedPaths`——更新基准的票只能留 PR 由人确认，不自动合并。门槛里跑 e2e 要注意：
+项目有 Playwright e2e（onboard 探测到根目录的 `playwright.config.{ts,js,mjs,cjs}`，或 package.json 有 `test:e2e` / `e2e` script）时，onboard 把 e2e 命令接在 `gate.script` 末尾由合并门槛跑：改坏了页面、即使 diff 没命中 `browser.pagePaths`，也会被门槛拦下。Playwright 的基准截图目录（`-snapshots/`）同时默认进 `protectedPaths`——更新基准的票只能留 PR 由人确认，不自动合并。已有的 e2e 没被探测到时（命令不叫 `test:e2e` / `e2e`、根目录也没有 playwright 配置文件），把 e2e 命令手动接在 `gate.script` 末尾即可，依赖装 `@playwright/test`（devDependency）。项目有页面但门槛没跑 e2e 时，onboard 的探测摘要和 `sandpipe doctor` 的「浏览器 e2e」一项都会提示怎么接。门槛里跑 e2e 要注意：
 
-- dev server 由 Playwright 配置里的 `webServer` 在门槛内自己起；`gate.services` 只在宿主机做 TCP 预检，不负责起服务。e2e 依赖的服务（数据库等）写进 `gate.services`。
+- dev server 由 Playwright 配置里的 `webServer` 在门槛内自己起；`gate.services` 只在宿主机做 TCP 预检，不负责起服务。e2e 依赖的服务（数据库等）写进 `gate.services`，沙箱里要能访问到：指向本机服务的值在 `isolation.env` 里过一遍 `toContainerHost`（见上面的「隔离辅助函数」）。
 - 沙箱镜像装了 Chromium（`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`）但没有 `@playwright/test`；版本不匹配时在 `install.onSandboxReady` 里加跑 `playwright install chromium`。
 - 失败 spec 的路径要能被 `gate.testFile` 的正则认出来，fix 和偶发失败重跑才用得上（node 的默认 `\S+\.(test|spec)\.[cm]?[jt]sx?` 已盖住 `e2e/xxx.spec.ts`）。
 - 不要把 e2e 加进 `gate.typecheck`（它只在 rebase 留 PR 时跑）。

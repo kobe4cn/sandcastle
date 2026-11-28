@@ -15,6 +15,7 @@
     - onboard 已按 `.env.example` / `.env` 里指向本机的变量生成初稿（都没有时按 compose 服务猜键名）：运行时从项目根 `.env` 读、换主机、数据库各自加 `_i<runId>`；核对有没有漏掉的库或中间件、有没有不该进沙箱的
     - config 读项目根的 `.env` / `.env.test` 时，在 `isolation.hostEnvFiles` 里写上，并在宿主机准备好这些文件（通常被 gitignore，新克隆的仓库没有；`sandpipe doctor` 会警告）
     - 有网页界面时，PROJECT.md 要有「浏览器验收」，dev server 要的变量也要在 `isolation.env` 里（用独立的库），写法见 [config 的「浏览器验收」](config.zh-CN.md#浏览器验收)；没有这一节 `sandpipe doctor` 会警告；onboard 拼不全时会把缺的信息列进缺口清单。沙箱镜像不管有没有网页界面都装了浏览器，后来加前端只需补这一节
+    - 有网页界面时，把浏览器 e2e 接进合并门槛：装 `@playwright/test`，用 Playwright 配置里的 `webServer` 在门槛内起 dev server，e2e 命令接进 `gate.script`，依赖的服务写进 `gate.services`，步骤见 [config 的「浏览器验收」](config.zh-CN.md#浏览器验收)；没接上时 `sandpipe doctor` 的「浏览器 e2e」一项会提示
   - `gate.script` 就是你愿意据此合并的门槛；有迁移时考虑配 `integrity`
   - 保持 onboard 生成的 `autoMerge: false`、`maxParallel: 1`
 - [ ] `cp .sandcastle/.env.example .sandcastle/.env`，填好流水线用的 token（`CLAUDE_CODE_OAUTH_TOKEN`，`claude setup-token` 生成，或 `ANTHROPIC_API_KEY`）；流水线只用这里面的 token，与本机 Claude Code 登录无关

@@ -1096,11 +1096,11 @@ describe("languageSource / languageLine", () => {
 });
 
 describe("onboard 的阶段摘要（--verbose 才打明细）", () => {
-  it("detectSummary：两行——项目 / 平台 / 基线，门槛 / 受保护路径条数 / 网页界面；不打印正则字面量", () => {
+  it("detectSummary：有网页界面没配 e2e 时三行——项目 / 平台 / 基线，门槛 / 受保护路径条数 / 网页界面，第三行提示把 e2e 接进门槛；不打印正则字面量", () => {
     const f = detectProject(nodeRepo());
     expect(f.protectedPaths.length).toBeGreaterThan(0);
     const lines = detectSummary(f);
-    expect(lines).toHaveLength(2);
+    expect(lines).toHaveLength(3);
     expect(lines[0]).toContain("shop");
     expect(lines[0]).toContain("node/pnpm");
     expect(lines[0]).toContain("github acme/shop");
@@ -1108,9 +1108,21 @@ describe("onboard 的阶段摘要（--verbose 才打明细）", () => {
     expect(lines[1]).toContain("门槛 typecheck + lint + test");
     expect(lines[1]).toContain(`受保护路径 ${f.protectedPaths.length} 条`);
     expect(lines[1]).toContain("有网页界面");
+    expect(lines[2]).toMatch(/浏览器 e2e[\s\S]*gate\.script[\s\S]*gate\.services[\s\S]*docs\/config\.zh-CN\.md/);
     // 只给条数：第二行里不能出现正则字面量的斜杠
     // Count only: no slash from a regex literal may appear on the second line
     expect(lines[1]).not.toContain("/");
+  });
+
+  it("detectSummary：配了 e2e（package.json 有 test:e2e script）时不打第三行，仍是两行", () => {
+    const root = nodeRepo();
+    const pkg = join(root, "package.json");
+    const json = JSON.parse(readFileSync(pkg, "utf8")) as { scripts: Record<string, string> };
+    json.scripts["test:e2e"] = "playwright test";
+    writeFileSync(pkg, JSON.stringify(json));
+    const lines = detectSummary(detectProject(root));
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("门槛 typecheck + lint + test");
   });
 
   it("filesSummary：已存在没动的（skipped / kept / unchanged）都算跳过，updated 单独计数，saved-new 不计数", () => {
@@ -1145,6 +1157,7 @@ describe("onboard 的阶段摘要（--verbose 才打明细）", () => {
       expect(lines[1]).toContain("gate typecheck + lint + test");
       expect(lines[1]).toContain(`· ${f.protectedPaths.length} protected path(s) ·`);
       expect(lines[1]).toContain("web UI");
+      expect(lines[2]).toMatch(/browser e2e[\s\S]*gate\.script[\s\S]*gate\.services[\s\S]*docs\/config\.md/);
       expect(filesSummary([{ file: "a", status: "written" }, { file: "b", status: "skipped" }])).toBe("Files  1 written, 1 skipped (already present)");
       expect(filesSummary([{ file: "a", status: "kept" }, { file: "b", status: "updated" }])).toBe("Files  0 written, 1 skipped (already present), 1 updated");
       expect(validationSummary(true, { count: 5, state: "ok" })).toBe("Checks  PROJECT.md ✓ · 5 open question(s)");
@@ -1157,7 +1170,7 @@ describe("onboard 的阶段摘要（--verbose 才打明细）", () => {
     }
   });
 
-  it("默认输出收成阶段摘要：探测两行、文件一行计数、校验一行；没有逐个文件行、命令明细和正则字面量", async () => {
+  it("默认输出收成阶段摘要：探测摘要（没配 e2e 时多一行提示）、文件一行计数、校验一行；没有逐个文件行、命令明细和正则字面量", async () => {
     const root = nodeRepo();
     installFiles(root, detectProject(root));
     const log = vi.spyOn(console, "log").mockImplementation(() => {});

@@ -1065,10 +1065,14 @@ export function assertRepoRoot(root: string) {
 // ---------------------------------------------------------------------------
 
 /**
- * 探测段的摘要（两行）：项目、语言与包管理、平台、基线；门槛、受保护路径条数、有无网页界面。
+ * 探测段的摘要（两行，有页面但没配浏览器 e2e 时第三行提示）：项目、语言与包管理、平台、基线；门槛、受保护路径条数、有无网页界面。
  * 受保护路径只给条数：正则字面量很长，要看时用 --verbose。
- * Summary of the detection stage (two lines): project, language and package manager, forge, base; gate, protected path count, web UI.
+ * 第三行的「没配 e2e」按探测结果判断：这里拿不到用户已有配置的 gate（摘要打印早于 installFiles），而 onboard 生成的配置会把探测到的 e2e 命令接进 gate（configSource），
+ * 所以探测到 e2e 命令就当门槛跑了；用户已有自己的配置时（writeIfMissing 不覆盖）由 doctor 按真实 gate 判断。
+ * Summary of the detection stage (two lines, plus a third hinting at browser e2e when there are pages but none): project, language and package manager, forge, base; gate, protected path count, web UI.
  * Protected paths are a count only: the regex literals run long; use --verbose to see them.
+ * The third line's "no e2e" follows the detection result: the gate of a user's existing config isn't reachable here (the summary prints before installFiles), while onboard wires the detected e2e command into the gate it generates (configSource),
+ * so a detected e2e command counts as the gate running it; with a config of the user's own (writeIfMissing keeps it), doctor judges against the real gate.
  */
 export function detectSummary(f: ProjectFacts): string[] {
   const pm = f.packageManager ? `/${f.packageManager}` : "";
@@ -1077,7 +1081,7 @@ export function detectSummary(f: ProjectFacts): string[] {
   const web = f.webUi ? t("有网页界面", "web UI") : t("无网页界面", "no web UI");
   // 续行缩进对齐「探测  」的显示宽度（中文标签是两个全角字符）
   // The continuation indent matches the display width of "探测  " (the Chinese label is two wide chars)
-  return [
+  const lines = [
     t(
       `探测  ${f.name}（${f.language}${pm}）· ${forge} · 基线 ${f.baseBranch}`,
       `Detect  ${f.name} (${f.language}${pm}) · ${forge} · base ${f.baseBranch}`,
@@ -1087,6 +1091,14 @@ export function detectSummary(f: ProjectFacts): string[] {
       `        gate ${gate} · ${f.protectedPaths.length} protected path(s) · ${web}`,
     ),
   ];
+  if (f.webUi && !f.commands.e2e)
+    lines.push(
+      t(
+        `      有页面但没配浏览器 e2e：把 e2e 命令接进 gate.script，依赖的服务写进 gate.services，接法见 ${manual("config", termLanguage())} 的「浏览器验收」一节`,
+        `        Pages but no browser e2e: add the e2e command to gate.script and its services to gate.services; see the Browser check section of ${manual("config", termLanguage())}`,
+      ),
+    );
+  return lines;
 }
 
 /**
