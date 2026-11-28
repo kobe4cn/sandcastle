@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- `sandpipe run` 每轮调度前预检 gh 登录、被用到的 Claude 档案的凭据和工作目录 / 容器存储的剩余空间（`preflight.minFreeGb`）：有失败时这一轮不开任何新会话（prep / implement 都不开），不打 `sandcastle:stuck`、也不算空转，终端写明每条原因和处理方法（和上一轮相同就只打一行「预检仍未通过」不刷屏），已在跑的票不受影响，下一轮再查，从失败转为通过时打一行「预检通过，继续调度」；磁盘「量不到」不挡运行，只在启动时警告一次（`src/preflight.ts` 新增 `preflightProblems`，`src/models.ts` 新增 `missingCredentials`；docs/config 中英、docs/internal、DEVELOPMENT.md 同步）（closes #141）
+
 - `sandpipe doctor` 新增磁盘剩余空间检查：工作目录和容器存储（`podman info` 的 GraphRoot）各一行——够 ✓ 写剩余 GB；低于新配置 `preflight.minFreeGb`（可选，默认 5）时 ✗ 写剩余 / 阈值，fix 给清理命令（`podman image prune`、`podman system prune`、`git worktree prune`）；量不到只 ⚠（比如 macOS 的 podman machine 下 GraphRoot 在虚拟机里，宿主机上 statfs 不到，取不到 GraphRoot 时同样 ⚠）。配置里自定义了 `sandbox` 时不查容器存储（`src/preflight.ts` 新增 `diskProblems` / `containerStorePath` / `DEFAULT_MIN_FREE_GB`，statfs 可注入，供后续 `sandpipe run` 每轮预检复用；`src/doctor.ts` 的 diagnose 加 `statfs`，`doctor(argv)` 传 `statfsSync`；`src/profile.ts` 的 `ProjectProfile` 加可选 `preflight.minFreeGb`；docs/config 中英同步）（closes #140）
 
 ## 0.3.4

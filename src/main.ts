@@ -83,7 +83,7 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import type { SandboxExecOptions } from "@ai-hero/sandcastle";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import {
-  CLAUDE_CREDENTIALS_CLEARED, agentFor, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
+  CLAUDE_CREDENTIALS_CLEARED, agentFor, missingCredentials, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
   type AgentRun, type AllProfilesLimited, type ModelUsageEntry, type Phase, type UsageRecord,
 } from "./models.ts";
 import { limitWait, sleepUntil, untilAfterLimit } from "./limit-wait.ts";
@@ -110,7 +110,7 @@ import {
 import { allowedProtected, allowedSection, protectedBlock } from "./protected-paths.ts";
 import { createTrust, needsHold } from "./trust.ts";
 import { detectProject } from "./detect.ts";
-import { probeTcp, servicesProblem } from "./preflight.ts";
+import { containerStorePath, diskProblems, preflightProblems, probeTcp, servicesProblem } from "./preflight.ts";
 import { manual } from "./onboard.ts";
 import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
 import { isAfterMainFix, labelsToRemoveOnLeave, removeWaitingMainAfterResume, resumableWaitingMain, shouldRemovePrOpenOnResume, type ResumeOutcome } from "./waiting-main.ts";
@@ -2587,6 +2587,15 @@ if (!project.customSandbox) {
   const problem = await servicesProblem(project.gate.services ?? [], probeTcp);
   if (problem) throw new Error(problem);
 }
+// 每轮预检（#62 之二）量磁盘的路径：容器存储的 GraphRoot 启动时取一次（每轮都起 podman info 太贵），之后循环里复用。
+// The paths the per-pass preflight (#62 part 2) measures: the container storage's GraphRoot is fetched once at startup (a podman info every pass would cost too much) and reused in the loop.
+const containerStore = project.customSandbox ? null : containerStorePath();
+// 「量不到」的磁盘不挡运行（#62 上定的）：只在启动时警告这一次，循环里的预检只认「不够」。
+// An unmeasurable disk doesn't block the run (decided on #62): warned only this once at startup; the loop's preflight counts only "low".
+for (const d of diskProblems([process.cwd(), ...(containerStore ? [containerStore] : [])], project.preflight.minFreeGb * 1024 ** 3)) {
+  if (d.status === "unknown")
+    console.warn(`  ⚠ ${t(`${d.path} 剩余空间量不到：${d.error}（不挡运行）`, `${d.path}: free space couldn't be measured: ${d.error} (doesn't block the run)`)}`);
+}
 // 项目有页面（探测到网页界面或配了 browser.pagePaths）却没配浏览器验收：启动就警告，不等改页面的票留 PR 才发现。
 // The project has pages (a detected web UI or browser.pagePaths set) but no browser check configured: warn at startup rather than when a page-changing ticket's PR is left open.
 if ((project.browser.pagePaths.length > 0 || detectProject(process.cwd()).webUi) && !DOC.hasBrowser)
@@ -2606,6 +2615,9 @@ if (process.env.SANDCASTLE_BASELINE === "1") {
   process.exitCode = (await runBaseline()) ? 0 : 1;
 } else {
 let idlePolls = 0;
+// 上一轮预检的问题文本（原因 + 处理方法拼成）：和这一轮相同就只打一行「预检仍未通过」不刷屏；从失败转为通过时打一行「预检通过」。下一张子票会读这个状态。
+// The previous pass's preflight problem text (reasons + fixes joined): identical to this pass's means a single "preflight still failing" line instead of a flood; a transition back to passing prints one "preflight passed" line. A later child ticket reads this state.
+let preflightFailed: string | undefined;
 let everStarted = false; // 这次运行开工过票没有 / whether this run ever started a ticket
 for (let pass = 1; ; pass++) {
   // 每轮读一次 .sandcastle/models.json，不管有没有空位：改了配置不用重启，下一轮生效（#43：空位全满时也要读）。
@@ -2619,6 +2631,29 @@ for (let pass = 1; ; pass++) {
   if (busy() < MAX_PARALLEL) {
     const now = new Date().toLocaleString();
     console.log(t(`\n=== 调度 ${pass}（${now}，${busy()}/${MAX_PARALLEL} 个空位已占）===\n`, `\n=== Pass ${pass} (${now}, ${busy()}/${MAX_PARALLEL} slots taken) ===\n`));
+    // 每轮调度前预检（#62 之二）：平台登录、Claude 凭据、磁盘。失败时这一轮不开任何新会话（prep / implement 都不开）——schedule 一开头就 fetch，凭据失效会让整个运行崩掉；不打 stuck、不算空转，已在跑的票不受影响。
+    // The preflight before each pass (#62 part 2): forge login, Claude credentials, disk. A failure means no new sessions this pass (neither prep nor implement) — schedule fetches first, and dead credentials would crash the whole run; no stuck label, no idle counting, already-running tickets are unaffected.
+    const problems = preflightProblems({
+      checkAccess: () => forge.checkAccess(),
+      missingCredentials,
+      disk: () => diskProblems([process.cwd(), ...(containerStore ? [containerStore] : [])], project.preflight.minFreeGb * 1024 ** 3),
+    });
+    if (problems.length > 0) {
+      const text = problems.map((p) => `${p.reason}\n${p.fix}`).join("\n");
+      if (text !== preflightFailed)
+        for (const p of problems) {
+          console.log(t(`  ⛔ 预检未通过，本轮不开新会话：${p.reason}`, `  ⛔ Preflight failed; no new sessions this pass: ${p.reason}`));
+          console.log(t(`     处理：${p.fix}`, `     Fix: ${p.fix}`));
+        }
+      else console.log(t("  ⛔ 预检仍未通过，本轮不开新会话", "  ⛔ Preflight still failing; no new sessions this pass"));
+      preflightFailed = text;
+      await waitForSlotOrPoll(POLL_INTERVAL_MS);
+      continue;
+    }
+    if (preflightFailed !== undefined) {
+      console.log(t("  ✔ 预检通过，继续调度", "  ✔ Preflight passed; resuming scheduling"));
+      preflightFailed = undefined;
+    }
     const r = await withHost(schedule);
     if (r.split) continue;
     if (running.size > 0 || r.started > 0) {
