@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 复审更严：改动新引入 fail-open（本该留给人审、或本该被关卡拦下的 PR / 票会因为这次改动——残留标签、提前去掉的状态、出错时放行的分支——被自动合并、绕过关卡）时结论一律是 `revise`，实现指引或票写「本票不处理」、按设计决定收窄范围推迟到后续票也不放过，`<revise>` 里写怎么改成 fail-closed（拿不准就留 PR、去掉会放行的状态）；只有这次改动之前就存在的 fail-open 照旧写进「需要人判断」交给人（`prompts/review.md` 的「执行」一节和 `<verdict>revise</verdict>` 定义，docs/internal/sandcastle.md 的「reviewer 打回」同步）（closes #129）
+
 - main-broken 修好后的恢复途中又开出新的 main-broken 票时再次被挡住：照旧留 PR、保留 waiting-main（#86 行为不变），`autoMerge: false` 时照旧只留 PR——给这两种出口补了编排级用例钉住行为（`test/merge-flow.test.ts` 的 mergeWhenReady 新增「恢复强制 rebase 后又被挡住」用例），ADR 0007「恢复」一节补上中断时的处理（waiting-main 留到结果出来再按结果去；恢复中途抛错去掉、被 kill 时保留、下一轮仍走强制 rebase 重跑门槛）（#114 之二，closes #120）
 
 - 验收说明里的多行命令改用代码块写，不再塞进行内代码：implement 提示词的「怎么验证」写法加一条——多行命令或多行内容（带多行参数的命令、多行输出、示例文本）一律用代码块（三个反引号围起来）写，行内代码（单个反引号）只用于不换行的短片段；行内代码跨不过空行，中间有空行时反引号失效，后面的内容被当成 Markdown 渲染（图片语法会变成破图）。review 提示词核对验收说明的格式清单同步加「行内代码里没有换行、多行内容都在代码块里」，发现多行内容放进了行内代码照旧写进 `<revise>`（`prompts/implement.md`、`prompts/review.md`，docs/internal/sandcastle.md 同步）（closes #125）

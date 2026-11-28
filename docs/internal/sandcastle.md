@@ -33,9 +33,9 @@ prep、implementer、reviewer 遇到票和指引都没写到的设计决定、�
 
 ## reviewer 打回（revise）
 
-reviewer 的结论有三种：`merge`、`revise`、`pr`（规则在 `.sandcastle/review-prompt.md`）。
+reviewer 的结论有三种：`merge`、`revise`、`pr`（规则在 `prompts/review.md`）。
 
-- `revise`：有要改行为、但正确做法明确的问题，比如漏了验收标准或测试、测试缺断言、重复已有 helper、术语不对。reviewer 在 `<revise>` 里逐条写位置、改法和验证方式。脚本把这些意见交给一个新的 implementer 会话，改完后再审一次。最多打回 `REVISE_MAX = 2` 次。
+- `revise`：有要改行为、但正确做法明确的问题，比如漏了验收标准或测试、测试缺断言、重复已有 helper、术语不对。改动**新引入**的 fail-open（本该留给人审、或本该被关卡拦下的 PR / 票会因为这次改动被自动合并、绕过关卡）一律 `revise`，实现指引或票说「本票不处理」、按设计决定收窄范围推迟到后续票也不放过，`<revise>` 里写怎么改成 fail-closed；改动之前就存在的 fail-open 交给人（写进「需要人判断」）。reviewer 在 `<revise>` 里逐条写位置、改法和验证方式。脚本把这些意见交给一个新的 implementer 会话，改完后再审一次。最多打回 `REVISE_MAX = 2` 次。
 - 两次之后仍是 `revise`，就留 PR 给人审。PR 正文的 Review 一节会附上每次的意见。
 - 要人判断的问题会决定怎么改时，reviewer 直接给 `pr`，不打回。
 - review 只验本票：验收标准涉及别的 issue 时（开新票、给别的票加评论或标签），只核对本票确实做过这件事，不拿那张票当前的标签和状态去比对指引——对不上视为人后来改过。review / revise / fix / implement 会话不改本票和本次会话里自己新开的 issue 以外任何 issue 的标签或正文（评论除外）；本次会话之前开出的票也不能改。
@@ -44,7 +44,7 @@ reviewer 的结论有三种：`merge`、`revise`、`pr`（规则在 `.sandcastle
 
 全部满足才合并（`gh pr merge --rebase`），否则留 PR 并在 PR 上评论原因：
 
-1. reviewer 给出 `<verdict>merge</verdict>`：验收标准都实现且有测试、没有要人判断的问题、改了页面的浏览器验收每步都通过（见「浏览器验收」）、没动权限 / 敏感字段处理、没有改已有数据或删改列的迁移、票里没要求人亲自验收、没改弱已有测试（新增 / 修改 ADR 和代拍板本身不再拦合并，2026-11-24；前提是改 ADR 是票正文或人明确要求的，agent 自己决定修订 ADR 属于「必须停下」）（规则在 `.sandcastle/review-prompt.md`）。
+1. reviewer 给出 `<verdict>merge</verdict>`：验收标准都实现且有测试、没有要人判断的问题、改了页面的浏览器验收每步都通过（见「浏览器验收」）、没动权限 / 敏感字段处理、没有改已有数据或删改列的迁移、票里没要求人亲自验收、没改弱已有测试（新增 / 修改 ADR 和代拍板本身不再拦合并，2026-11-24；前提是改 ADR 是票正文或人明确要求的，agent 自己决定修订 ADR 属于「必须停下」）（规则在 `prompts/review.md`）。
 2. 门槛通过：脚本在沙箱里自己跑 `npm run typecheck` 与完整测试。
    - 门槛同一时间只跑一个，不分档位（`runGate` 排队，票优先、main 兜底让位，`src/gate-queue.ts`）：两个沙箱同时跑时 CPU 和 PG 被挤满，2026-11-24 实测完整门槛同时跑要 76.6 分钟（失败）、精简门槛 37.7 分钟，比先后跑（约 33 + 21 分钟）还慢。排上队的门槛用 8 个 worker（`GATE_WORKERS`），宿主机 PG 要 `max_connections` ≥ 600（`db_script/pg_setup.sh`）；agent 自己在沙箱里跑单个测试文件不排队，仍是 4 个 worker。门槛用时（和排队时间）打进日志，并在 PR 的 **Gate** 一节末尾写一行 `GATE_TIME`。门槛开始时打印日志路径，输出逐行实时写进 `.sandcastle/logs/gate-<票号>-<时间戳>.log`（每次重跑另开新文件），运行中每 5 分钟打印一次心跳（`src/gate-progress.ts`）；终端不逐行打印门槛输出，免得多个沙箱的输出混在一起。档位、`GATE_FLAKY`、`GATE_TIME` 看的是自己累积的完整输出，不是沙箱传了 `onLine` 后只剩末尾 64KB 的 stdout。
    - 顺序：typecheck → `test/` 根目录的单元测试（约 1–2 分钟）→ `test/http` 与 `test/pipeline`。单元测试失败就直接判门槛失败，不再等后面的测试；i18n 棘轮这类几秒就能报的失败，以前要等 40 分钟的完整测试跑完才看到（2026-11-24 #1172、#1182）。implementer 提交前也要跑 `npm run i18n:ratchet`（`implement-prompt.md`）。

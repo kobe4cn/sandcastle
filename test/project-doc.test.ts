@@ -115,6 +115,14 @@ describe("用 duckdb_crm 的 PROJECT.md 渲染", () => {
     expect(out.review).toContain("行内代码里没有换行");
   });
 
+  it("改动新引入 fail-open 一律打回，指引写「本票不处理」也不放过（#129）", () => {
+    expect(out.review).toContain("新引入");
+    expect(out.review).toContain("fail-open");
+    expect(out.review).toContain("fail-closed");
+    expect(out.review).toContain("本票不处理");
+    expect(out.review).toContain("这次改动之前就存在");
+  });
+
   it("Blocked by 的写法：一个 blocker 一行列表项，不写在标题行上（#100）", () => {
     expect(out.prep).toContain("`- #{{TASK_ID}}`");
     expect(out.prep).not.toContain("## Blocked by #{{TASK_ID}}");
