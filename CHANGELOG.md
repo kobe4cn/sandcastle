@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- main-broken 修好后的恢复途中又开出新的 main-broken 票时再次被挡住：照旧留 PR、保留 waiting-main（#86 行为不变），`autoMerge: false` 时照旧只留 PR——给这两种出口补了编排级用例钉住行为（`test/merge-flow.test.ts` 的 mergeWhenReady 新增「恢复强制 rebase 后又被挡住」用例），ADR 0007「恢复」一节补上中断时的处理（waiting-main 留到结果出来再按结果去；恢复中途抛错去掉、被 kill 时保留、下一轮仍走强制 rebase 重跑门槛）（#114 之二，closes #120）
+
 - 验收说明里的多行命令改用代码块写，不再塞进行内代码：implement 提示词的「怎么验证」写法加一条——多行命令或多行内容（带多行参数的命令、多行输出、示例文本）一律用代码块（三个反引号围起来）写，行内代码（单个反引号）只用于不换行的短片段；行内代码跨不过空行，中间有空行时反引号失效，后面的内容被当成 Markdown 渲染（图片语法会变成破图）。review 提示词核对验收说明的格式清单同步加「行内代码里没有换行、多行内容都在代码块里」，发现多行内容放进了行内代码照旧写进 `<revise>`（`prompts/implement.md`、`prompts/review.md`，docs/internal/sandcastle.md 同步）（closes #125）
 
 - main-broken 修好后的恢复（`sandcastle:waiting-main`）不再在恢复一开始就去标签，留到结果出来再按结果处理（#119）：合并了、因别的原因留 PR（受保护路径、复审、浏览器验收、检查失败）、`autoMerge: false` 留 PR、恢复中途抛错（`mergeWhenReady` 的 finally 已去掉 merging，保留会让人去掉 stuck 重新实现后被 `resumeWaitingMain` 误自动合并）时去掉；恢复途中又开出新的 main-broken 票再次被挡住时保留（#86 行为不变）；被 kill（finally 没跑、merging 还在）时也保留，下一轮这张票仍带 waiting-main、仍按「main 修好后的恢复」走强制 rebase 重跑门槛，不退化成普通的中断恢复（之前去标签太早，中断重启后不再强制重跑门槛，坏 main 时代的门槛结果可能被沿用）。恢复出错时终端多一行 ⚠ 说明去掉了标签（`src/waiting-main.ts` 新增 `ResumeOutcome` / `removeWaitingMainAfterResume` / `isAfterMainFix`，`src/main.ts` 的 `resumeMerging` / `finishMerge`（返回值改为 `"merged" | "left"`）/ `markWaitingMain`（记录本轮又被挡的票）；docs/internal/sandcastle.md 同步）（closes #119）

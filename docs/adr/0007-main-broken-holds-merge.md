@@ -35,3 +35,4 @@ main 上定期的兜底完整测试失败时，脚本自动开一张带 `sandcas
 - **列票出错时这一轮不恢复**（fail-closed）：和挡住时的判定同口径，查不到开着的 main-broken 票就不动，下一轮再试。
 - **票离开「只被 main-broken 挡住」的状态就去掉 waiting-main**：打回（去 pr-open）、带 merging 却没有开着的 PR 交回调度（去 merging）时一并去掉。waiting-main 只能表示「其他关卡都过了、只被 main-broken 挡住」；残留的话，重新实现后因别的原因（reviewer 给 `pr`、受保护路径、浏览器验收没过）留下的 PR 会被误恢复、自动合并。
 - 恢复途中又开出新的 main-broken 票时，合并流程里的同一套检查会再次挡住并重新打上 waiting-main。已关闭票上残留的 waiting-main 由 `cleanupClosedIssues` 清掉。
+- **恢复期间 waiting-main 留到结果出来再按结果处理**（#119）：合并、因别的原因留 PR、`autoMerge: false` 留 PR 时去掉；又被挡住时保留（上面的规则不变）。恢复中途抛错（`mergeWhenReady` 的 finally 已去掉 merging）时去掉；进程被 kill（finally 没跑、merging 还在）时保留，下一轮仍按 main 修好后的恢复走强制 rebase、重跑门槛。
