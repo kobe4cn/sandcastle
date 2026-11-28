@@ -9,6 +9,7 @@
 // and puts it in the `## 验收说明` section at the top of the PR body; when missing or badly formatted the body shows a warning and the PR isn't auto-merged.
 // Text follows the project's language (i18n.ts): parameter m defaults to Chinese.
 
+import { basename } from "node:path";
 import type { BrowserCheck } from "./browser-gate.ts";
 import { messages, type Messages } from "./i18n.ts";
 
@@ -95,10 +96,14 @@ const details = (title: string, content: string) => `<details><summary>${title}<
 
 /**
  * Browser check 一节的内容。有 `.browser-check/` 时先放评审自己看截图给的逐条结论（reviewerVerdict，review 的 `<browser-verdict>`；没给就写明），
- * 再放 implement 自评：RESULT.md 与截图说明（#83）。改了页面但票里没有 Browser check 时（noTicketCheck）在最前面加提示，没有 `.browser-check/` 也给。
- * 两样都没有时 undefined，不放这一节。
+ * 再放 implement 自评：RESULT.md 与截图说明（#83），说明后面逐张接截图引用 `![文件名](路径)`（#113）——路径与传给 `gh --attach` 的完全相同，
+ * gh 会把引用改写成上传后的地址，截图就显示在这一节里而不是被追加到正文末尾；再走一轮时引用随整段替换（replaceGenerated），不堆积。
+ * 改了页面但票里没有 Browser check 时（noTicketCheck）在最前面加提示，没有 `.browser-check/` 也给。两样都没有时 undefined，不放这一节。
  * Content of the Browser check section. With `.browser-check/`: first the reviewer's own per-step verdict from the screenshots (reviewerVerdict,
- * the review's `<browser-verdict>`; says so when missing), then the implementer's self-check: RESULT.md and the screenshot note (#83).
+ * the review's `<browser-verdict>`; says so when missing), then the implementer's self-check: RESULT.md and the screenshot note (#83),
+ * followed by one screenshot reference per shot, `![filename](path)` (#113) — the path is exactly what's passed to `gh --attach`,
+ * which rewrites the reference to the uploaded asset so the screenshots show up in this section instead of being appended to the end of the body;
+ * on a redo the references go with the wholesale replace (replaceGenerated) and don't pile up.
  * When pages changed but the ticket has no Browser check (noTicketCheck), a notice goes first, even without `.browser-check/`.
  * undefined when there's neither, so the section is omitted.
  */
@@ -112,7 +117,8 @@ export const browserSection = (
     noTicketCheck ? m.browserNoTicketCheck : undefined,
     b
       ? `### ${m.browserReviewerVerdict}\n\n${reviewerVerdict ?? m.browserNoReviewerVerdict}\n\n` +
-        `### ${m.browserSelfCheck}\n\n${b.result ?? m.browserNoResult}\n\n${m.browserShots(b.shots.length)}`
+        `### ${m.browserSelfCheck}\n\n${b.result ?? m.browserNoResult}\n\n${m.browserShots(b.shots.length)}` +
+        b.shots.map((p) => `\n\n![${basename(p)}](${p})`).join("")
       : undefined,
   ].filter((x): x is string => x !== undefined);
   return parts.length ? parts.join("\n\n") : undefined;
@@ -196,7 +202,7 @@ export const sectionOf = (body: string, title: string): string | undefined => {
  * 从 `## Review` 标题行起、到 `## Commits` 标题行之前（没有 Commits 就到末尾），前后各留一个空行。
  * PR 再走一轮时上一轮的结论不在正文里保留（只留在更新评论里）：上一轮有、这一轮没有的节（如 Browser check）随整段消失，
  * 不能对每节单独 replaceSection——Gate / Budget / Usage 的 `<details>` 挂在最后一个 `##` 节下会被重复或误删，缺失的节会被插到 Closes 后面。
- * `## Commits` 及之后（含首次开 PR 时 gh --attach 追加的截图行）逐字保留；正文里没有 `## Review` 时插在 `## Commits` 之前
+ * `## Commits` 及之后（含本票之前开的 PR 里 gh --attach 追加在末尾的截图行）逐字保留；正文里没有 `## Review` 时插在 `## Commits` 之前
  * （没有 Commits 就追加到末尾），不走 replaceSection 的「插在 Closes 后面」。评审摘要里可能有 `## ` 二级标题，
  * 所以只认 `## Commits` 这一个终点、不靠中间的二级标题。
  * Wholesale-replace the tool-generated sections in the body with this round's rest (restSections output, starting with `## Review`):
@@ -204,7 +210,7 @@ export const sectionOf = (body: string, title: string): string | undefined => {
  * On a redo the previous round's conclusions don't stay in the body (they live on in the update comments): sections present last round
  * but not this one (e.g. Browser check) vanish with the whole span — per-section replaceSection won't do: the Gate / Budget / Usage
  * `<details>` hang off the last `##` section and would be duplicated or dropped, and missing sections would be inserted after Closes.
- * `## Commits` and everything after (including screenshot lines gh --attach appended when the PR was first opened) stays verbatim;
+ * `## Commits` and everything after (including screenshot lines gh --attach appended at the end of PRs opened before this ticket) stays verbatim;
  * with no `## Review` in the body, insert before `## Commits` (append at the end when there's no Commits) instead of replaceSection's
  * "insert after Closes". A review summary may contain `## ` headings, so `## Commits` is the only end marker, not any intermediate heading.
  */

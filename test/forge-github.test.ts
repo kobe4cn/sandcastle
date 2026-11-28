@@ -162,6 +162,7 @@ describe("githubForge 发给 gh 的参数", () => {
     expect(forge.createPr({ base: "main", head: "sandcastle/issue-1", title: "T (#1)", body: "B", attachments: ["/tmp/x/a.png"] })).toBe("13");
     expect(forge.prBody("13")).toBe("BODY");
     forge.editPrBody("13", "B2");
+    forge.editPrBody("13", "B3", ["/tmp/x/c.png"]);
     forge.commentPr("13", "C", ["/tmp/x/b.png"]);
     forge.commentPr("13", "C2");
     forge.mergePr("13", "rebase");
@@ -171,6 +172,7 @@ describe("githubForge 发给 gh 的参数", () => {
       ["pr", "create", "--base", "main", "--head", "sandcastle/issue-1", "--title", "T (#1)", "--body", "B", "--attach", "/tmp/x/a.png#a.png"],
       ["pr", "view", "13", "--json", "body", "--jq", ".body"],
       ["pr", "edit", "13", "--body", "B2"],
+      ["pr", "edit", "13", "--body", "B3", "--attach", "/tmp/x/c.png#c.png"],
       ["pr", "comment", "13", "--body", "C", "--attach", "/tmp/x/b.png#b.png"],
       ["pr", "comment", "13", "--body", "C2"],
       ["pr", "merge", "13", "--rebase"],
