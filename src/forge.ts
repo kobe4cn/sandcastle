@@ -4,12 +4,12 @@
 // （错误对象带 stderr，和 execFileSync 一样），要「失败只警告」的调用方自己用 shell.ts 的 attempt 包。
 // issue 与 PR 的编号一律是字符串（不带 #）；平台自己的写法（GitLab 的 MR 是 `!n`）由实现处理。
 //
-// 新加一个平台：实现这个接口，放进 forges/，在 forges/index.ts 里登记；契约测试见 test/forge-github.test.ts。
+// 新加一个平台：实现这个接口，放进 forges/，从 src/index.ts 导出；契约测试见 test/forge-github.test.ts / test/forge-gitlab.test.ts。
 // Forge: every operation Sandcastle needs on a code host (GitHub, GitLab…): issues, labels, PRs / MRs, comments, merging.
 // The pipeline (main.ts) talks to the host only through this interface and never calls gh / glab directly. Every method throws on error
 // (the error carries stderr, like execFileSync); callers that want "warn on failure" wrap it with attempt from shell.ts.
 // Issue and PR numbers are always strings (no #); host-specific notation (GitLab's MR is `!n`) is handled by the implementation.
-// To add a host: implement this interface, put it in forges/, register it in forges/index.ts; the contract tests are in test/forge-github.test.ts.
+// To add a host: implement this interface, put it in forges/, export it from src/index.ts; the contract tests are in test/forge-github.test.ts / test/forge-gitlab.test.ts.
 
 import type { Author } from "./trust.ts";
 
