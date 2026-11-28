@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 沙箱初始化时 git 读配置偶发失败（`fatal: unknown error occurred while reading the configuration files`，退出码 128——多张票并行时宿主机写 `.git/config`，容器通过挂载读到中间状态）不再直接打 `sandcastle:stuck`：按临时错误等 1、5、15 分钟后整步重跑，终端打 ⚠ 一行；这句加进 `src/lifecycle.ts` 的 `TRANSIENT`，build 和落地两处走 `retryTransient` 的步骤都生效。`retryTransient` / `TRANSIENT` / `PODMAN_TRANSIENT` 从 `src/main.ts` 搬到 `src/lifecycle.ts` 并导出（重跑行为不变），`TRANSIENT` 只加这一句、不进 `PODMAN_TRANSIENT`（避免走「等 podman 连上」分支、把 stuck 文案误写成 podman 断连）（closes #176）
+
 - 进程守护文档（#65 之三）：用户手册中英新增「进程守护 / Running as a service」一节（docs/config.md、docs/config.zh-CN.md，放在「可选」表之后）：systemd 用户 unit 和 launchd plist 各一份示例（`WorkingDirectory` 设项目根、`PATH` 含 node / git / gh / podman、`HOME`、`Restart=on-failure` + `RestartSec` + `KillMode=mixed` 并提醒 `StartLimitBurst`、`KeepAlive` + `StandardOutPath` / `StandardErrorPath`），说明要配 `maxIdlePolls: Infinity`（否则空闲退出码 0 后 `Restart=on-failure` 不会拉起）、停服务发的 SIGTERM 按中断收尾（退出码 143）、日志位置（journald / StandardOutPath，后者不自动轮转、提示 newsyslog；`.sandcastle/logs/` 按既有规则自己清）、可选环境变量（`SANDPIPE_LANG`、`SANDPIPE_NOTIFY_WEBHOOK`、`SANDCASTLE_ONLY`）、凭据照旧放 `.sandcastle/.env` 不进 unit / plist；onboarding-checklist 中英「放开」一节各加一条链接过去；docs/internal/e2e-plan.md 新增 L11（守护进程连续运行 24 小时）（closes #156）
 
 - 浏览器 e2e 沉淀（四）：开了浏览器验收但没接浏览器 e2e 的项目（「浏览器验收」一节没写 e2e 目录和单跑命令、仓库里也没有已有的 e2e 测试），implement 跳过把 Browser check 沉淀成 Playwright 测试——不装依赖、不建 e2e 配置、不写测试，浏览器验收照旧做，`RESULT.md` 末尾单独写一行普通文字「本项目没接浏览器 e2e，未沉淀测试」；review 按同样条件跳过核对、不因缺测试打回（摘要的「浏览器验收」一行写明「项目没接 e2e，未沉淀」），判断依据是渲染进 review 提示词的「本项目的浏览器验收」一节（`prompts/implement.md`、`prompts/review.md`；docs/config 中英、docs/internal 同步）（closes #164）

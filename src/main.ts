@@ -96,7 +96,7 @@ import { mainBrokenBlocker, type MergeFlowDeps, type MergeResult, mergeAfterPush
 import { configDir, loadProject } from "./profile.ts";
 import {
   acquireRunLock, agentAuthReason, authHitCapped, type AuthHits, authRecovered, errorLine, exitWhenDone, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GATE_INFRA_PREFIX, GateInfraError, idleProgress, idleStop, imageExists, isAgentIdleTimeout, isGateInfraFailure, imageStaleWarning, logErrorDetail, missingImage, onInterrupt,
-  nextAuthHits, podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath, untilAuthRecovered, waitForPodman,
+  nextAuthHits, podmanProblem, PODMAN_TRANSIENT, removeOrphanContainers, retryTransient, RUN_LOCK_FILE, runLockPath, untilAuthRecovered, waitForPodman,
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
 import { createNotifier, readNotifyUrl } from "./notify.ts";
@@ -114,7 +114,7 @@ import { createTrust, needsHold } from "./trust.ts";
 import { detectProject } from "./detect.ts";
 import { containerStorePath, diskProblems, preflightProblems, probeTcp, servicesProblem } from "./preflight.ts";
 import { manual } from "./onboard.ts";
-import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
+import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, sh, shellQuote, trySh } from "./shell.ts";
 import { isAfterMainFix, labelsToRemoveOnLeave, removeWaitingMainAfterResume, resumableWaitingMain, shouldRemovePrOpenOnResume, type ResumeOutcome } from "./waiting-main.ts";
 
 // ---------------------------------------------------------------------------
@@ -415,51 +415,7 @@ const sandboxFor = (env: Record<string, string>) =>
 // ---------------------------------------------------------------------------
 
 // sh / trySh / gitRemote 在 shell.ts。 / sh / trySh / gitRemote are in shell.ts.
-
-// 沙箱和落地里的临时错误（2026-11-07 机器睡眠醒来后：复制 node_modules 到工作区超过 60 秒、
-// GitHub API 读超时）不直接打 stuck：等一会儿整步重跑。build 在原分支上重跑，implementer 会接着已有提交做；
-// land 开头会查 issue 是否已关、PR 是否已开，重跑最多多出一条评论。
-// Transient errors in sandboxes and landing (on 2026-11-07, after the machine woke from sleep: copying node_modules into the worktree took over 60 seconds,
-// GitHub API read timeouts) don't mark the ticket stuck right away: wait, then rerun the whole step. build reruns on the same branch, and the implementer continues from existing commits;
-// land first checks whether the issue is closed or a PR already exists, so a rerun adds at most one extra comment.
-// podman 连接短暂断开（2026-11-26：ssh: handshake failed … connection reset by peer）也算：门槛没跑成、podman create 报镜像不在（其实只是连不上）、podman rm 失败。
-// A brief podman disconnect counts too (2026-11-26: ssh: handshake failed … connection reset by peer): the gate didn't run, podman create reporting a missing image (really just unreachable), podman rm failing.
-const PODMAN_TRANSIENT = new RegExp(
-  [GATE_INFRA_PREFIX, "Cannot connect to Podman", "ssh: handshake failed", "Image '.*' not found locally", "podman rm failed"].join("|"),
-  "i",
-);
-// 门槛依赖的服务连不上（GATE_ENV_PREFIX，#54）也定时重跑，但不进 PODMAN_TRANSIENT（不用等 podman）。
-// A service the gate depends on being unreachable (GATE_ENV_PREFIX, #54) is rerun later too, but isn't in PODMAN_TRANSIENT (no waiting for podman).
-const TRANSIENT = new RegExp(`${REMOTE_TRANSIENT.source}|CopyToWorktreeTimeoutError|timed out|${PODMAN_TRANSIENT.source}|${GATE_ENV_PREFIX}`, "i");
-const TRANSIENT_RETRY_WAITS_MS = [60_000, 300_000, 900_000];
-
-async function retryTransient<T>(what: string, fn: () => Promise<T>): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await fn();
-    } catch (e) {
-      const message = String((e as { stderr?: unknown }).stderr || e);
-      // 认证失效不按临时错误重跑（重试也是同样的 401，白等约 21 分钟）：直接抛给 untilAuthRecovered 等凭据更换（#62 之三）。
-      // An auth failure isn't retried as transient (each retry would just 401 again, wasting ~21 minutes): thrown straight out to untilAuthRecovered to wait for new credentials (#62 part 3).
-      if (agentAuthReason(e) !== null) throw e;
-      const wait = TRANSIENT_RETRY_WAITS_MS[attempt];
-      if (wait === undefined || !TRANSIENT.test(message)) throw e;
-      const first = message.split("\n")[0].slice(0, 160);
-      const n = `${attempt + 1}/${TRANSIENT_RETRY_WAITS_MS.length}`;
-      if (!PODMAN_TRANSIENT.test(message)) {
-        console.warn(t(`  ⚠ ${what} 撞上临时错误（${first}），${wait / 1000} 秒后重跑（第 ${n} 次）`, `  ⚠ ${what} hit a transient error (${first}); rerunning in ${wait / 1000}s (attempt ${n})`));
-        await new Promise((resolve) => setTimeout(resolve, wait));
-        continue;
-      }
-      // podman 类错误：等 podman 连上（最多等这次的间隔）再重跑；「镜像不在本地」在连上后复查，真缺镜像就按原路径报错。
-      // podman errors: wait until podman is reachable (at most this attempt's interval), then rerun; "image not found locally" is rechecked once connected, and a truly missing image fails as before.
-      console.warn(t(`  ⚠ ${what} 撞上 podman 连接问题（${first}），等 podman 连上（最多 ${wait / 1000} 秒）后重跑（第 ${n} 次）`, `  ⚠ ${what} hit a podman connection problem (${first}); rerunning once podman is reachable (up to ${wait / 1000}s, attempt ${n})`));
-      const up = await waitForPodman(trySh, undefined, wait);
-      const image = missingImage(message);
-      if (up && image !== null && !imageExists(image)) throw e;
-    }
-  }
-}
+// 沙箱和落地里的临时错误重跑（retryTransient、PODMAN_TRANSIENT）在 lifecycle.ts。 / The transient-error rerun for sandboxes and landing (retryTransient, PODMAN_TRANSIENT) is in lifecycle.ts.
 
 /**
  * 关沙箱：podman 断连时 `podman rm` 会失败，只打一行警告，不让它盖掉门槛结果、也不跳过后面的清理；残留的容器交给每次调度的孤儿清理。

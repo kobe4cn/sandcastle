@@ -1,12 +1,12 @@
-// 一次运行的生命周期：同一仓库只许一个 sandpipe 在跑（锁文件）、启动前查 podman、清理孤儿容器、中断时的提示、报错只取一行。
+// 一次运行的生命周期：同一仓库只许一个 sandpipe 在跑（锁文件）、启动前查 podman、清理孤儿容器、中断时的提示、报错只取一行、临时错误等一会儿整步重跑。
 // 纯函数和带注入的函数放在这里，main.ts 加载时就跑主循环、不能直接测。
-// Lifecycle of one run: only one sandpipe per repository (lock file), a podman check before starting, orphan container cleanup, the interrupt notice, one-line errors.
+// Lifecycle of one run: only one sandpipe per repository (lock file), a podman check before starting, orphan container cleanup, the interrupt notice, one-line errors, transient errors rerun after a wait.
 // Pure and injectable functions live here; main.ts runs the main loop on load and can't be tested directly.
 
 import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { trySh, type TryResult } from "./shell.ts";
+import { REMOTE_TRANSIENT, trySh, type TryResult } from "./shell.ts";
 import { t } from "./term.ts";
 
 // ---------------------------------------------------------------------------
@@ -300,6 +300,70 @@ export function missingImage(message: string): string | null {
 /** 镜像在不在本地（`podman image exists`）。 / Whether the image exists locally (`podman image exists`). */
 export function imageExists(tag: string, run: Run = trySh): boolean {
   return run("podman", ["image", "exists", tag], 60_000).ok;
+}
+
+// ---------------------------------------------------------------------------
+// 临时错误重跑 / Transient-error rerun
+// ---------------------------------------------------------------------------
+
+// 沙箱和落地里的临时错误（2026-11-07 机器睡眠醒来后：复制 node_modules 到工作区超过 60 秒、
+// GitHub API 读超时）不直接打 stuck：等一会儿整步重跑。build 在原分支上重跑，implementer 会接着已有提交做；
+// land 开头会查 issue 是否已关、PR 是否已开，重跑最多多出一条评论。
+// Transient errors in sandboxes and landing (on 2026-11-07, after the machine woke from sleep: copying node_modules into the worktree took over 60 seconds,
+// GitHub API read timeouts) don't mark the ticket stuck right away: wait, then rerun the whole step. build reruns on the same branch, and the implementer continues from existing commits;
+// land first checks whether the issue is closed or a PR already exists, so a rerun adds at most one extra comment.
+// podman 连接短暂断开（2026-11-26：ssh: handshake failed … connection reset by peer）也算：门槛没跑成、podman create 报镜像不在（其实只是连不上）、podman rm 失败。
+// A brief podman disconnect counts too (2026-11-26: ssh: handshake failed … connection reset by peer): the gate didn't run, podman create reporting a missing image (really just unreachable), podman rm failing.
+export const PODMAN_TRANSIENT = new RegExp(
+  [GATE_INFRA_PREFIX, "Cannot connect to Podman", "ssh: handshake failed", "Image '.*' not found locally", "podman rm failed"].join("|"),
+  "i",
+);
+// 门槛依赖的服务连不上（GATE_ENV_PREFIX，#54）也定时重跑，但不进 PODMAN_TRANSIENT（不用等 podman）。
+// A service the gate depends on being unreachable (GATE_ENV_PREFIX, #54) is rerun later too, but isn't in PODMAN_TRANSIENT (no waiting for podman).
+// 沙箱初始化时 git 读配置也偶发失败（2026-11-28，maxParallel: 2 下两次，#117 / #171）：宿主机写 .git/config（锁文件、改名）时
+// 容器通过挂载读到中间状态，报 fatal: unknown error occurred while reading the configuration files（退出码 128）。也是临时错误，只进 TRANSIENT：
+// 进 PODMAN_TRANSIENT 会走「等 podman 连上」那条分支，把 stuck 文案也误写成 podman 断连。
+// git reading its config during sandbox setup also fails occasionally (2026-11-28, twice under maxParallel: 2, #117 / #171): the container reads
+// .git/config mid-write by the host (lock file, rename) through the mount, reporting "fatal: unknown error occurred while reading the configuration files" (exit 128).
+// Also transient, and only in TRANSIENT: putting it in PODMAN_TRANSIENT would take the "wait for podman" branch and mislabel the stuck message as a podman disconnect.
+export const TRANSIENT = new RegExp(`${REMOTE_TRANSIENT.source}|CopyToWorktreeTimeoutError|timed out|${PODMAN_TRANSIENT.source}|${GATE_ENV_PREFIX}|unknown error occurred while reading the configuration files`, "i");
+export const TRANSIENT_RETRY_WAITS_MS = [60_000, 300_000, 900_000];
+
+/**
+ * 跑 fn，撞上 TRANSIENT 认得的临时错误就按 TRANSIENT_RETRY_WAITS_MS 等一会儿整步重跑，用完重试次数把错误抛出去；
+ * podman 类错误（PODMAN_TRANSIENT）改成等 podman 连上再重跑。认证失效不重试（agentAuthReason）。
+ * deps 给测试注入假的 sleep。
+ * Run fn; on a transient error TRANSIENT recognises, wait per TRANSIENT_RETRY_WAITS_MS and rerun the whole step, rethrowing once the attempts run out;
+ * podman errors (PODMAN_TRANSIENT) instead wait for podman to come back before rerunning. Auth failures aren't retried (agentAuthReason).
+ * deps lets tests inject a fake sleep.
+ */
+export async function retryTransient<T>(what: string, fn: () => Promise<T>, deps: { sleep?: (ms: number) => Promise<void> } = {}): Promise<T> {
+  const { sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = deps;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const message = String((e as { stderr?: unknown }).stderr || e);
+      // 认证失效不按临时错误重跑（重试也是同样的 401，白等约 21 分钟）：直接抛给 untilAuthRecovered 等凭据更换（#62 之三）。
+      // An auth failure isn't retried as transient (each retry would just 401 again, wasting ~21 minutes): thrown straight out to untilAuthRecovered to wait for new credentials (#62 part 3).
+      if (agentAuthReason(e) !== null) throw e;
+      const wait = TRANSIENT_RETRY_WAITS_MS[attempt];
+      if (wait === undefined || !TRANSIENT.test(message)) throw e;
+      const first = message.split("\n")[0].slice(0, 160);
+      const n = `${attempt + 1}/${TRANSIENT_RETRY_WAITS_MS.length}`;
+      if (!PODMAN_TRANSIENT.test(message)) {
+        console.warn(t(`  ⚠ ${what} 撞上临时错误（${first}），${wait / 1000} 秒后重跑（第 ${n} 次）`, `  ⚠ ${what} hit a transient error (${first}); rerunning in ${wait / 1000}s (attempt ${n})`));
+        await sleep(wait);
+        continue;
+      }
+      // podman 类错误：等 podman 连上（最多等这次的间隔）再重跑；「镜像不在本地」在连上后复查，真缺镜像就按原路径报错。
+      // podman errors: wait until podman is reachable (at most this attempt's interval), then rerun; "image not found locally" is rechecked once connected, and a truly missing image fails as before.
+      console.warn(t(`  ⚠ ${what} 撞上 podman 连接问题（${first}），等 podman 连上（最多 ${wait / 1000} 秒）后重跑（第 ${n} 次）`, `  ⚠ ${what} hit a podman connection problem (${first}); rerunning once podman is reachable (up to ${wait / 1000}s, attempt ${n})`));
+      const up = await waitForPodman(trySh, undefined, wait);
+      const image = missingImage(message);
+      if (up && image !== null && !imageExists(image)) throw e;
+    }
+  }
 }
 
 /**
