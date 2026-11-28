@@ -64,8 +64,12 @@
 3. 照 Browser check 操作。每个要看的状态截一张：`playwright-cli screenshot --filename=.browser-check/<两位序号>-<说明>.png`，然后**用 Read 看截图**，对照 Browser check 判断。当前模型看不到图片时（Read 图片会被 hook 拦下并说明），用 Agent 工具起 `subagent_type: "screenshot-checker"` 看图：一次一张，prompt 里给截图路径和要核对的点，几张可以在同一条消息里并行起。文案、结构、class 这类文字能核对的，先用 `playwright-cli snapshot` / `eval`。
 4. 查错：`playwright-cli console error`，再看 dev server 的日志。
 5. 发现问题就修（能用接口测试锁住的补测试），提交后重新截图。
-6. 写 `.browser-check/RESULT.md`（中文，会原样进 PR 正文）：Browser check 每一步 ✅/❌/⚠️ 一行，引用对应截图文件名；页面或服务端报错；没能验证的及原因。
-7. 收尾：`playwright-cli close`，停掉 dev server。`.browser-check/` 不提交，编排脚本会把它拷出来附到 PR 上。
+6. 沉淀 Playwright 测试：把 Browser check 的关键步骤写成 Playwright 测试，按「本项目」写的 e2e 目录和单跑命令放、跑（没写的按仓库里已有 e2e 测试的布局），跟代码一起提交；`.browser-check/` 里的截图照旧不提交。测试要等待页面稳定，不靠固定延时：
+   - 等元素可见或可交互、等网络空闲或等具体响应，用 web-first 断言（如 `expect(locator).toBeVisible()`），不用 `waitForTimeout` / sleep。
+   - 动画用断言等它结束，或在测试里把动画关掉。
+   本地跑通后再写 RESULT.md。
+7. 写 `.browser-check/RESULT.md`（中文，会原样进 PR 正文）：Browser check 每一步 ✅/❌/⚠️ 一行，引用对应截图文件名；页面或服务端报错；没能验证的及原因。
+8. 收尾：`playwright-cli close`，停掉 dev server。`.browser-check/` 不提交，编排脚本会把它拷出来附到 PR 上。
 
 浏览器验收通过与否都不影响你输出 COMPLETE；改了页面的票只有 `RESULT.md` 每一步都是 ✅ 时才可能自动合并，否则留 PR 由人看截图。
 

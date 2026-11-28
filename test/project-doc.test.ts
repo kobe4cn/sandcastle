@@ -142,6 +142,32 @@ describe("用 duckdb_crm 的 PROJECT.md 渲染", () => {
     expect(out.review).toContain("decided 评论选的正好是票正文列出的待决定项");
     expect(out.review).toContain("decided 评论的内容碰了「必须停下」");
   });
+
+  it("implement 要求把 Browser check 沉淀成 Playwright 测试、等待页面稳定，review 检查这两点（#159）", () => {
+    // implement：测试跟代码一起提交、按「本项目」的目录和命令跑，本地跑通后再写 RESULT.md
+    expect(out.implement).toContain("Playwright 测试");
+    expect(out.implement).toContain("跟代码一起提交");
+    expect(out.implement).toContain("「本项目」");
+    expect(out.implement).toContain("本地跑通后再写 RESULT.md");
+    // implement：等待页面稳定的写法（web-first 断言，不用固定延时，动画等结束或关掉）
+    expect(out.implement).toContain("等待页面稳定");
+    expect(out.implement).toContain("等元素可见或可交互");
+    expect(out.implement).toContain("等网络空闲或等具体响应");
+    expect(out.implement).toContain("web-first 断言");
+    expect(out.implement).toContain("不用 `waitForTimeout`");
+    expect(out.implement).toContain("动画用断言等它结束");
+    // review：合并条件里查有没有提交测试，结论里查有没有固定延时
+    expect(out.review).toContain("Playwright 测试");
+    expect(out.review).toContain("固定延时");
+    expect(out.review).toContain("`waitForTimeout`");
+  });
+
+  it("prep 的 Browser check 一项说明会被沉淀成 e2e 测试、要写成可断言结果，模板注释提示写 e2e 目录和单跑命令（#159）", () => {
+    expect(out.prep).toContain("沉淀成 e2e 测试");
+    expect(out.prep).toContain("可断言的结果");
+    expect(templateDoc).toContain("e2e 测试放哪个目录");
+    expect(templateDoc).toContain("单跑命令");
+  });
 });
 
 describe("没有浏览器验收的项目", () => {
@@ -155,6 +181,12 @@ describe("没有浏览器验收的项目", () => {
     expect(out.review).not.toContain("<browser-verdict>");
     expect(out.review).not.toContain("screenshot-checker");
     expect(out.review).toContain("<browser-check>missing</browser-check>");
+  });
+
+  it("渲染结果不出现 playwright（#159）", () => {
+    for (const name of PROMPT_NAMES) {
+      expect(out[name], name).not.toMatch(/playwright/i);
+    }
   });
 });
 
