@@ -1,20 +1,22 @@
 // doctor：跑流水线之前把能在宿主机上查的都查一遍，每项给出结论和修法。
 // 查：仓库根目录、配置能加载、宿主机依赖与 env 文件、PROJECT.md 与提示词能渲染、浏览器验收、合并条件（有 CI workflow 却不等检查时警告）、项目知识（缺口清单）、models.json、.env 的 token、平台登录与权限、
-// 标签（--fix 时补建）、Sandcastle 票的 Blocked by 引用、开着的 main-broken 票、远端基础分支、沙箱镜像、门槛依赖的服务、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
+// 标签、镜像（--fix 时补建 / 直接建）、Sandcastle 票的 Blocked by 引用、开着的 main-broken 票、远端基础分支、沙箱镜像、门槛依赖的服务、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
 // 有一项 ✗ 退出码就是 1。
 // doctor: before running the pipeline, check everything that can be checked on the host, giving a verdict and a fix for each.
 // Checks: repository root, config loads, host dependencies and env files, PROJECT.md and prompts render, browser check, merge requirements (warns when there are CI workflows but checks aren't awaited), project knowledge (open questions list), models.json, .env tokens, forge login and permissions,
-// labels (created with --fix), Blocked by references in Sandcastle tickets, open main-broken tickets, remote base branch, sandbox image, gate services, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
+// labels and the image (created / built with --fix), Blocked by references in Sandcastle tickets, open main-broken tickets, remote base branch, sandbox image, gate services, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
 // Exit code 1 if any check is ✗.
 
+import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { parseEnv } from "node:util";
 import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { browserSetupWarning } from "./browser-gate.ts";
 import { detectProject } from "./detect.ts";
 import type { Forge, IssueState } from "./forge.ts";
 import { blockersOf } from "./guide.ts";
+import { buildImageArgs } from "./lifecycle.ts";
 import { inspectModels } from "./models.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { CLAUDE_FILES, fillDocsHint, manual, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
@@ -83,8 +85,15 @@ export async function diagnose(opts: {
   run?: Runner;
   /** 测试里换成假实现；默认用配置里的 forge / A fake in tests; defaults to the config's forge */
   forge?: Forge;
-  /** 缺的标签直接建上 / Create missing labels */
+  /** 缺的标签和镜像直接建上 / Create missing labels and the image */
   fix?: boolean;
+  /**
+   * --fix 建镜像用的函数（out 是构建的 stderr）；测试里换成假实现。
+   * 默认直接 spawnSync podman（不走 run：那有 60s 超时，构建常常更久），stdout / stderr 原样进终端，不设超时。
+   * Used by --fix to build the image (out is the build's stderr); a fake in tests.
+   * By default spawns podman directly (not via run: its 60s timeout is often too short for builds), with stdout / stderr going to the terminal as is and no timeout.
+   */
+  build?: (args: string[]) => { ok: boolean; out: string };
   /** 查最新发布的版本；不给就不查（测试里不连网） / Looks up the latest release; not checked when absent (no network in tests) */
   latest?: () => Promise<string | undefined>;
   /** 连门槛依赖的服务；测试里换成假实现，默认 probeTcp / Connects to the gate's services; a fake in tests, probeTcp by default */
@@ -93,6 +102,14 @@ export async function diagnose(opts: {
   const cwd = opts.cwd ?? process.cwd();
   const env = opts.env ?? process.env;
   const run: Runner = opts.run ?? ((cmd, args) => trySh(cmd, args, 60_000));
+  // 构建不能走 run（60s 超时），trySh 的 stdio 是 pipe、构建输出也显示不出来，所以单独 spawnSync。
+  // The build can't go through run (its 60s timeout is often too short), and trySh's stdio is pipe so the build output wouldn't show; hence a separate spawnSync.
+  const build = opts.build ?? ((args: string[]) => {
+    const r = spawnSync("podman", args, { stdio: ["inherit", "inherit", "pipe"] });
+    const out = r.stderr?.toString() ?? "";
+    if (out) process.stderr.write(out);
+    return { ok: r.status === 0, out };
+  });
   const checks: Check[] = [];
   const add = (name: string, level: Level, detail: string, fix?: string) => checks.push({ name, level, detail, fix });
   const rel = (p: string) => relative(cwd, p) || ".";
@@ -425,14 +442,28 @@ export async function diagnose(opts: {
   } else if (project) {
     const image = defaultImageName(cwd);
     const containerfile = [join(dir, "Containerfile"), join(cwd, ".sandcastle/Containerfile")].find(existsSync);
-    const build = containerfile
-      ? `podman build -t ${image} -f ${rel(containerfile)} ${rel(dirname(containerfile))}`
+    // 手动命令与 --fix 跑的同一条（带内容哈希 label，供后续判断镜像是否过期），路径换成相对仓库根的写法。
+    // The manual command is the same one --fix runs (with the content hash label, to later tell whether the image is stale), paths made relative to the repo root.
+    const buildCommand = containerfile
+      ? ["podman", ...buildImageArgs(image, containerfile).map((a) => (isAbsolute(a) ? rel(a) : a))].join(" ")
       : t("先跑 onboard 生成 Containerfile", "Run onboard first to generate the Containerfile");
     const info = run("podman", ["info", "--format", "{{.Host.Arch}}"]);
     const S = t("沙箱镜像", "Sandbox image");
     if (!info.ok) add(S, "fail", t("podman 用不了：", "podman isn't usable: ") + firstLine(info.out), t("装 podman；macOS 上 podman machine start", "Install podman; on macOS, podman machine start"));
-    else if (!run("podman", ["image", "exists", image]).ok) add(S, "fail", t(`没有镜像 ${image}`, `No image ${image}`), build);
-    else add(S, "ok", t(`${image}（改了 Containerfile 要重建：${build}）`, `${image} (rebuild after changing the Containerfile: ${build})`));
+    else if (!run("podman", ["image", "exists", image]).ok) {
+      // --fix 时按 Containerfile 直接建镜像（和补建标签一样），构建输出原样进终端；失败不吞，detail 给 stderr 前几行。
+      // With --fix, build the image from the Containerfile directly (like creating missing labels), the build output going to the terminal as is; a failure isn't swallowed, the detail carries the first few stderr lines.
+      const built = opts.fix && containerfile ? build(buildImageArgs(image, containerfile)) : undefined;
+      if (built?.ok) add(S, "ok", t(`建好了镜像 ${image}`, `built the image ${image}`));
+      else if (built)
+        add(
+          S,
+          "fail",
+          t("构建失败：", "build failed: ") + built.out.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 5).join(t("；", "; ")),
+          buildCommand,
+        );
+      else add(S, "fail", t(`没有镜像 ${image}`, `No image ${image}`), buildCommand);
+    } else add(S, "ok", t(`${image}（改了 Containerfile 要重建：${buildCommand}）`, `${image} (rebuild after changing the Containerfile: ${buildCommand})`));
   }
 
   // ---- 门槛依赖的服务 ---- / Gate services

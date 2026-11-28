@@ -3,6 +3,7 @@
 // Lifecycle of one run: only one sandpipe per repository (lock file), a podman check before starting, orphan container cleanup, the interrupt notice, one-line errors.
 // Pure and injectable functions live here; main.ts runs the main loop on load and can't be tested directly.
 
+import { createHash } from "node:crypto";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { trySh, type TryResult } from "./shell.ts";
@@ -189,6 +190,22 @@ export function missingImage(message: string): string | null {
 /** 镜像在不在本地（`podman image exists`）。 / Whether the image exists locally (`podman image exists`). */
 export function imageExists(tag: string, run: Run = trySh): boolean {
   return run("podman", ["image", "exists", tag], 60_000).ok;
+}
+
+/**
+ * 镜像上记录 Containerfile 内容哈希的 label（doctor --fix 建镜像时打上，供后续票判断镜像是否过期，见 #89）。
+ * The label on the image recording the Containerfile's content hash (set when doctor --fix builds it, so later tickets can tell whether the image is stale, see #89).
+ */
+export const IMAGE_LABEL = "sandpipe.containerfile";
+
+/** Containerfile 文件字节的 sha256（十六进制）。 / The sha256 (hex) of the Containerfile's bytes. */
+export function containerfileHash(path: string): string {
+  return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+/** 按镜像名和 Containerfile 组出 podman build 的参数（打上内容哈希 label）。 / podman build args for the image and Containerfile (labelled with the content hash). */
+export function buildImageArgs(image: string, containerfile: string): string[] {
+  return ["build", "-t", image, "--label", `${IMAGE_LABEL}=${containerfileHash(containerfile)}`, "-f", containerfile, dirname(containerfile)];
 }
 
 /**

@@ -1,11 +1,13 @@
-// doctor：在 onboard 刚生成的项目上跑，逐项给出结论；--fix 补建缺的标签。
+// doctor：在 onboard 刚生成的项目上跑，逐项给出结论；--fix 补建缺的标签、按 Containerfile 建缺的镜像。
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { detectProject } from "../src/detect.ts";
 import { type Check, diagnose, formatChecks, type Runner } from "../src/doctor.ts";
 import { githubForge } from "../src/forges/github.ts";
+import { buildImageArgs, containerfileHash, IMAGE_LABEL } from "../src/lifecycle.ts";
 import { installFiles, installGlobalSkill } from "../src/onboard.ts";
 import { VERSION } from "../src/version.ts";
 import { DEFAULT_LABELS } from "../src/profile.ts";
@@ -110,7 +112,7 @@ describe("diagnose", () => {
     });
     const text = formatChecks(first);
     expect(text).toContain("cp .sandcastle/.env.example .sandcastle/.env");
-    expect(text).toMatch(/podman build -t \S+ -f \.sandcastle\/Containerfile \.sandcastle/);
+    expect(text).toMatch(/podman build -t \S+ --label sandpipe\.containerfile=[0-9a-f]{64} -f \.sandcastle\/Containerfile \.sandcastle/);
     expect(text).toContain("doctor --fix");
 
     // .env 里只有 GH_TOKEN：缺 Claude 凭据
@@ -160,6 +162,92 @@ function readyRepo() {
 }
 const check = (checks: Check[], name: string) => checks.find((c) => c.name === name);
 const allLabels = Object.values(DEFAULT_LABELS);
+
+describe("diagnose：--fix 建镜像", () => {
+  /** 记录收到的参数的假 build；ok=false 时 out 是多行 stderr。 */
+  const fakeBuild = (ok: boolean, out = "Error: registries.conf: invalid TOML\n第二行\n第三行\n第四行\n第五行\n第六行\n") => {
+    const calls: string[][] = [];
+    return { calls, build: (args: string[]) => (calls.push(args), { ok, out }) };
+  };
+
+  it("fix 且镜像缺失：按 Containerfile 建镜像，参数带哈希 label，成功后该项 ok", async () => {
+    const root = readyRepo();
+    const { calls, build } = fakeBuild(true);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: false }), forge: fakeGh(allLabels, []), fix: true, build });
+    const containerfile = join(root, ".sandcastle/Containerfile");
+    expect(calls).toEqual([["build", "-t", defaultImageName(root), "--label", `${IMAGE_LABEL}=${containerfileHash(containerfile)}`, "-f", containerfile, join(root, ".sandcastle")]]);
+    expect(check(checks, "沙箱镜像")).toMatchObject({ level: "ok", detail: expect.stringContaining("建好了镜像") });
+  });
+
+  it("不带 fix：不调 build，fail 并给带哈希 label 的构建命令", async () => {
+    const root = readyRepo();
+    const { calls, build } = fakeBuild(true);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: false }), forge: fakeGh(allLabels, []), build });
+    expect(calls).toEqual([]);
+    expect(check(checks, "沙箱镜像")).toMatchObject({
+      level: "fail",
+      detail: expect.stringContaining("没有镜像"),
+      fix: expect.stringMatching(/podman build -t \S+ --label sandpipe\.containerfile=[0-9a-f]{64} -f \.sandcastle\/Containerfile \.sandcastle/),
+    });
+  });
+
+  it("podman 用不了：照旧 fail，不尝试构建", async () => {
+    const root = readyRepo();
+    const { calls, build } = fakeBuild(true);
+    const run: Runner = (cmd, args) =>
+      cmd === "podman" ? { ok: false, out: "Cannot connect to Podman\nmore" } : runner({ image: true })(cmd, args);
+    const checks = await diagnose({ cwd: root, env: {}, run, forge: fakeGh(allLabels, []), fix: true, build });
+    expect(calls).toEqual([]);
+    expect(check(checks, "沙箱镜像")).toMatchObject({ level: "fail", detail: "podman 用不了：Cannot connect to Podman" });
+  });
+
+  it("构建失败：fail，detail 给 stderr 的前几行，fix 给构建命令", async () => {
+    const root = readyRepo();
+    const { build } = fakeBuild(false);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: false }), forge: fakeGh(allLabels, []), fix: true, build });
+    const c = check(checks, "沙箱镜像");
+    expect(c).toMatchObject({ level: "fail" });
+    expect(c?.detail).toContain("registries.conf");
+    expect(c?.detail).toContain("第五行");
+    expect(c?.detail).not.toContain("第六行");
+    expect(c?.fix).toMatch(/podman build -t \S+ --label sandpipe\.containerfile=[0-9a-f]{64}/);
+  });
+
+  it("配置里自定义了 sandbox：不建镜像", async () => {
+    const root = readyRepo();
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(config, readFileSync(config, "utf8").replace("export default defineProject({", "export default defineProject({\n  sandbox: () => ({}) as never,"));
+    const { calls, build } = fakeBuild(true);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: false }), forge: fakeGh(allLabels, []), fix: true, build });
+    expect(calls).toEqual([]);
+    expect(check(checks, "沙箱镜像")).toMatchObject({ level: "ok", detail: expect.stringContaining("自定义") });
+  });
+
+  it("镜像缺失且没有 Containerfile：fix 也不建，照旧提示先跑 onboard", async () => {
+    const root = readyRepo();
+    rmSync(join(root, ".sandcastle/Containerfile"));
+    const { calls, build } = fakeBuild(true);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: false }), forge: fakeGh(allLabels, []), fix: true, build });
+    expect(calls).toEqual([]);
+    expect(check(checks, "沙箱镜像")).toMatchObject({ level: "fail", fix: expect.stringContaining("先跑 onboard") });
+  });
+
+  it("fix 建成功（英文项目）：文案是英文", async () => {
+    const root = pythonRepo();
+    installFiles(root, detectProject(root));
+    writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=y\n");
+    writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "");
+    const { build } = fakeBuild(true);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: false }), forge: fakeGh(allLabels, []), fix: true, build });
+    expect(check(checks, "Sandbox image")).toMatchObject({ level: "ok", detail: expect.stringContaining("built the image") });
+  });
+
+  it("cli help 中英写明 --fix 也建缺的镜像", () => {
+    const cli = readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8");
+    expect(cli).toContain("[--fix] 缺的标签和镜像直接建上");
+    expect(cli).toContain("[--fix] create missing labels and the image");
+  });
+});
 
 describe("diagnose：项目知识", () => {
   const knowledge = async (content: string | null) => {
