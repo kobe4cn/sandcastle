@@ -45,6 +45,10 @@ type GlabMr = {
   description?: string | null;
   has_conflicts?: boolean;
   detailed_merge_status?: string;
+  /** MR 当前的头提交。 / The MR's current head commit. */
+  sha?: string;
+  /** 头 pipeline；刚 push 完新提交时可能还是上一个提交的，要和 sha 核对。 / The head pipeline; right after a push it may still be the previous commit's, so check it against sha. */
+  head_pipeline?: { id: number; sha: string } | null;
 };
 
 /**
@@ -391,10 +395,17 @@ export function gitlabForge(glab: GlabRunner = (args, env) => sh("glab", args, u
     prChecks(id, requiredOnly) {
       // GitLab 没有「分支保护要求的检查」这一说：requiredOnly 时去掉 allow_failure 的 job（不挡 pipeline 的不算数）
       // GitLab has no "checks required by branch protection": with requiredOnly, allow_failure jobs are dropped (they don't block the pipeline)
-      const pipelines = JSON.parse(glab(["api", `projects/:id/merge_requests/${id}/pipelines?per_page=1`])) as { id: number }[];
-      const latest = pipelines[0];
-      if (!latest) return [];
-      return list<GlabJob>(`projects/:id/pipelines/${latest.id}/jobs`)
+      // 只看 MR 头提交的 pipeline：刚 push 新提交（打回后修改、rebase 补救 force-push）时 GitLab 建新 pipeline 要等一会儿，
+      // 这期间 head_pipeline 还是旧提交的、job 早已 success，照读会合并没跑过 CI 的提交。没有或不是头提交的就返回 []，
+      // 和 GitHub「头提交还没登记检查」同义，交给 merge-checks 的宽限期去等
+      // Only the MR head commit's pipeline counts: right after a new push (revision after a rejection, rebase-recovery force-push)
+      // GitLab takes a while to create the new pipeline, and meanwhile head_pipeline is still the old commit's with jobs long
+      // succeeded — reading it would merge a commit CI never ran on. None, or not the head commit's, returns [], matching GitHub's
+      // "head commit has no checks yet", so merge-checks' grace period waits
+      const mr = getMr(id);
+      const pipeline = mr.head_pipeline;
+      if (!pipeline || pipeline.sha !== mr.sha) return [];
+      return list<GlabJob>(`projects/:id/pipelines/${pipeline.id}/jobs`)
         .filter((job) => !(requiredOnly && job.allow_failure))
         .map((job): PrCheck => ({ name: job.name, state: jobState(job), ...(job.web_url ? { link: job.web_url } : {}) }));
     },
