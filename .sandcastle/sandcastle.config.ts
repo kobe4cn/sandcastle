@@ -59,7 +59,7 @@ export default defineProject({
     /^scripts\//,
     /^package\.json$/,
     /^src\/(merge-checks|merge-flow|re-review|browser-gate|gate-queue|trust|protected-paths|waiting-main)\.ts$/,
-    /^src\/forges\/github\.ts$/,
+    /^src\/forges\/(github|gitlab)\.ts$/,
   ],
 
   // 几张票会同时往末尾追加的索引文件（CHANGELOG、测试目录……），列在这里的不算「改同一个文件」，可以并行。
