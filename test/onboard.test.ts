@@ -278,6 +278,22 @@ describe("installFiles", () => {
     expect(second.filter((o) => o.status === "written")).toEqual([]);
     expect(readFileSync(join(root, ".sandcastle/PROJECT.md"), "utf8")).toBe("人改过");
   });
+
+  it("远端是 GitLab：配置加载后 forge 是 gitlabForge，.env.example 换成 GITLAB_TOKEN 的说明", async () => {
+    const root = nodeRepo();
+    execFileSync("git", ["-C", root, "remote", "set-url", "origin", "git@gitlab.com:acme/shop.git"]);
+    const f = detectProject(root);
+    expect(f.forge.kind).toBe("gitlab");
+    installFiles(root, f);
+    const project = await loadProject(join(root, ".sandcastle"));
+    expect(project.forge.name).toBe("gitlab");
+    const env = readFileSync(join(root, ".sandcastle/.env.example"), "utf8");
+    expect(env).toContain("GITLAB_TOKEN=");
+    expect(env).toContain("api");
+    expect(env).toContain("Developer");
+    expect(env).toContain("glab auth login --hostname");
+    expect(env).not.toContain("GH_TOKEN=");
+  });
 });
 
 describe("configSource", () => {
@@ -298,6 +314,20 @@ describe("configSource", () => {
         "  },",
       ].join("\n"),
     );
+  });
+
+  it("远端是 GitLab：import 行带 gitlabForge，forge 是真正生效的一行代码、不再有「还没做」", () => {
+    const gitlab = { kind: "gitlab", host: "gitlab.com", path: "acme/shop" } as const;
+    const src = configSource({ ...detectProject(nodeRepo()), services: [], forge: gitlab }, "sandpipe");
+    expect(src).toContain('import { defineProject, gitlabForge } from "sandpipe";');
+    // 探测到服务时 import 行更长，gitlabForge 一样要在——漏了生成的配置加载会失败
+    // With services detected the import line is longer; gitlabForge must be there too — missing it breaks loading the generated config
+    expect(configSource({ ...detectProject(nodeRepo()), services: ["postgres"], forge: gitlab }, "sandpipe")).toContain(
+      'import { defineProject, gitlabForge, readHostEnv, toContainerHost, withDbSuffix } from "sandpipe";',
+    );
+    expect(src).toContain("\n  forge: gitlabForge(),\n");
+    expect(src).not.toContain("还没做");
+    expect(src).not.toContain("isn't done");
   });
 
   it("env 文件里没扫到：按服务猜键名，惯例键名撞了改用 <服务>_URL，不丢服务；只给数据库加后缀", () => {
@@ -585,6 +615,21 @@ describe("containerfileSource", () => {
     expect(py).toContain("python3-venv");
     expect(py).toContain("ENTRYPOINT");
     expect(py).not.toContain("pnpm");
+  });
+
+  it("远端是 GitLab：装 glab（官方 release 的 .deb、按 CPU 架构下载），不再装 gh、没有 TODO；浏览器验收段保留", () => {
+    const base = detectProject(nodeRepo());
+    const gl = containerfileSource(containerTemplate, { ...base, forge: { kind: "gitlab", host: "gitlab.com", path: "acme/shop" } });
+    expect(gl).toContain("# 装 GitLab CLI");
+    expect(gl).toMatch(/glab_[\d.]+_linux_\$\(dpkg --print-architecture\)\.deb/);
+    expect(gl).not.toContain("apt-get install -y gh");
+    expect(gl).not.toContain("TODO");
+    expect(gl).toContain("playwright");
+    // GitHub 远端不变：照旧装 gh，不出现 glab 的下载
+    // A GitHub remote is unchanged: gh is still installed, no glab download appears
+    const gh = containerfileSource(containerTemplate, base);
+    expect(gh).toContain("apt-get install -y gh");
+    expect(gh).not.toContain("glab_");
   });
 });
 
@@ -1266,7 +1311,7 @@ describe("onboard 的阶段摘要（--verbose 才打明细）", () => {
     }
   });
 
-  it("远端是 GitLab 时警告仍然单独成一行", async () => {
+  it("远端是 GitLab：不再打「还没做」的警告，探测摘要照常", async () => {
     const root = nodeRepo();
     execFileSync("git", ["-C", root, "remote", "set-url", "origin", "git@gitlab.com:acme/shop.git"]);
     installFiles(root, detectProject(root));
@@ -1274,7 +1319,8 @@ describe("onboard 的阶段摘要（--verbose 才打明细）", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       await onboard(["--no-agent"], root, async () => "keep");
-      expect(warn.mock.calls.flat().join("\n")).toContain("⚠ 远端是 GitLab");
+      expect(warn.mock.calls.flat().join("\n")).not.toContain("⚠ 远端是 GitLab");
+      expect(warn.mock.calls.flat().join("\n")).not.toContain("the GitLab forge isn't done");
       expect(log.mock.calls.flat().join("\n")).toContain("探测  shop");
     } finally {
       log.mockRestore();

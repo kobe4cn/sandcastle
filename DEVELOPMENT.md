@@ -111,4 +111,4 @@ npm run build      # esbuild 打包、压缩到 dist/（npm pack 前自动跑）
 - `docs/internal/` 里的 sandcastle.md 等仍是 duckdb_crm 的写法，不发布。
 - 第 9 步已完成：打包（esbuild）、发版流程、`update` / `upgrade`、prep-ticket skill 通用化并由 onboard 安装。
 - 第 6、7、8 步已完成：`onboard`、`doctor`、接入检查清单（`baseline` 命令与 `autoMerge` 开关）。
-- 还没有 GitLab Forge。
+- GitLab Forge 已实现（`src/forges/gitlab.ts`，`onboard` 在 GitLab 远端直接生成可用配置：`forge: gitlabForge()`、Containerfile 装 `glab`、`.env.example` 写 `GITLAB_TOKEN` 的说明）；真实 GitLab 项目上的端到端验证留给发版后手动跑。
