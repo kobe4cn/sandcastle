@@ -174,6 +174,8 @@ Sandcastle 处理期间，PR 作者不要往这个分支推提交。本地和远
 
 改了页面的票：`RESULT.md` 每一步都是 ✅、reviewer 自己看截图的结论也逐条全 ✅ 时可以自动合并（2026-11-24 放宽）；有 ❌、⚠️ 或没验证到的步骤才留 PR，由你看截图和结论后合并。
 
+onboard 探测到 Playwright（根目录的 `playwright.config.*` 或 package.json 的 `test:e2e` / `e2e` script）时，把 e2e 命令接在生成的 `gate.script` 末尾由门槛跑，`-snapshots/` 基准截图目录默认进 protectedPaths——更新基准只能由人确认后合并（#157）。
+
 ## 验收说明
 
 每个 Sandcastle PR 的正文都以 `## 验收说明` 一节开头，写给验收 PR 的人：这个 PR 做了什么、在宿主机上怎么一步步验证、最终效果。来源是 implementer 写在 worktree `.pr-notes/验收说明.md`（不提交）的中文说明，格式要求在 `prompts/implement.md`：`### 做了什么`、`### 怎么验证`（编号步骤，每条验收标准至少一步）、`### 最终效果` 三个小标题，不能出现 `## ` 二级标题（替换这一节时会切错）；多行命令或多行内容用代码块写，行内代码只放不换行的短片段——行内代码跨不过空行，跨空行的内容会被当成 Markdown 渲染（图片语法会变成破图）。
