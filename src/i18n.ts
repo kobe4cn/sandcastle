@@ -5,6 +5,7 @@
 // What the agent writes is governed by the "output language" rule in the prompts (languageVars in project-doc.ts). Terminal output isn't here; see term.ts.
 // To add an entry, add it to both zh and en (en is typed as Messages, so a missing one won't compile).
 
+import type { NotifyEvent } from "./notify.ts";
 import type { ProtectedHit } from "./protected-paths.ts";
 
 export type Language = "zh" | "en";
@@ -14,6 +15,38 @@ export type Language = "zh" | "en";
  * Protected-path hits as "- `file` — `rule`" lines, each with an optional suffix (shared by reasonProtected and protectedAllowed).
  */
 const hitLines = (hits: ProtectedHit[], suffix = "") => hits.map((h) => `- \`${h.file}\` — \`${h.rule}\`${suffix}`).join("\n");
+
+/**
+ * 通知事件在消息里的说法，中英各一份（notifyText 用）。
+ * How each notify event is worded in messages, one set per language (used by notifyText).
+ */
+const zhEventNames: Record<NotifyEvent, string> = {
+  stuck: "票卡住了",
+  leftForHuman: "留了 PR 给人",
+  mainBroken: "main 坏了",
+  limited: "撞上用量限额",
+  crashed: "运行中断了",
+};
+const enEventNames: Record<NotifyEvent, string> = {
+  stuck: "ticket stuck",
+  leftForHuman: "PR left for a human",
+  mainBroken: "main is broken",
+  limited: "usage limit hit",
+  crashed: "the run crashed",
+};
+
+/**
+ * 拼通知的一行 text：票号（有链接时跟在后面）、事件说法、原因，用「 — 」隔开。
+ * Assembles the one-line text: ticket number (link appended when present), the event's wording, the reason, joined by " — ".
+ */
+const notifyLine = (event: string, issue: string | undefined, url: string | undefined, reason: string, label: string): string => {
+  const parts: string[] = [];
+  if (issue && url) parts.push(`#${issue} ${url}`);
+  else if (issue) parts.push(`#${issue}`);
+  else if (url) parts.push(url);
+  parts.push(event, reason);
+  return `${label}${parts.join(" — ")}`;
+};
 
 const zh = {
   list: (items: string[]) => items.join("、"),
@@ -241,6 +274,14 @@ const zh = {
       "- [ ] 是不是依赖图漏选导致的，在 issue 评论里写明结论",
     ].join("\n"),
 
+  // —— 主动通知（webhook，notify.ts） —— / Proactive notifications (webhook, notify.ts)
+  /**
+   * webhook 消息的 text：一行给人看，兼容只认 text 的接收端（Slack / 飞书）。
+   * The webhook message's text: one human-readable line, compatible with receivers that only read text (Slack / Lark).
+   */
+  notifyText: (event: NotifyEvent, issue: string | undefined, url: string | undefined, reason: string) =>
+    notifyLine(zhEventNames[event], issue, url, reason, "Sandcastle："),
+
   // —— 给 agent 的输出语言规则（渲染进每个提示词开头，以及内联的 revise / fix 提示词） ——
   // Output language rule for the agent (rendered at the top of every prompt, and in the inline revise / fix prompts)
   outputLanguage:
@@ -443,6 +484,13 @@ const en: Messages = {
       "- [ ] Don't raise global timeouts, don't delete or weaken assertions",
       "- [ ] State in an issue comment whether the dependency graph missed it",
     ].join("\n"),
+
+  // —— 主动通知（webhook，notify.ts） —— / Proactive notifications (webhook, notify.ts)
+  /**
+   * webhook 消息的 text：一行给人看，兼容只认 text 的接收端（Slack / 飞书）。
+   * The webhook message's text: one human-readable line, compatible with receivers that only read text (Slack / Lark).
+   */
+  notifyText: (event, issue, url, reason) => notifyLine(enEventNames[event], issue, url, reason, "Sandcastle: "),
 
   outputLanguage:
     "Output language: write everything that goes onto the issue tracker or a PR in English: ticket titles and bodies, progress comments, acceptance notes, the review summary (translate the fixed labels in the output templates below, but keep `<tags>`, HTML comments, `## Implementation guide`, `## Blocked by`, `## Acceptance criteria` and the other `##` section names exactly as written). Commit messages follow the “提交” section of PROJECT.md. The instructions below are in Chinese; read them, but answer in English.",

@@ -97,6 +97,7 @@ import {
   podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath, waitForPodman,
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
+import { createNotifier, readNotifyUrl } from "./notify.ts";
 import { parseReviewed, type ReviewedState, resumeDecision, reviewedComment } from "./resume-state.ts";
 import { fixDiffCmd, needsReReview, type ReReview, rebaseDiffCmd, rebaseNeedsReReview, reReviewVerdict, reReviewWithHeads, tagged } from "./re-review.ts";
 import { duration, flakyTicketsLine, gateDoneLine, gateEnv, gateEnvLine, gateInfraLine, startGateProgress } from "./gate-progress.ts";
@@ -124,6 +125,11 @@ const M = messages(project.language);
 // 终端输出也跟项目语言（设了 SANDPIPE_LANG 时以它为准） / Terminal output follows the project's language too (SANDPIPE_LANG wins when set)
 setTermLanguage(project.language);
 const forge = project.forge;
+/**
+ * 主动通知（可选 webhook，notify.ts）：没配 URL 时是空操作；发送失败只警告、不阻塞。URL 是凭据，不进日志。
+ * Proactive notifications (optional webhook, notify.ts): a no-op without a URL; failed sends only warn without blocking. The URL is a credential and never goes to logs.
+ */
+const notifier = createNotifier({ url: readNotifyUrl(project.notify.env), language: project.language, warn: console.warn });
 
 // agent 多久没输出算卡死：库默认 600 秒，太短（门槛失败后的 fix 会话要在后台重跑慢测试，等通知期间没有输出）。
 // How long without agent output counts as stuck: the library default of 600 seconds is too short (fix sessions after a failed gate rerun slow tests in the background with no output while waiting).
@@ -359,9 +365,12 @@ const copyToWorktree = project.install.copyToWorktree;
 // 才进得了 agent 的 shell，所以测试库连接与上下文预算都在这里注入。
 // Claude 凭据在这里清空（覆盖 sandcastle 从 .sandcastle/.env 读到的值）：容器级 env 对同一个容器里的所有会话都可见，
 // 别家档案的会话不能有；Claude 档案的会话由 agentFor 从 stdin 按会话送进去（models.ts）。
+// 通知 webhook 的 URL 同样清空：它是宿主机用的凭据（ADR 0004），agent 不需要也拿不到。
 // Claude credentials are cleared here (overriding what sandcastle reads from .sandcastle/.env): the container-level env is visible to every session
 // in that container and other vendors' sessions must not have them; agentFor hands them to Claude profiles' sessions over stdin, per session (models.ts).
-const sandboxFor = (env: Record<string, string>) => project.sandbox({ ...claudeEnv, ...env, ...CLAUDE_CREDENTIALS_CLEARED });
+// The notification webhook URL is cleared the same way: it's a host-side credential (ADR 0004) the agent neither needs nor can have.
+const sandboxFor = (env: Record<string, string>) =>
+  project.sandbox({ ...claudeEnv, ...env, ...CLAUDE_CREDENTIALS_CLEARED, [project.notify.env]: "" });
 
 // ---------------------------------------------------------------------------
 // Host helpers
@@ -886,6 +895,8 @@ async function pushAndOpenPr(issue: Issue, notes: PrNotes, shots: string[]): Pro
 function leaveForHuman(issue: Issue, pr: string, reason: string) {
   forge.addLabel(issue.id, LABEL.prOpen);
   forge.commentPr(pr, M.notMerged(reason));
+  // 通知不 await（forge 调用是同步的），失败只警告（notify.ts）。 / Not awaited (forge calls are synchronous); failures only warn (notify.ts).
+  void notifier({ event: "leftForHuman", issue: issue.id, url: forge.issueUrl?.(issue.id), reason });
 }
 
 /**
@@ -906,6 +917,8 @@ function reportDecisions(issueId: string, pr: string) {
 function markStuck(issueId: string, reason: string) {
   forge.addLabel(issueId, LABEL.stuck);
   forge.commentIssue(issueId, M.stuck(reason));
+  // 通知不 await（forge 调用是同步的），失败只警告（notify.ts）。 / Not awaited (forge calls are synchronous); failures only warn (notify.ts).
+  void notifier({ event: "stuck", issue: issueId, url: forge.issueUrl?.(issueId), reason });
 }
 
 /** PR 上以这个开头的评论或 review 正文表示「打回 Sandcastle」（作者不能对自己的 PR 点 Request changes）。 */
@@ -2344,7 +2357,11 @@ function start(issue: Issue, resume = false) {
         console.error(t(`  ✗ #${issue.id} 落地出错：`, `  ✗ #${issue.id} landing failed: `) + reason);
         // 打 stuck 不让下次再做；本地分支保留，人看过后去掉 stuck 即可接着跑。
         // Marking stuck keeps it from being retried; the local branch is kept, and removing stuck after a human looks lets it continue.
-        if (!issueClosed(issue.id)) attempt(() => forge.addLabel(issue.id, LABEL.stuck));
+        if (!issueClosed(issue.id)) {
+          const labelled = attempt(() => forge.addLabel(issue.id, LABEL.stuck));
+          // 这里不走 markStuck（直接打 stuck 的兜底出口）：标签打上了才发通知，通知本身不阻塞。 / This is the fallback exit that labels stuck directly, not markStuck: notify only once the label is on; notifying never blocks.
+          if (labelled.ok) void notifier({ event: "stuck", issue: issue.id, url: forge.issueUrl?.(issue.id), reason });
+        }
         // rebase 后的门槛撞上依赖服务连不上（#54）：同样写明匹配到的那一行。 / The gate after a rebase hit an unreachable service (#54): name the matched line here too.
         const envDown = gateEnvReason(e);
         const body = envDown !== null ? M.gateEnvDown(envDown, LABEL.stuck) : M.landError(issue.branch, reason, LABEL.stuck);
@@ -2434,8 +2451,8 @@ async function schedule(): Promise<ScheduleResult> {
     try {
       // 丢弃的数组：prep 用量落地时从 usage.jsonl 读回（可能是上一次进程跑的）。 / Discarded array: prep usage is read back from usage.jsonl on landing (it may have run in an earlier process).
       await runAgent("prep", String(issue.number), `prep-${issue.number}`, {}, [], (agent) => sandcastle.run({
-        // 凭据清空的原因同 sandboxFor。 / Credentials cleared for the same reason as in sandboxFor.
-        sandbox: project.sandbox({ ...CLAUDE_CREDENTIALS_CLEARED }),
+        // 凭据清空的原因同 sandboxFor（含通知 webhook 的 URL）。 / Credentials cleared for the same reason as in sandboxFor (the notification webhook URL included).
+        sandbox: project.sandbox({ ...CLAUDE_CREDENTIALS_CLEARED, [project.notify.env]: "" }),
         name: `prep-${issue.number}`,
         maxIterations: 1,
         idleTimeoutSeconds: AGENT_IDLE_TIMEOUT_S,

@@ -1,5 +1,9 @@
 # 更新记录
 
+## Unreleased
+
+- 主动通知（一，#63 之一）：新增可选配置 `notify`（`notify.env`，默认 `SANDPIPE_NOTIFY_WEBHOOK`），URL 从 `.sandcastle/.env` 读（值为空时取宿主机同名环境变量，没配时什么都不发）。票打 stuck、留 PR 给人时向 webhook POST 一条 JSON：`text` 是给人看的一行（兼容 Slack / 飞书这类只认 `text` 的接收端），`event` / `issue` / `url` / `reason` 给自建接收端；forge 实现了可选的 `issueUrl` 时带链接，中英按 `language`。发送失败只打一行警告、不阻塞主流程，URL 不进日志，且在所有沙箱的 env 里清空、agent 拿不到（`src/notify.ts` 的 `readNotifyUrl` / `createNotifier`；GitHub 的 `issueUrl` 见后续票）（closes #132）
+
 ## 0.3.3
 
 - 复审更严：改动新引入 fail-open（本该留给人审、或本该被关卡拦下的 PR / 票会因为这次改动——残留标签、提前去掉的状态、出错时放行的分支——被自动合并、绕过关卡）时结论一律是 `revise`，实现指引或票写「本票不处理」、按设计决定收窄范围推迟到后续票也不放过，`<revise>` 里写怎么改成 fail-closed（拿不准就留 PR、去掉会放行的状态）；只有这次改动之前就存在的 fail-open 照旧写进「需要人判断」交给人（`prompts/review.md` 的「执行」一节和 `<verdict>revise</verdict>` 定义，docs/internal/sandcastle.md 的「reviewer 打回」同步）（closes #129）
