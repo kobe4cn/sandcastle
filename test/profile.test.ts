@@ -45,6 +45,12 @@ describe("resolveProject", () => {
     expect(resolveProject({ ...minimal, trustedAuthors: ["renovate-bot"] }).trustedAuthors).toEqual(["renovate-bot"]);
   });
 
+  it("notify 不写时用默认变量名、写了只覆盖给的字段", () => {
+    expect(resolveProject(minimal).notify).toEqual({ env: "SANDPIPE_NOTIFY_WEBHOOK" });
+    expect(resolveProject({ ...minimal, notify: { env: "MY_WEBHOOK" } }).notify).toEqual({ env: "MY_WEBHOOK" });
+    expect(resolveProject({ ...minimal, notify: {} }).notify).toEqual({ env: "SANDPIPE_NOTIFY_WEBHOOK" });
+  });
+
   it("needsTriage / trusted 标签默认值，只覆盖一个时另一个取默认值", () => {
     expect([DEFAULT_LABELS.needsTriage, DEFAULT_LABELS.trusted]).toEqual(["needs-triage", "sandcastle:trusted"]);
     const p = resolveProject({ ...minimal, labels: { trusted: "ok-to-run" } });

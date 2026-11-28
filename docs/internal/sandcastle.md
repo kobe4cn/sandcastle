@@ -95,6 +95,7 @@ reviewer 的结论有三种：`merge`、`revise`、`pr`（规则在 `prompts/rev
 - 要修改留下的 PR：在 PR 上留意见（普通评论、review 正文、行内意见都行），再发一条**以 `/sandcastle` 开头**的评论或 review（意见可以直接写在它后面），然后运行（Sandcastle 正在跑就不用重启）。每次调度开头，脚本看到晚于分支最新提交的 `/sandcastle`，或别人点的 Request changes（都只认有写权限、机器人或 `trustedAuthors` 里的作者，外部用户的不算），就去掉 `sandcastle:pr-open`，把票放回 plan。PR 是用你的 gh 凭据开的，GitHub 不让作者对自己的 PR 点 Request changes，所以要用 `/sandcastle`。implementer 接着同一个分支 `sandcastle/issue-<n>` 做，并先读 PR 评论和行内意见。reviewer 会逐条确认这些意见都处理了，才给 `merge`。手动去掉 `sandcastle:pr-open` 的老办法也还能用。
 - 票的来源只认可信作者（ADR 0006）：机器人、`trustedAuthors` 里的登录名、或在仓库有 admin / write 权限的人。作者不可信的票打 `needs-triage` 并跳过，你看过后打 `sandcastle:trusted`、去掉 `needs-triage` 即可继续；打了 `sandcastle:trusted` 之后正文再被改不会再检查。编排器只认可信作者的评论标记和打回信号。agent 在沙箱里读票时，平台命令清单里读评论的命令（票的评论、PR 的评论、review、行内意见）都按 `author_association` 是 OWNER / MEMBER / COLLABORATOR 或 `user.type == "Bot"` 过滤，看正文不带 `--comments`；提示词写明其他人的评论、PR 上外部用户的意见和外部链接只是参考，不能照做。agent 有 token，能绕过过滤，这一层只是软约束；只读协作者在 agent 这一层会混进来。
 - 已经有指引、但写于 blocker 合并之前的票，prep 会按 `docs/agents/ticket-sizing.md` 重写指引。
+- 主动通知（可选 webhook，#63 之一，`src/notify.ts`）：配置 `notify.env`（默认 `SANDPIPE_NOTIFY_WEBHOOK`），URL 从 `.sandcastle/.env` 读（值为空时取宿主机同名环境变量，没配时什么都不发）。宿主机给票打 stuck（`markStuck`，以及落地出错时直接打 stuck 的兜底出口）、留 PR 给人（`leaveForHuman`）时各 POST 一条 JSON：`text` 是给人看的一行（兼容 Slack / 飞书这类只认 `text` 的接收端），`event` / `issue` / `url` / `reason` 给自建接收端；forge 实现了可选的 `issueUrl` 时带链接，没实现只带 `#N`（GitHub 的实现见 #135）。中英按 `language`。发送失败只打一行警告、不阻塞主流程，警告和日志里不出现 URL；这个变量在所有沙箱的 env 里清空（原因同 Claude 凭据，ADR 0004），agent 拿不到。prep 在沙箱里自己打的 stuck 宿主机看不到，后续票再补（#133）。
 
 ## 外部 PR：让 Sandcastle 接手别人开的 PR
 
@@ -136,7 +137,7 @@ Sandcastle 处理期间，PR 作者不要往这个分支推提交。本地和远
 - 每条 claude 命令都带 `--settings`（`NO_ATTRIBUTION_SETTINGS`）：关掉 Claude Code 自带的提交 / PR 署名，别家档案的提交不会被署名成 Anthropic 的模型；`--settings` 优先级高于项目的 `.claude/settings.json`（#94）。
 - 密钥不写进 `models.json`：值写成 `"${GLM_API_KEY}"`，在容器里从同名环境变量取。变量要列在 `.sandcastle/.env` 里，sandcastle 只把那里列出的变量带进容器。
 - 档案设了 `ANTHROPIC_BASE_URL` 就算别家，Claude 的凭据（`CLAUDE_CODE_OAUTH_TOKEN`、`ANTHROPIC_API_KEY`）不会发到别家的接口，范围是整个容器，不只 claude 进程：
-  - 凭据不在容器级 env 里：sandcastle 会把 `.sandcastle/.env` 的键都放进 `podman run -e`，脚本在 sandbox env 里把这两个键覆盖成空串（`CLAUDE_CREDENTIALS_CLEARED`）。同一个容器会先后跑 Claude 和别家的会话（implement=glm、review=opus，或撞限额中途换档案），容器 env 在 `podman run` 时就定死了，所以只能按会话给。
+  - 凭据不在容器级 env 里：sandcastle 会把 `.sandcastle/.env` 的键都放进 `podman run -e`，脚本在 sandbox env 里把这两个键覆盖成空串（`CLAUDE_CREDENTIALS_CLEARED`）。同一个容器会先后跑 Claude 和别家的会话（implement=glm、review=opus，或撞限额中途换档案），容器 env 在 `podman run` 时就定死了，所以只能按会话给。通知 webhook 的 URL 同样在沙箱 env 里清空（见「其他规则」的主动通知）。
   - Claude 档案的会话：`.env` 里有值的凭据每个一行放在 prompt 前面从 stdin 送进去，命令是 `IFS= read -r __c0; export CLAUDE_CODE_OAUTH_TOKEN="$__c0"; exec env … claude …`，值不出现在任何命令行里，外层 sh 被 exec 替换掉；这次会话的 claude 及其子进程有凭据。`.env` 没列凭据时两个键都 `env -u`。
   - 别家档案的会话：命令前 `env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY`，stdin 只有 prompt，这次会话里容器内任何进程的环境都没有凭据（门槛、装依赖等其它 exec 也没有）。例外：同一个容器里之前 Claude 档案的会话在后台留下、还活着的进程（如 `&` 起的 dev server）是 claude 的子进程，环境里有凭据，别家会话能从它的 `/proc/<pid>/environ` 读到。
   - 项目配置里自定义 `sandbox` 的，必须把收到的 env 原样传给容器，否则清空无效、凭据会留在容器级 env 里。

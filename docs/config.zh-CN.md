@@ -103,6 +103,7 @@ onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-
 | `pollIntervalMs` / `maxIdlePolls` | 10 分钟 / 12 | 调度间隔；连续空转多少次后结束 |
 | `labels` | 见下 | 改标签名 |
 | `sandbox(env)` | podman | 换沙箱实现（`@ai-hero/sandcastle` 的 SandboxProvider）。`env` 要原样传进容器：里面把 Claude 凭据清空，别家档案的会话才读不到 |
+| `notify.env` | `SANDPIPE_NOTIFY_WEBHOOK` | 主动通知：存 webhook URL 的 `.sandcastle/.env` 变量名（文件里为空时取宿主机同名环境变量；没配 URL 时什么都不发——URL 不进配置文件、日志和评论，沙箱 env 里清空，agent 拿不到）。票打 stuck、留 PR 给人时 POST 一条 JSON（`{ text, event, issue, url, reason }`；`text` 是给人看的一行，兼容 Slack / 飞书这类只认 `text` 的接收端）；发送失败只打一行警告，不阻塞运行 |
 | `integrity` | 无 | 合并前的一致性检查：`{ name, command(head, baseRef), broken(baseRef) }`。比如检查数据库迁移链有没有分叉：rebase 没有文本冲突，迁移链也可能断 |
 | `appendOnlyFiles` | `[]` | 只追加的索引文件。几张票同时追加不算改同一个文件，可以并行 |
 | `acceptancePrep(branch)` | 无 | 改了页面的票，PR「验收说明」最前面固定的准备步骤 |

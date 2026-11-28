@@ -244,6 +244,12 @@ export interface ProjectProfile {
   trustedAuthors?: string[];
 
   /**
+   * 主动通知（webhook，可选）：URL 从 .sandcastle/.env 里 env 指名的变量读（没配时什么都不发），不写进配置文件。
+   * Proactive notifications (webhook, optional): the URL comes from the .sandcastle/.env variable named by env (nothing is sent when unset); it never goes into the config file.
+   */
+  notify?: { env?: string };
+
+  /**
    * 自动开的票（偶发失败、main 坏了）与内联提示词的正文。不给时用通用版。
    * Bodies of auto-opened tickets (flaky, main broken) and inline prompts. Generic versions when not given.
    */
@@ -320,6 +326,7 @@ export type Project = Required<
   browser: { pagePaths: RegExp[] };
   protectedPaths: RegExp[];
   trustedAuthors: string[];
+  notify: { env: string };
   texts: Required<NonNullable<ProjectProfile["texts"]>>;
 };
 
@@ -354,6 +361,7 @@ export function resolveProject(p: ProjectProfile): Project {
     browser: { pagePaths: p.browser?.pagePaths ?? [] },
     protectedPaths: p.protectedPaths ?? [],
     trustedAuthors: p.trustedAuthors ?? [],
+    notify: { env: "SANDPIPE_NOTIFY_WEBHOOK", ...p.notify },
     texts: { ...defaultTexts(p.language), ...p.texts },
   };
 }
