@@ -80,7 +80,7 @@ const permissionOf = (level: number): string => {
   return "read";
 };
 
-/** GitLab pipeline job 在 REST 里的形状，只取用到的字段。 / A GitLab pipeline job as REST returns it, only the fields used. */
+/** GitLab pipeline job（含 bridge / trigger job，用到的字段相同）在 REST 里的形状，只取用到的字段。 / A GitLab pipeline job (bridge / trigger jobs too, same fields) as REST returns it, only the fields used. */
 type GlabJob = { name: string; status: string; allow_failure?: boolean; web_url?: string };
 
 /**
@@ -411,7 +411,12 @@ export function gitlabForge(glab: GlabRunner = (args, env) => sh("glab", args, u
       const pipeline = mr.head_pipeline;
       if (!pipeline) return [];
       if (!mr.sha || pipeline.sha !== mr.sha) return [{ name: "pipeline", state: "pending" }];
-      return list<GlabJob>(`projects/:id/pipelines/${pipeline.id}/jobs`)
+      // jobs 接口不返回 bridge（trigger）job，要另读 bridges：下游 / 子 pipeline 失败时只有 bridge 是 failed，漏读会判通过
+      // The jobs endpoint omits bridge (trigger) jobs, so read bridges too: when a downstream / child pipeline fails only the bridge shows failed
+      return [
+        ...list<GlabJob>(`projects/:id/pipelines/${pipeline.id}/jobs`),
+        ...list<GlabJob>(`projects/:id/pipelines/${pipeline.id}/bridges`),
+      ]
         .filter((job) => !(requiredOnly && job.allow_failure))
         .map((job): PrCheck => ({ name: job.name, state: jobState(job), ...(job.web_url ? { link: job.web_url } : {}) }));
     },

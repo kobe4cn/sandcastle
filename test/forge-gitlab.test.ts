@@ -393,7 +393,7 @@ describe("gitlabForge 发给 glab 的参数", () => {
     expect(failingGlab("HTTP 404").viewPr("sandcastle/issue-9")).toBeNull();
   });
 
-  it("prChecks 取 MR 头提交 pipeline（head_pipeline）的 job 并归一状态：success / skipped→pass，failed / canceled→fail，manual 看 allow_failure，其余 pending；requiredOnly 去掉 allow_failure 的", () => {
+  it("prChecks 取 MR 头提交 pipeline（head_pipeline）的 job 并归一状态：success / skipped→pass，failed / canceled→fail，manual 看 allow_failure，其余 pending；requiredOnly 去掉 allow_failure 的；bridge（trigger）job 另读 bridges 合进来，没有 bridge 时结果不变", () => {
     const jobs = [
       { name: "build", status: "success", web_url: "https://x/build", allow_failure: false },
       { name: "lint", status: "skipped", allow_failure: false },
@@ -405,11 +405,14 @@ describe("gitlabForge 发给 glab 的参数", () => {
       { name: "run", status: "running", allow_failure: false },
     ];
     const mr = JSON.stringify({ iid: 12, state: "opened", source_branch: "b", sha: "abc", head_pipeline: { id: 77, sha: "abc" } });
+    const bridge = { name: "downstream", status: "failed", web_url: "https://x/downstream", allow_failure: false };
     const { forge, calls } = fakeGlab(
       mr,
       jobs.map((j) => JSON.stringify(j)).join("\n"),
+      JSON.stringify(bridge),
       mr,
       [JSON.stringify(jobs[0]), JSON.stringify(jobs[4])].join("\n"),
+      "",
     );
     expect(forge.prChecks!("12", false)).toEqual([
       { name: "build", state: "pass", link: "https://x/build" },
@@ -420,13 +423,16 @@ describe("gitlabForge 发给 glab 的参数", () => {
       { name: "gate", state: "pending" },
       { name: "wait", state: "pending" },
       { name: "run", state: "pending" },
+      { name: "downstream", state: "fail", link: "https://x/downstream" },
     ]);
     expect(forge.prChecks!("12", true)).toEqual([{ name: "build", state: "pass", link: "https://x/build" }]);
     expect(calls).toEqual([
       ["api", "projects/:id/merge_requests/12"],
       ["api", "projects/:id/pipelines/77/jobs", "--paginate", "--output", "ndjson"],
+      ["api", "projects/:id/pipelines/77/bridges", "--paginate", "--output", "ndjson"],
       ["api", "projects/:id/merge_requests/12"],
       ["api", "projects/:id/pipelines/77/jobs", "--paginate", "--output", "ndjson"],
+      ["api", "projects/:id/pipelines/77/bridges", "--paginate", "--output", "ndjson"],
     ]);
   });
 
