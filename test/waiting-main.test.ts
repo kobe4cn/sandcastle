@@ -55,6 +55,10 @@ describe("removeWaitingMainAfterResume", () => {
   it("rebase 后又被新开的 main-broken 票挡住 → 保留 waiting-main（#86 行为不变）", () => {
     expect(removeWaitingMainAfterResume("held")).toBe(false);
   });
+
+  it("恢复中途抛错（mergeWhenReady 的 finally 已去掉 merging）→ 去掉 waiting-main，残留会被人重新实现后的 resumeWaitingMain 误自动合并", () => {
+    expect(removeWaitingMainAfterResume("threw")).toBe(true);
+  });
 });
 
 /** 去标签前中断的票下一轮仍带 waiting-main、仍是 afterMainFix（#119），不退化成普通的中断恢复。 */

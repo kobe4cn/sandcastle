@@ -2065,12 +2065,18 @@ async function resumeMerging(issue: Issue, host: HostGap) {
   try {
     outcome = await finishMerge(issue, pr.id, host, "selected", !upToDate);
   } catch (e) {
-    // 中途抛错 / 被 kill：waiting-main 不去、重新抛出（start 的兜底打 stuck）；下一轮这张票仍带 waiting-main，
-    // 仍走 afterMainFix 的强制 rebase + 重跑门槛，不退化成普通的中断恢复——这正是把去标签挪后要堵的情形。
-    // On a throw / kill waiting-main stays and the error is rethrown (start's fallback marks stuck); next pass the ticket
-    // still carries waiting-main and still takes the afterMainFix forced rebase + gate rerun, not a plain interrupt
-    // resume — exactly the case deferring the removal closes off.
-    console.warn(t(`  ⚠ #${issue.id} 恢复合并出错，保留 ${LABEL.waitingMain}，下一轮仍按 main 修好后的恢复处理：`, `  ⚠ Resuming the merge of #${issue.id} failed; keeping ${LABEL.waitingMain} so the next pass still treats it as an after-main-fix resume: `) + errorLine(e));
+    // 抛错被 catch 时 mergeWhenReady 的 finally 已经去掉 merging，票已离开「其他关卡都过了、只被 main-broken 挡住」的状态：
+    // start 的兜底会打 stuck、下一轮 listIssues([picked, merging]) 捡不到它，保留 waiting-main 起不到「仍走 afterMainFix」的作用，
+    // 只会让人去掉 stuck 重新实现后因别的原因留 PR 的票被 resumeWaitingMain 误自动合并（fail-open），所以去掉再重新抛出。
+    // 「中断后下一轮仍走 afterMainFix」只覆盖进程被杀、finally 没跑、merging 还在的情形。
+    // When the throw is caught here, mergeWhenReady's finally has already removed merging and the ticket has left
+    // "every other gate passed; held only by main-broken": start's fallback marks stuck and listIssues([picked, merging])
+    // won't pick it up next pass, so keeping waiting-main would not keep the afterMainFix path alive — it would only let
+    // a PR later left for another reason be auto-merged by resumeWaitingMain once a human removes stuck and the ticket
+    // is reimplemented (fail-open). Remove it, then rethrow. "Next pass still afterMainFix" covers only a killed
+    // process (the finally never ran; merging is still on).
+    if (removeWaitingMainAfterResume("threw")) attempt(() => forge.removeLabel(issue.id, LABEL.waitingMain));
+    console.warn(t(`  ⚠ #${issue.id} 恢复合并出错，去掉 ${LABEL.waitingMain}（merging 已被去掉，下一轮不再按 main 修好后的恢复处理）：`, `  ⚠ Resuming the merge of #${issue.id} failed; removing ${LABEL.waitingMain} (merging is already off, so the next pass no longer treats it as an after-main-fix resume): `) + errorLine(e));
     throw e;
   }
   // 合并了、或因别的原因留 PR（pr-open 已在 merge-flow 的 leaveForHuman 里先落上）→ 去 waiting-main；又被挡住 → 保留。
