@@ -4,7 +4,8 @@
 import { statfsSync } from "node:fs";
 import { connect } from "node:net";
 import type { GateService } from "./profile.ts";
-import { trySh, type TryResult } from "./shell.ts";
+import type { Run } from "./lifecycle.ts";
+import { trySh } from "./shell.ts";
 import { t } from "./term.ts";
 
 /** 探测一个地址：连得上返回 null，连不上返回错误文本。 / Probe one address: null when reachable, the error text otherwise. */
@@ -85,9 +86,6 @@ export function diskProblems(paths: readonly string[], thresholdBytes: number, s
     return { path, status: freeBytes >= thresholdBytes ? "enough" : "low", freeBytes };
   });
 }
-
-/** 和 lifecycle 的 podmanProblem 同形的命令执行器。 / A command runner of the same shape as lifecycle's podmanProblem. */
-type Run = (cmd: string, args: string[], timeout?: number) => TryResult;
 
 /**
  * podman 的容器存储路径（GraphRoot）；podman 用不了（没装、podman machine 没起）或输出为空时返回 null。
