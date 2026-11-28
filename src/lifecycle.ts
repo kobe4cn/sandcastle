@@ -71,7 +71,8 @@ export function acquireRunLock(path: string, pid = process.pid, alive: (pid: num
 // podman：可用性与孤儿容器 / podman: availability and orphan containers
 // ---------------------------------------------------------------------------
 
-type Run = (cmd: string, args: string[], timeout?: number) => TryResult;
+/** 可注入的命令执行器（默认 trySh）。 / An injectable command runner (trySh by default). */
+export type Run = (cmd: string, args: string[], timeout?: number) => TryResult;
 
 /**
  * podman 能不能用（macOS 上 podman machine 没起时 `podman info` 失败）。能用返回 null，否则返回一行原因。
