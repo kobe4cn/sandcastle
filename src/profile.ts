@@ -361,7 +361,7 @@ export function resolveProject(p: ProjectProfile): Project {
     browser: { pagePaths: p.browser?.pagePaths ?? [] },
     protectedPaths: p.protectedPaths ?? [],
     trustedAuthors: p.trustedAuthors ?? [],
-    notify: { env: "SANDPIPE_NOTIFY_WEBHOOK", ...p.notify },
+    notify: { env: p.notify?.env || "SANDPIPE_NOTIFY_WEBHOOK" },
     texts: { ...defaultTexts(p.language), ...p.texts },
   };
 }
