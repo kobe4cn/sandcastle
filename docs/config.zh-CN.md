@@ -129,7 +129,7 @@ onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-
 
 - **路径与环境**：`WorkingDirectory` 设为项目根。用户 unit / launchd 代理不继承 shell 的环境：`HOME` 要设（gh 和 Claude 的配置在里面），`PATH` 要能找到 `node`、`git`、`gh`、`podman`。跑发版的包——全局安装（`sandpipe run`），或固定版本的 `npx sandpipe@<version> run` / `pnpm dlx sandpipe@<version> run`。
 - **重启策略**：systemd 用 `Restart=on-failure` 加 `RestartSec`（重启间隔拉开，环境坏掉时不会疯狂打转）；`KillMode=mixed` 让停服务的 SIGTERM 到主进程，剩下的子进程清掉。失败的重启计入 systemd 的启动限制——长跑的服务把 `StartLimitBurst` 调大。launchd 用 `KeepAlive`。
-- **停服务**：`systemctl stop`（或 `launchctl unload`）发 SIGTERM，和 Ctrl-C 一样收尾——列出进行中的会话、释放运行锁、退出码 143——守护自己发起的停止不算失败，不会再拉起。`kill -9` 后残留的 `run.lock` 由下次启动接管。
+- **停服务**：`systemctl stop`（或 `launchctl unload`）发 SIGTERM，和 Ctrl-C 一样收尾——列出进行中的会话、释放运行锁、退出码 143——守护自己发起的停止不会再拉起。systemd 默认把退出码 143 当失败（停服务后 unit 显示 `failed`），所以示例里配了 `SuccessExitStatus=143`。`kill -9` 后残留的 `run.lock` 由下次启动接管。
 - **日志**：终端输出进 journald（`journalctl --user -u sandpipe.service`）或 launchd 的 `StandardOutPath` / `StandardErrorPath` 文件，后者不会自动轮转——长跑自己配 newsyslog。`.sandcastle/logs/` 下的文件由流水线自己清：`.log` 最后修改超过 14 天就删，`errors.log` 到 10 MB 轮转为 `errors.log.1`；`usage.jsonl` 等数据文件不删。
 - **凭据与环境变量**：Claude 凭据照旧放 `.sandcastle/.env`——unit / plist 里不写任何密钥。可选环境变量：`SANDPIPE_LANG`（zh / en，只管终端）、`SANDPIPE_NOTIFY_WEBHOOK`（异常退出那条在 `.sandcastle/.env` 里为空时从宿主机环境变量取）、`SANDCASTLE_ONLY`（逗号分隔票号；守护进程下一般不设）。
 
@@ -151,6 +151,8 @@ Restart=on-failure
 RestartSec=30
 # 停服务的 SIGTERM 到主进程，正常收尾（退出码 143），剩下的子进程清掉
 KillMode=mixed
+# SIGTERM 后的退出码 143 是正常停止，不算失败
+SuccessExitStatus=143
 
 [Install]
 WantedBy=default.target

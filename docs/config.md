@@ -129,7 +129,7 @@ To run the pipeline unattended (overnight, over the weekend), put `sandpipe run`
 
 - **Paths and environment**: `WorkingDirectory` is the project root. A user unit / launchd agent doesn't inherit your shell's environment: set `HOME` (gh's and Claude's config live there) and a `PATH` that reaches `node`, `git`, `gh` and `podman`. Run a released package — a global install (`sandpipe run`), or a pinned `npx sandpipe@<version> run` / `pnpm dlx sandpipe@<version> run`.
 - **Restart policy**: systemd uses `Restart=on-failure` with `RestartSec` (the pause between restarts keeps a broken environment from spinning); `KillMode=mixed` lets a stop's SIGTERM reach the main process while leftover children are reaped. Failed starts count against systemd's start limit — raise `StartLimitBurst` for a long-lived service. launchd uses `KeepAlive`.
-- **Stopping**: `systemctl stop` (or `launchctl unload`) sends SIGTERM, which winds down like Ctrl-C — in-progress sessions are listed, the run lock is released, exit code 143 — and a stop the supervisor itself initiated doesn't count as a failure, so it stays down. After a `kill -9`, the leftover `run.lock` is taken over by the next start.
+- **Stopping**: `systemctl stop` (or `launchctl unload`) sends SIGTERM, which winds down like Ctrl-C — in-progress sessions are listed, the run lock is released, exit code 143 — and the supervisor doesn't restart a stop it initiated itself, so it stays down. systemd treats exit code 143 as a failure unless told otherwise (the unit would show `failed` after a stop), so the example sets `SuccessExitStatus=143`. After a `kill -9`, the leftover `run.lock` is taken over by the next start.
 - **Logs**: terminal output goes to journald (`journalctl --user -u sandpipe.service`) or to launchd's `StandardOutPath` / `StandardErrorPath` files, which launchd doesn't rotate — set up newsyslog for a long run. Files under `.sandcastle/logs/` are pruned by the pipeline itself: a `.log` file last touched 14 days ago is deleted, and `errors.log` rotates to `errors.log.1` at 10 MB; `usage.jsonl` and the other data files are kept.
 - **Credentials and variables**: Claude credentials stay in `.sandcastle/.env` — write no secrets into the unit / plist. Optional environment variables: `SANDPIPE_LANG` (`zh` / `en`, terminal only), `SANDPIPE_NOTIFY_WEBHOOK` (the crash notification reads it from the host environment when `.sandcastle/.env` has no value), `SANDCASTLE_ONLY` (comma-separated issue numbers; usually unset under a daemon).
 
@@ -151,6 +151,8 @@ Restart=on-failure
 RestartSec=30
 # The stop's SIGTERM reaches the main process, which winds down (exit 143); leftover children are reaped
 KillMode=mixed
+# Exit 143 after SIGTERM is a clean stop, not a failure
+SuccessExitStatus=143
 
 [Install]
 WantedBy=default.target
