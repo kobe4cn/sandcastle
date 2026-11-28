@@ -1,6 +1,6 @@
 # 更新记录
 
-## Unreleased
+## 0.3.3
 
 - 复审更严：改动新引入 fail-open（本该留给人审、或本该被关卡拦下的 PR / 票会因为这次改动——残留标签、提前去掉的状态、出错时放行的分支——被自动合并、绕过关卡）时结论一律是 `revise`，实现指引或票写「本票不处理」、按设计决定收窄范围推迟到后续票也不放过，`<revise>` 里写怎么改成 fail-closed（拿不准就留 PR、去掉会放行的状态）；只有这次改动之前就存在的 fail-open 照旧写进「需要人判断」交给人（`prompts/review.md` 的「执行」一节和 `<verdict>revise</verdict>` 定义，docs/internal/sandcastle.md 的「reviewer 打回」同步）（closes #129）
 
