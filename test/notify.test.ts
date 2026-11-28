@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createNotifier, readNotifyUrl } from "../src/notify.ts";
+import { setTermLanguage } from "../src/term.ts";
 
 /** 临时目录，带空的 .sandcastle/。 / Temp directory with an empty .sandcastle/. */
 const withSandcastle = (): string => {
@@ -98,6 +99,78 @@ describe("createNotifier", () => {
     for (const line of warns) {
       expect(line).not.toContain("hooks.example");
       expect(line).not.toContain("secret");
+    }
+  });
+
+  it("fetch 抛错时警告写明错误类型：超时（AbortSignal.timeout 的 reason，name 为 TimeoutError）", async () => {
+    const warns: string[] = [];
+    const notify = createNotifier({
+      url: "https://hooks.example/z",
+      language: "zh",
+      fetcher: (async () => {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      }) as typeof fetch,
+      warn: (l) => warns.push(l),
+    });
+    await notify({ event: "stuck", issue: "1", reason: "r" });
+    expect(warns).toEqual(["  ⚠ 通知发送失败（TimeoutError），不影响运行"]);
+  });
+
+  it("fetch 抛错时警告写明错误类型：cause 的 code（ECONNRESET）；cause 是 AggregateError 时取 errors[0].code", async () => {
+    const warns: string[] = [];
+    const reset = createNotifier({
+      url: "https://hooks.example/z",
+      language: "zh",
+      fetcher: (async () => {
+        throw new TypeError("fetch failed", { cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }) });
+      }) as typeof fetch,
+      warn: (l) => warns.push(l),
+    });
+    await reset({ event: "stuck", issue: "1", reason: "r" });
+    const aggregate = createNotifier({
+      url: "https://hooks.example/z",
+      language: "zh",
+      fetcher: (async () => {
+        throw new TypeError("fetch failed", {
+          cause: new AggregateError([Object.assign(new Error("dns"), { code: "ENOTFOUND" })], "all failed"),
+        });
+      }) as typeof fetch,
+      warn: (l) => warns.push(l),
+    });
+    await aggregate({ event: "stuck", issue: "1", reason: "r" });
+    expect(warns).toEqual(["  ⚠ 通知发送失败（ECONNRESET），不影响运行", "  ⚠ 通知发送失败（ENOTFOUND），不影响运行"]);
+  });
+
+  it("取不到类型时退回错误文本，message 里带 webhook URL 时先抹掉", async () => {
+    const warns: string[] = [];
+    const notify = createNotifier({
+      url: "https://hooks.example/secret",
+      language: "zh",
+      fetcher: (async () => {
+        throw new Error("Failed to parse URL from https://hooks.example/secret");
+      }) as typeof fetch,
+      warn: (l) => warns.push(l),
+    });
+    await notify({ event: "stuck", issue: "1", reason: "r" });
+    expect(warns).toEqual(["  ⚠ 通知发送失败（Failed to parse URL from …），不影响运行"]);
+  });
+
+  it("英文文案写明错误类型（保留 Notify webhook failed 子串）", async () => {
+    setTermLanguage("en", {});
+    try {
+      const warns: string[] = [];
+      const notify = createNotifier({
+        url: "https://hooks.example/z",
+        language: "en",
+        fetcher: (async () => {
+          throw new TypeError("fetch failed", { cause: Object.assign(new Error("x"), { code: "ECONNRESET" }) });
+        }) as typeof fetch,
+        warn: (l) => warns.push(l),
+      });
+      await notify({ event: "stuck", issue: "1", reason: "r" });
+      expect(warns).toEqual(["  ⚠ Notify webhook failed (ECONNRESET); the run continues"]);
+    } finally {
+      setTermLanguage("zh", {});
     }
   });
 
