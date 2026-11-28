@@ -1,6 +1,7 @@
 // GitLab Forge 的契约：每个方法发给 glab 的 argv（REST 走 glab api，:id 是 glab 的项目占位符），
 // 返回值按 forge.ts 的约定归一化（iid→number、updated_at 转 UTC ISO、作者恒为 bot: false）。
 // 照 test/forge-github.test.ts 写，不调真的 glab。
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { gitlabForge } from "../src/forges/gitlab.ts";
 import { createTrust } from "../src/trust.ts";
@@ -321,16 +322,44 @@ describe("gitlabForge 发给 glab 的参数", () => {
     expect(forge.prBody("9")).toBe("");
   });
 
-  it("带附件的 createPr / editPrBody / commentPr 抛 not implemented（附件是下一张子票），空附件照常走", () => {
+  it("带附件的 createPr：每张图经 projects/:id/uploads 上传（--form），正文里引用到的路径换成上传地址、没引用到的 markdown 追加在末尾", () => {
+    const { forge, calls } = fakeGlab(
+      JSON.stringify({ url: "/uploads/h1/a.png", markdown: "![a.png](/uploads/h1/a.png)" }),
+      JSON.stringify({ url: "/uploads/h2/b.png", markdown: "![b.png](/uploads/h2/b.png)" }),
+      JSON.stringify({ iid: 9 }),
+    );
+    expect(
+      forge.createPr({ base: "main", head: "b", title: "t", body: "### 自查\n\n![a.png](/tmp/a.png)", attachments: ["/tmp/a.png", "/tmp/b.png"] }),
+    ).toBe("9");
+    expect(calls).toEqual([
+      ["api", "--method", "POST", "projects/:id/uploads", "--form", "file=@/tmp/a.png"],
+      ["api", "--method", "POST", "projects/:id/uploads", "--form", "file=@/tmp/b.png"],
+      [
+        "api", "--method", "POST", "projects/:id/merge_requests",
+        "-f", "source_branch=b", "-f", "target_branch=main", "-f", "title=t",
+        "-f", "description=### 自查\n\n![a.png](/uploads/h1/a.png)\n\n![b.png](/uploads/h2/b.png)",
+      ],
+    ]);
+  });
+
+  it("editPrBody / commentPr 带附件同样先上传再发送；引用的路径带正则元字符也换得掉（split/join，不走正则）", () => {
+    const upload = JSON.stringify({ url: "/uploads/h3/c.png", markdown: "![c.png](/uploads/h3/c.png)" });
+    const { forge, calls } = fakeGlab(upload, "", upload, "");
+    forge.editPrBody("9", "正文 ![c.png](/tmp/c (1).png)", ["/tmp/c (1).png"]);
+    forge.commentPr("9", "结论", ["/tmp/c (1).png"]);
+    expect(calls).toEqual([
+      ["api", "--method", "POST", "projects/:id/uploads", "--form", "file=@/tmp/c (1).png"],
+      ["api", "--method", "PUT", "projects/:id/merge_requests/9", "-f", "description=正文 ![c.png](/uploads/h3/c.png)"],
+      ["api", "--method", "POST", "projects/:id/uploads", "--form", "file=@/tmp/c (1).png"],
+      ["api", "--method", "POST", "projects/:id/merge_requests/9/notes", "-f", "body=结论\n\n![c.png](/uploads/h3/c.png)"],
+    ]);
+  });
+
+  it("createPr / editPrBody / commentPr 空附件原样发送、不调上传", () => {
     const { forge, calls } = fakeGlab(JSON.stringify({ iid: 9 }), "", "");
     forge.createPr({ base: "main", head: "b", title: "t", body: "b", attachments: [] });
     forge.editPrBody("9", "x");
     forge.commentPr("9", "x");
-    expect(() => forge.createPr({ base: "main", head: "b", title: "t", body: "b", attachments: ["/tmp/a.png"] })).toThrow(
-      "gitlabForge: attachments not implemented",
-    );
-    expect(() => forge.editPrBody("9", "x", ["/tmp/a.png"])).toThrow("gitlabForge: attachments not implemented");
-    expect(() => forge.commentPr("9", "x", ["/tmp/a.png"])).toThrow("gitlabForge: attachments not implemented");
     expect(calls).toEqual([
       ["api", "--method", "POST", "projects/:id/merge_requests", "-f", "source_branch=b", "-f", "target_branch=main", "-f", "title=t", "-f", "description=b"],
       ["api", "--method", "PUT", "projects/:id/merge_requests/9", "-f", "description=x"],
@@ -540,9 +569,35 @@ describe("gitlabForge 发给 glab 的参数", () => {
     ]);
   });
 
-  it("提示词相关的方法还没实现：抛 not implemented", () => {
+  it("agentGuide 读评论只看可信作者：每条读 /notes 的命令都引用 members/all 的可信名单、带 --paginate --output ndjson、去掉 system note（照 #81）", () => {
+    const guide = fakeGlab().forge.agentGuide();
+    const cmds = (guide.match(/`[^`]+`/g) ?? []).map((span) => span.slice(1, -1));
+    const noteCmds = cmds.filter((c) => c.startsWith("glab api") && /\/notes\?/.test(c));
+    // 票的评论、MR 的评论、MR 的行内审查意见
+    expect(noteCmds).toHaveLength(3);
+    for (const cmd of noteCmds) {
+      expect(cmd).toContain("--paginate");
+      expect(cmd).toContain("--output ndjson");
+      expect(cmd).toContain(".system != true");
+      expect(cmd).toContain('--argjson ok "$names"');
+    }
+    // 可信名单只取项目成员里 access level ≥ 30 的人（#1 决定 3）
+    const members = cmds.find((c) => /members\/all/.test(c));
+    expect(members).toContain("access_level >= 30");
+    // 覆盖 GitHub 版的每一项：MR 编号写 !n、关闭 issue 写 Closes #n、链接用 API 返回的 web_url
+    expect(guide).toContain("glab issue view <n>");
+    expect(guide).toContain("!n");
+    expect(guide).toContain("Closes #");
+    expect(guide).toContain("web_url");
+    // agent 用的是 GITLAB_TOKEN，guide 里不该出现 glab auth
+    expect(guide).not.toContain("glab auth");
+  });
+
+  it("viewIssueCommand 返回 glab issue view；gitlabForge 的源码里不再有 not implemented（每个方法都实现了）", () => {
     const { forge } = fakeGlab();
-    expect(() => forge.viewIssueCommand("1")).toThrow("gitlabForge.viewIssueCommand: not implemented");
-    expect(() => forge.agentGuide()).toThrow("gitlabForge.agentGuide: not implemented");
+    expect(forge.viewIssueCommand("7")).toBe("glab issue view 7");
+    expect(() => forge.agentGuide()).not.toThrow();
+    const src = readFileSync(new URL("../src/forges/gitlab.ts", import.meta.url), "utf8");
+    expect(src).not.toContain("not implemented");
   });
 });

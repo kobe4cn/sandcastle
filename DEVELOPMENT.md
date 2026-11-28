@@ -24,7 +24,7 @@
 | `src/claude-conflict.ts` | onboard / update 遇到 `.claude/` 下本工具的文件和模板不同时：显示差异，问保留 / 覆盖 / 另存 `.new` |
 | `src/forge.ts` | **Forge** 接口：托管平台上的 issue / 标签 / PR / 合并 |
 | `src/forges/github.ts` | GitHub 实现（gh CLI） |
-| `src/forges/gitlab.ts` | GitLab 实现（glab CLI；登录检查、标签、issue 与评论、`repoPermission`、MR 的查找 / 新建 / 读写描述 / 评论 / 合并 / 检查（pipeline job）/ 能否合并，附件与 agentGuide 留给后续子票） |
+| `src/forges/gitlab.ts` | GitLab 实现（glab CLI；登录检查、标签、issue 与评论、`repoPermission`、MR 的查找 / 新建 / 读写描述 / 评论 / 合并 / 检查（pipeline job）/ 能否合并、截图附件上传、`agentGuide`） |
 | `src/merge-checks.ts` | 合并前等 forge 检查（CI）：检查结果归类、带超时的轮询 |
 | `src/browser-gate.ts` | 浏览器验收作为合并的硬条件：哪些改动算改了页面、验收缺什么、验收之后（revise / fix / rebase 解冲突）改了页面算截图过期、留不留 PR |
 | `src/trust.ts` | 票作者可不可信：机器人、`trustedAuthors` 白名单、仓库权限 admin / write（`createTrust`，按登录名缓存 1 小时，404 算 none）；带 `sandcastle:trusted` 的票不查作者（`needsHold`）。main.ts 的 `holdUntrusted` 在 prep / plan 里用它挡票；`trustedBodies` 与 `reopenRequestedRevisions` 用它过滤评论，只认可信作者写的标记（代拍板、评审已过、reprep、限额等待）和 PR 上的 `/sandcastle`、Request changes |
