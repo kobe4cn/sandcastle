@@ -290,22 +290,216 @@ describe("gitlabForge 发给 glab 的参数", () => {
     expect(() => badToken.checkAgentToken("bad")).toThrow(/api scope/);
   });
 
-  it("MR / 提示词相关的方法还没实现：抛 not implemented，可选的 prChecks / prMergeable 不存在", () => {
-    const { forge } = fakeGlab();
-    const calls: [string, () => unknown][] = [
-      ["linkedPrIds", () => forge.linkedPrIds("3")],
-      ["viewPr", () => forge.viewPr("5")],
-      ["findPr", () => forge.findPr("sandcastle/issue-1", "open")],
-      ["createPr", () => forge.createPr({ base: "main", head: "b", title: "t", body: "b", attachments: [] })],
-      ["prBody", () => forge.prBody("1")],
-      ["editPrBody", () => forge.editPrBody("1", "b")],
-      ["commentPr", () => forge.commentPr("1", "b")],
-      ["mergePr", () => forge.mergePr("1", "rebase")],
-      ["viewIssueCommand", () => forge.viewIssueCommand("1")],
-      ["agentGuide", () => forge.agentGuide()],
+  it("linkedPrIds 走 issue 的 closed_by，关联的 MR 编号取 iid", () => {
+    const { forge, calls } = fakeGlab([JSON.stringify({ iid: 31 }), JSON.stringify({ iid: 32 })].join("\n"));
+    expect(forge.linkedPrIds("17")).toEqual(["31", "32"]);
+    expect(calls).toEqual([["api", "projects/:id/issues/17/closed_by", "--paginate", "--output", "ndjson"]]);
+  });
+
+  it("MR 的增改：createPr 返回 iid、正文读写、评论、合并（squash 开、merge / rebase 关，具体方式由项目设置决定）", () => {
+    const { forge, calls } = fakeGlab(JSON.stringify({ iid: 33 }), JSON.stringify({ iid: 33, description: "PR 正文" }), "", "", "", "", "");
+    expect(forge.createPr({ base: "main", head: "sandcastle/issue-17", title: "T (#17)", body: "B", attachments: [] })).toBe("33");
+    expect(forge.prBody("33")).toBe("PR 正文");
+    forge.editPrBody("33", "B2");
+    forge.commentPr("33", "C");
+    forge.mergePr("33", "rebase");
+    forge.mergePr("33", "squash");
+    forge.mergePr("33", "merge");
+    expect(calls).toEqual([
+      ["api", "--method", "POST", "projects/:id/merge_requests", "-f", "source_branch=sandcastle/issue-17", "-f", "target_branch=main", "-f", "title=T (#17)", "-f", "description=B"],
+      ["api", "projects/:id/merge_requests/33"],
+      ["api", "--method", "PUT", "projects/:id/merge_requests/33", "-f", "description=B2"],
+      ["api", "--method", "POST", "projects/:id/merge_requests/33/notes", "-f", "body=C"],
+      ["api", "--method", "PUT", "projects/:id/merge_requests/33/merge", "-f", "squash=false"],
+      ["api", "--method", "PUT", "projects/:id/merge_requests/33/merge", "-f", "squash=true"],
+      ["api", "--method", "PUT", "projects/:id/merge_requests/33/merge", "-f", "squash=false"],
+    ]);
+  });
+
+  it("prBody 读到 null 的 description 当空串", () => {
+    const { forge } = fakeGlab(JSON.stringify({ iid: 9, description: null }));
+    expect(forge.prBody("9")).toBe("");
+  });
+
+  it("带附件的 createPr / editPrBody / commentPr 抛 not implemented（附件是下一张子票），空附件照常走", () => {
+    const { forge, calls } = fakeGlab(JSON.stringify({ iid: 9 }), "", "");
+    forge.createPr({ base: "main", head: "b", title: "t", body: "b", attachments: [] });
+    forge.editPrBody("9", "x");
+    forge.commentPr("9", "x");
+    expect(() => forge.createPr({ base: "main", head: "b", title: "t", body: "b", attachments: ["/tmp/a.png"] })).toThrow(
+      "gitlabForge: attachments not implemented",
+    );
+    expect(() => forge.editPrBody("9", "x", ["/tmp/a.png"])).toThrow("gitlabForge: attachments not implemented");
+    expect(() => forge.commentPr("9", "x", ["/tmp/a.png"])).toThrow("gitlabForge: attachments not implemented");
+    expect(calls).toEqual([
+      ["api", "--method", "POST", "projects/:id/merge_requests", "-f", "source_branch=b", "-f", "target_branch=main", "-f", "title=t", "-f", "description=b"],
+      ["api", "--method", "PUT", "projects/:id/merge_requests/9", "-f", "description=x"],
+      ["api", "--method", "POST", "projects/:id/merge_requests/9/notes", "-f", "body=x"],
+    ]);
+  });
+
+  it("findPr 按分支和状态查 MR 编号（分支名编码、open→opened），没有时 undefined", () => {
+    const { forge, calls } = fakeGlab(JSON.stringify([{ iid: 21 }]), "[]");
+    expect(forge.findPr("sandcastle/issue-1", "open")).toBe("21");
+    expect(forge.findPr("sandcastle/issue-1", "merged")).toBeUndefined();
+    expect(calls).toEqual([
+      ["api", "projects/:id/merge_requests?source_branch=sandcastle%2Fissue-1&state=opened&per_page=1"],
+      ["api", "projects/:id/merge_requests?source_branch=sandcastle%2Fissue-1&state=merged&per_page=1"],
+    ]);
+  });
+
+  it("viewPr 按编号读 MR 并归一化：reviews 恒空（GitLab 没有 Request changes）、comments 去掉 system note、lastCommitAt 取最大的 committed_date", () => {
+    const { forge, calls } = fakeGlab(
+      JSON.stringify({
+        iid: 5, state: "opened", source_branch: "sandcastle/issue-5", source_project_id: 3, target_project_id: 3,
+        description: "d", created_at: "2026-11-01T00:00:00Z",
+      }),
+      [
+        JSON.stringify({ body: "普通评论", system: false, created_at: "2026-11-02T00:00:00Z", author: { username: "alice" } }),
+        JSON.stringify({ body: "approved this merge request", system: true, created_at: "2026-11-02T00:01:00Z", author: { username: "alice" } }),
+        JSON.stringify({ body: null, system: false, created_at: "2026-11-02T00:02:00Z", author: null }),
+      ].join("\n"),
+      [JSON.stringify({ committed_date: "2026-11-01T10:00:00Z" }), JSON.stringify({ committed_date: "2026-11-03T10:00:00+08:00" })].join("\n"),
+    );
+    expect(forge.viewPr("5")).toEqual({
+      id: "5", open: true, branch: "sandcastle/issue-5", fromFork: false,
+      reviews: [],
+      comments: [
+        { body: "普通评论", at: "2026-11-02T00:00:00.000Z", author: { login: "alice", bot: false } },
+        { body: "", at: "2026-11-02T00:02:00.000Z", author: { login: "ghost", bot: false } },
+      ],
+      lastCommitAt: "2026-11-03T02:00:00.000Z",
+    });
+    expect(calls).toEqual([
+      ["api", "projects/:id/merge_requests/5"],
+      ["api", "projects/:id/merge_requests/5/notes?sort=asc&per_page=100", "--paginate", "--output", "ndjson"],
+      ["api", "projects/:id/merge_requests/5/commits", "--paginate", "--output", "ndjson"],
+    ]);
+  });
+
+  it("viewPr 按分支名查（分支名带斜杠要编码，state=all 里挑最新的），跨项目的 MR 算 fromFork；查不到或出错返回 null", () => {
+    const { forge, calls } = fakeGlab(
+      JSON.stringify([{ iid: 7, state: "merged", source_branch: "sandcastle/issue-7", source_project_id: 11, target_project_id: 3, created_at: "u" }]),
+      "",
+      "",
+    );
+    const pr = forge.viewPr("sandcastle/issue-7")!;
+    expect(pr.id).toBe("7");
+    expect(pr.open).toBe(false);
+    expect(pr.fromFork).toBe(true);
+    expect(pr.lastCommitAt).toBe("");
+    expect(calls[0]).toEqual(["api", "projects/:id/merge_requests?source_branch=sandcastle%2Fissue-7&state=all&order_by=created_at&sort=desc&per_page=1"]);
+    expect(fakeGlab("[]", "", "").forge.viewPr("sandcastle/issue-8")).toBeNull();
+    expect(failingGlab("HTTP 404").viewPr("sandcastle/issue-9")).toBeNull();
+  });
+
+  it("prChecks 取最新 pipeline 的 job 并归一状态：success / skipped→pass，failed / canceled→fail，manual 看 allow_failure，其余 pending；requiredOnly 去掉 allow_failure 的", () => {
+    const jobs = [
+      { name: "build", status: "success", web_url: "https://x/build", allow_failure: false },
+      { name: "lint", status: "skipped", allow_failure: false },
+      { name: "test", status: "failed", web_url: "https://x/test", allow_failure: false },
+      { name: "audit", status: "canceled", allow_failure: true },
+      { name: "deploy", status: "manual", allow_failure: true },
+      { name: "gate", status: "manual", allow_failure: false },
+      { name: "wait", status: "waiting_for_resource", allow_failure: false },
+      { name: "run", status: "running", allow_failure: false },
     ];
-    for (const [name, fn] of calls) expect(fn).toThrow(`gitlabForge.${name}: not implemented`);
-    expect(forge.prChecks).toBeUndefined();
-    expect(forge.prMergeable).toBeUndefined();
+    const { forge, calls } = fakeGlab(
+      JSON.stringify([{ id: 77 }]),
+      jobs.map((j) => JSON.stringify(j)).join("\n"),
+      JSON.stringify([{ id: 77 }]),
+      [JSON.stringify(jobs[0]), JSON.stringify(jobs[4])].join("\n"),
+    );
+    expect(forge.prChecks!("12", false)).toEqual([
+      { name: "build", state: "pass", link: "https://x/build" },
+      { name: "lint", state: "pass" },
+      { name: "test", state: "fail", link: "https://x/test" },
+      { name: "audit", state: "fail" },
+      { name: "deploy", state: "pass" },
+      { name: "gate", state: "pending" },
+      { name: "wait", state: "pending" },
+      { name: "run", state: "pending" },
+    ]);
+    expect(forge.prChecks!("12", true)).toEqual([{ name: "build", state: "pass", link: "https://x/build" }]);
+    expect(calls).toEqual([
+      ["api", "projects/:id/merge_requests/12/pipelines?per_page=1"],
+      ["api", "projects/:id/pipelines/77/jobs", "--paginate", "--output", "ndjson"],
+      ["api", "projects/:id/merge_requests/12/pipelines?per_page=1"],
+      ["api", "projects/:id/pipelines/77/jobs", "--paginate", "--output", "ndjson"],
+    ]);
+  });
+
+  it("prChecks：MR 还没有 pipeline 时返回空数组（没有检查），不用再查 job", () => {
+    const { forge, calls } = fakeGlab("[]");
+    expect(forge.prChecks!("12", false)).toEqual([]);
+    expect(calls).toEqual([["api", "projects/:id/merge_requests/12/pipelines?per_page=1"]]);
+  });
+
+  it.each([
+    ["conflicting", { has_conflicts: true, detailed_merge_status: "ci_still_running" }],
+    ["conflicting", { has_conflicts: false, detailed_merge_status: "conflict" }],
+    ["unknown", { has_conflicts: false, detailed_merge_status: "unchecked" }],
+    ["unknown", { has_conflicts: false, detailed_merge_status: "checking" }],
+    ["unknown", { has_conflicts: false, detailed_merge_status: "preparing" }],
+    ["unknown", { has_conflicts: false, detailed_merge_status: "approvals_syncing" }],
+    ["clean", { has_conflicts: false, detailed_merge_status: "mergeable" }],
+    ["clean", { has_conflicts: false, detailed_merge_status: undefined }],
+  ])("prMergeable 按 has_conflicts / detailed_merge_status 归一：%s", (expected, fields) => {
+    const { forge, calls } = fakeGlab(JSON.stringify({ iid: 9, state: "opened", ...fields }));
+    expect(forge.prMergeable!("9")).toBe(expected);
+    expect(calls).toEqual([["api", "projects/:id/merge_requests/9"]]);
+  });
+
+  it("prMergeable 查询出错照旧抛出（调用方按不冲突处理）", () => {
+    let caught: unknown;
+    try {
+      failingGlab("HTTP 500: boom").prMergeable!("9");
+    } catch (e) {
+      caught = e;
+    }
+    expect(String((caught as { stderr?: unknown }).stderr)).toMatch(/HTTP 500/);
+  });
+
+  it("打回的时间比较：committed_date 带 +08:00 偏移也归一成 UTC ISO，晚于最新提交的 /sandcastle 评论仍满足 at > lastCommitAt（按字符串比较，#1 原验收第 2 条）", () => {
+    const mr = { iid: 5, state: "opened", source_branch: "sandcastle/issue-5", source_project_id: 3, target_project_id: 3, created_at: "u" };
+    const { forge } = fakeGlab(
+      JSON.stringify(mr),
+      // 提交是 2026-11-27T10:00:00+08:00 = 02:00Z；两条 /sandcastle 评论分别在 01:00Z（早于提交）和 03:00Z（晚于提交）
+      [
+        JSON.stringify({ body: "/sandcastle 旧的打回", system: false, created_at: "2026-11-27T01:00:00Z", author: { username: "alice" } }),
+        JSON.stringify({ body: "/sandcastle 新的打回", system: false, created_at: "2026-11-27T03:00:00Z", author: { username: "alice" } }),
+      ].join("\n"),
+      JSON.stringify({ committed_date: "2026-11-27T10:00:00+08:00" }),
+    );
+    const pr = forge.viewPr("5")!;
+    expect(pr.lastCommitAt).toBe("2026-11-27T02:00:00.000Z");
+    // reopenRequestedRevisions（main.ts）的筛法：/sandcastle 开头且 at > lastCommitAt，按字符串比较
+    // The reopenRequestedRevisions (main.ts) filter: starts with /sandcastle and at > lastCommitAt, compared as strings
+    const fresh = pr.comments.filter((c) => c.body.trim().startsWith("/sandcastle")).filter((c) => c.at > pr.lastCommitAt);
+    expect(fresh.map((c) => c.body)).toEqual(["/sandcastle 新的打回"]);
+  });
+
+  it("拆票链路（closeFinishedParents 用的顺序）：listSplitParents → createIssue → editIssueBody 一串调用走通", () => {
+    const { forge, calls } = fakeGlab(
+      [JSON.stringify({ iid: 100, description: "父票\n\n## Split into\n\n- #2" })].join("\n"),
+      JSON.stringify({ iid: 201 }),
+      "",
+    );
+    const parents = forge.listSplitParents("Sandcastle");
+    expect(parents).toEqual([{ number: 100, body: "父票\n\n## Split into\n\n- #2" }]);
+    const created = forge.createIssue({ title: "子票", body: "B", labels: ["Sandcastle", "ready-for-agent"] });
+    expect(created).toBe("201");
+    forge.editIssueBody(String(parents[0].number), `${parents[0].body}\n- #${created}`);
+    expect(calls).toEqual([
+      ["api", "projects/:id/issues?state=opened&search=Split%20into&in=description&not[labels]=Sandcastle&per_page=100", "--paginate", "--output", "ndjson"],
+      ["api", "--method", "POST", "projects/:id/issues", "-f", "title=子票", "-f", "description=B", "-f", "labels=Sandcastle,ready-for-agent"],
+      ["api", "--method", "PUT", "projects/:id/issues/100", "-f", "description=父票\n\n## Split into\n\n- #2\n- #201"],
+    ]);
+  });
+
+  it("提示词相关的方法还没实现：抛 not implemented", () => {
+    const { forge } = fakeGlab();
+    expect(() => forge.viewIssueCommand("1")).toThrow("gitlabForge.viewIssueCommand: not implemented");
+    expect(() => forge.agentGuide()).toThrow("gitlabForge.agentGuide: not implemented");
   });
 });
