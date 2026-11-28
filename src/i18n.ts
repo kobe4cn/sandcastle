@@ -401,7 +401,7 @@ const en: Messages = {
 
   flakyLabelDesc: "Flaky tests (opened automatically by the Sandcastle gate)",
   mergingLabelDesc: "Gate passed, PR open; Sandcastle is waiting for checks / merging (resumes after a restart)",
-  waitingMainLabelDesc: "Held as a PR by a main-broken ticket; auto-rebased and re-gated once main is fixed (created by the pipeline)",
+  waitingMainLabelDesc: "Held as a PR by main-broken; auto-rebased and re-gated once main is fixed (created by the pipeline)",
   reviewedLabelDesc: "Review passed; Sandcastle is running the gate (a restart goes straight to the gate)",
   reviewedNote: (sha) =>
     `✅ Review passed (branch HEAD \`${sha.slice(0, 12)}\`); the gate runs next. After an interrupt and restart, if the branch is unchanged, it goes straight to the gate without reimplementing or re-reviewing.`,
