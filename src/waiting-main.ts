@@ -2,6 +2,7 @@
 // After main is fixed (#86, ADR 0007 "Resume"): which waiting-main tickets can go back to the merge flow this pass.
 import { mainBrokenBlocker } from "./merge-flow.ts";
 import type { ForgeIssue } from "./forge.ts";
+import type { Labels } from "./profile.ts";
 
 /**
  * waiting-main 候选里没有被开着的 main-broken 票挡住的票号（挡住判定复用 mainBrokenBlocker，含其子票豁免）。
@@ -15,4 +16,16 @@ export function resumableWaitingMain(
   openMainBroken: Pick<ForgeIssue, "number" | "body">[],
 ): number[] {
   return candidates.filter((c) => mainBrokenBlocker(openMainBroken, String(c.number)) === undefined).map((c) => c.number);
+}
+
+/**
+ * 票离开 pr-open（打回）或 merging（没有开着的 PR，交回调度）时要去掉的标签：那个状态标签加 waiting-main。
+ * waiting-main 只能表示「其他关卡都过了、只被 main-broken 挡住」；票一旦离开这个状态就必须去掉，
+ * 否则之后因别的原因（reviewer 给 pr、受保护路径、浏览器验收没过）留下的 PR 会被 resumeWaitingMain 自动合并。
+ * Labels to remove when a ticket leaves pr-open (sent back) or merging (no open PR; handed back to scheduling): that state label plus waiting-main.
+ * waiting-main may only mean "every other gate passed; held only by main-broken". Once the ticket leaves that state it must come off,
+ * or a PR later left for another reason (reviewer said pr, protected paths, failed browser check) would be auto-merged by resumeWaitingMain.
+ */
+export function labelsToRemoveOnLeave(labels: Pick<Labels, "prOpen" | "merging" | "waitingMain">, from: "prOpen" | "merging"): string[] {
+  return [labels[from], labels.waitingMain];
 }

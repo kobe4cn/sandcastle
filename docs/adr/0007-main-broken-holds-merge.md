@@ -33,4 +33,5 @@ main 上定期的兜底完整测试失败时，脚本自动开一张带 `sandcas
 - **只恢复带 waiting-main 的票**：本机制上线前只带 `sandcastle:pr-open` 的老 PR 仍要人手动合——不知道它们被挡的原因是不是 main-broken，自动合并它们等于凭空放宽「为什么留 PR」这道说明。
 - **恢复时强制 rebase 并重跑门槛**：被挡时的门槛是对着坏 main 跑的，不能沿用；rebase 后 agent 解过冲突时照旧再查受保护路径、复审、浏览器验收，不放宽任何关卡。分支已包含最新 main 时（如修复票没合代码就关了）不强制 rebase，照普通合并流程等检查。
 - **列票出错时这一轮不恢复**（fail-closed）：和挡住时的判定同口径，查不到开着的 main-broken 票就不动，下一轮再试。
+- **票离开「只被 main-broken 挡住」的状态就去掉 waiting-main**：打回（去 pr-open）、带 merging 却没有开着的 PR 交回调度（去 merging）时一并去掉。waiting-main 只能表示「其他关卡都过了、只被 main-broken 挡住」；残留的话，重新实现后因别的原因（reviewer 给 `pr`、受保护路径、浏览器验收没过）留下的 PR 会被误恢复、自动合并。
 - 恢复途中又开出新的 main-broken 票时，合并流程里的同一套检查会再次挡住并重新打上 waiting-main。已关闭票上残留的 waiting-main 由 `cleanupClosedIssues` 清掉。

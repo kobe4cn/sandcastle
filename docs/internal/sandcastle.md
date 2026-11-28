@@ -17,7 +17,7 @@
 | 已合并 | issue 关闭（PR 正文 `Closes #n`） | 脚本 | 依赖它的票下次调度开工 |
 | 等人审 | + `sandcastle:pr-open` | 脚本（没能自动合并时，含 forge 检查失败或超时） | 人审 PR：没问题就合并（issue 自动关闭）；要改就在 PR 上发 `/sandcastle` 开头的评论或 review |
 | 等 main 修好 | + `sandcastle:waiting-main`（同时带 `sandcastle:pr-open`） | 脚本（被开着的 main-broken 票挡住留 PR 时，含查不到票的 fail-closed） | main-broken 票都关掉后，下次调度自动回到合并流程：强制 rebase、重跑门槛、等检查后合并（ADR 0007「恢复」） |
-| 打回 | 去掉 `sandcastle:pr-open` | 脚本（每次调度开头看到打回信号时） | 这次调度重新 plan，implementer 在原分支上先处理 PR 意见 |
+| 打回 | 去掉 `sandcastle:pr-open`，一并去掉 `sandcastle:waiting-main` | 脚本（每次调度开头看到打回信号时） | 这次调度重新 plan，implementer 在原分支上先处理 PR 意见 |
 | 退回重新准备 | 去掉 `sandcastle:prepped`，issue 上留 `<!-- sandcastle:reprep -->` 评论 | 脚本（implementer 第一次用完会话没做完时） | 下次调度 prep 按进度：指引不对就重写；票太大就把没完成的验收标准拆成子票（被本票 block），本票只留已完成的部分，在原分支上收尾合并 |
 | 需要人 | + `sandcastle:stuck`（评论里写原因） | 脚本（重新准备后仍没做完、沙箱出错、implementer 输出 `NEEDS_DECISION`、Blocked by 引用的票不存在）或 agent（含 prep 缺意图信息：评论写明缺什么、写进哪份文档，提示 `/fill-project-docs`） | 人处理后去掉 `sandcastle:stuck`；带 `ready-for-human` 的（prep 打的、implementer 输出 `NEEDS_DECISION` 的）一并去掉 |
 | 代拍板 | + `sandcastle:decided`（票仍照常合并或留 PR） | 脚本（落地时 issue 上有 `<!-- sandcastle:decided -->` 开头的评论） | 人看 PR 上的「代拍板」评论：同意就去掉标签；不同意在 issue 上回复，另开票改 |

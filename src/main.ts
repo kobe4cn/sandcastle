@@ -111,7 +111,7 @@ import { detectProject } from "./detect.ts";
 import { probeTcp, servicesProblem } from "./preflight.ts";
 import { manual } from "./onboard.ts";
 import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
-import { resumableWaitingMain } from "./waiting-main.ts";
+import { labelsToRemoveOnLeave, resumableWaitingMain } from "./waiting-main.ts";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -915,7 +915,14 @@ function reopenRequestedRevisions() {
       continue;
     }
     if (!sentBack.value) continue;
-    forge.removeLabel(String(issueId), LABEL.prOpen);
+    // 一并去掉 waiting-main：它只表示「其他关卡都过了、只被 main-broken 挡住」，打回后票离开这个状态；
+    // 残留的话，重新实现后因别的原因留下的 PR 会被 resumeWaitingMain 自动合并（#86）。去 waiting-main 出错只警告。
+    // Also remove waiting-main: it only means "every other gate passed; held only by main-broken", and a send-back leaves that state;
+    // if it lingered, a PR left for another reason after reimplementing would be auto-merged by resumeWaitingMain (#86). Errors removing waiting-main only warn.
+    const [stateLabel, waitingLabel] = labelsToRemoveOnLeave(LABEL, "prOpen");
+    forge.removeLabel(String(issueId), stateLabel);
+    const unwait = attempt(() => forge.removeLabel(String(issueId), waitingLabel));
+    if (!unwait.ok) console.warn(t(`  ⚠ #${issueId} 去掉 ${waitingLabel} 失败：`, `  ⚠ #${issueId}: removing ${waitingLabel} failed: `) + unwait.out.slice(0, 200));
     forge.commentPr(pr.id, M.reopened);
     console.log(t(`  ↺ #${issueId} 收到打回（PR #${pr.id}），重新排队`, `  ↺ #${issueId} was sent back (PR #${pr.id}); requeued`));
   }
@@ -1964,7 +1971,11 @@ async function finishMerge(issue: Issue, pr: string, host: HostGap, tier: GateTi
 async function resumeMerging(issue: Issue, host: HostGap) {
   const pr = prFor(issue.id);
   if (!pr || pr.branch !== issue.branch) {
-    attempt(() => forge.removeLabel(issue.id, LABEL.merging));
+    // 去掉 merging 的同时去掉 waiting-main：票回到 plan 就离开了「其他关卡都过了、只被 main-broken 挡住」的状态，
+    // 残留的话之后因别的原因留下的 PR 会被 resumeWaitingMain 自动合并（#86）。
+    // Remove waiting-main along with merging: back in plan, the ticket is no longer "every other gate passed; held only by main-broken",
+    // and a lingering label would let resumeWaitingMain auto-merge a PR later left for another reason (#86).
+    for (const label of labelsToRemoveOnLeave(LABEL, "merging")) attempt(() => forge.removeLabel(issue.id, label));
     console.log(t(`  ↺ #${issue.id} 带 ${LABEL.merging} 但没有开着的 PR，交回调度`, `  ↺ #${issue.id} is labelled ${LABEL.merging} but has no open PR; handing it back to scheduling`));
     return;
   }
