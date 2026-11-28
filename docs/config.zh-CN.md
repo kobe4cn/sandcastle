@@ -69,13 +69,6 @@ export default defineProject({
 
 onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-cli 和 Chromium。onboard 会先读项目已有的验收资料（README、测试说明、旧的 `.sandcastle` 提示词、`scripts/` 里建验收数据的脚本），能拼出下面四步就写这一节，拼不全就把缺的信息（dev server 启动命令与端口、验收数据怎么建、登录方式与账号、dev server 要的变量）列进缺口清单。后端项目加了前端：在 PROJECT.md 加浏览器验收一节（照下面的示例），并配 `browser.pagePaths`（见「可选」），沙箱已经装好浏览器。
 
-项目有 Playwright e2e（onboard 探测到根目录的 `playwright.config.{ts,js,mjs,cjs}`，或 package.json 有 `test:e2e` / `e2e` script）时，onboard 把 e2e 命令接在 `gate.script` 末尾由合并门槛跑：改坏了页面、即使 diff 没命中 `browser.pagePaths`，也会被门槛拦下。Playwright 的基准截图目录（`-snapshots/`）同时默认进 `protectedPaths`——更新基准的票只能留 PR 由人确认，不自动合并。门槛里跑 e2e 要注意：
-
-- dev server 由 Playwright 配置里的 `webServer` 在门槛内自己起；`gate.services` 只在宿主机做 TCP 预检，不负责起服务。e2e 依赖的服务（数据库等）写进 `gate.services`。
-- 沙箱镜像装了 Chromium（`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`）但没有 `@playwright/test`；版本不匹配时在 `install.onSandboxReady` 里加跑 `playwright install chromium`。
-- 失败 spec 的路径要能被 `gate.testFile` 的正则认出来，fix 和偶发失败重跑才用得上（node 的默认 `\S+\.(test|spec)\.[cm]?[jt]sx?` 已盖住 `e2e/xxx.spec.ts`）。
-- 不要把 e2e 加进 `gate.typecheck`（它只在 rebase 留 PR 时跑）。
-
 - **dev server 要的变量放进 `isolation.env`**：dev server 在沙箱里读的变量（数据库、会话密钥、对象存储等）都要出现在 `isolation.env` 的返回值里，少一个就起不来。用上一节的 `readHostEnv` 从宿主机 env 文件读出来，指向本机服务的值过一遍 `toContainerHost`。
 - **用独立的库**：和测试一样，库名用 `withDbSuffix` 加上 `` `_i${runId}` `` 后缀，验收数据不会碰到开发库，也不会和并行的票互相清表（写法见开头的示例）。
 - **验收数据**：在 PROJECT.md 这一节第一步写建数据的命令（种子脚本、建账号）；给人验收时的固定准备步骤写在 `acceptancePrep`（见「可选」）。
@@ -91,6 +84,13 @@ onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-
 3. 登录：`playwright-cli open http://localhost:3000/login`，用上面的账号登录，地址离开 `/login` 才算登录成功。
 4. 查错时 `grep -n -i error /tmp/dev.log`。
 ```
+
+项目有 Playwright e2e（onboard 探测到根目录的 `playwright.config.{ts,js,mjs,cjs}`，或 package.json 有 `test:e2e` / `e2e` script）时，onboard 把 e2e 命令接在 `gate.script` 末尾由合并门槛跑：改坏了页面、即使 diff 没命中 `browser.pagePaths`，也会被门槛拦下。Playwright 的基准截图目录（`-snapshots/`）同时默认进 `protectedPaths`——更新基准的票只能留 PR 由人确认，不自动合并。门槛里跑 e2e 要注意：
+
+- dev server 由 Playwright 配置里的 `webServer` 在门槛内自己起；`gate.services` 只在宿主机做 TCP 预检，不负责起服务。e2e 依赖的服务（数据库等）写进 `gate.services`。
+- 沙箱镜像装了 Chromium（`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`）但没有 `@playwright/test`；版本不匹配时在 `install.onSandboxReady` 里加跑 `playwright install chromium`。
+- 失败 spec 的路径要能被 `gate.testFile` 的正则认出来，fix 和偶发失败重跑才用得上（node 的默认 `\S+\.(test|spec)\.[cm]?[jt]sx?` 已盖住 `e2e/xxx.spec.ts`）。
+- 不要把 e2e 加进 `gate.typecheck`（它只在 rebase 留 PR 时跑）。
 
 ## 可选
 
