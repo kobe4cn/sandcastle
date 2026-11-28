@@ -1,10 +1,10 @@
 // doctor：跑流水线之前把能在宿主机上查的都查一遍，每项给出结论和修法。
 // 查：仓库根目录、配置能加载、宿主机依赖与 env 文件、PROJECT.md 与提示词能渲染、浏览器验收、合并条件（有 CI workflow 却不等检查时警告）、项目知识（缺口清单）、models.json、.env 的 token、平台登录与权限、
-// 标签、镜像（--fix 时补建 / 直接建）、Sandcastle 票的 Blocked by 引用、开着的 main-broken 票、远端基础分支、沙箱镜像、门槛依赖的服务、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
+// 标签、镜像（--fix 时补建 / 直接建，与 Containerfile 不一致时报过期、--fix 重建）、Sandcastle 票的 Blocked by 引用、开着的 main-broken 票、远端基础分支、沙箱镜像、门槛依赖的服务、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
 // 有一项 ✗ 退出码就是 1。
 // doctor: before running the pipeline, check everything that can be checked on the host, giving a verdict and a fix for each.
 // Checks: repository root, config loads, host dependencies and env files, PROJECT.md and prompts render, browser check, merge requirements (warns when there are CI workflows but checks aren't awaited), project knowledge (open questions list), models.json, .env tokens, forge login and permissions,
-// labels and the image (created / built with --fix), Blocked by references in Sandcastle tickets, open main-broken tickets, remote base branch, sandbox image, gate services, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
+// labels and the image (created / built with --fix, reported stale and rebuilt with --fix when it doesn't match the Containerfile), Blocked by references in Sandcastle tickets, open main-broken tickets, remote base branch, sandbox image, gate services, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
 // Exit code 1 if any check is ✗.
 
 import { spawnSync } from "node:child_process";
@@ -16,7 +16,7 @@ import { browserSetupWarning } from "./browser-gate.ts";
 import { detectProject } from "./detect.ts";
 import type { Forge, IssueState } from "./forge.ts";
 import { blockersOf } from "./guide.ts";
-import { buildImageArgs } from "./lifecycle.ts";
+import { buildImageArgs, containerfileHash, findContainerfile, imageLabel } from "./lifecycle.ts";
 import { inspectModels } from "./models.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { CLAUDE_FILES, fillDocsHint, manual, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
@@ -441,7 +441,7 @@ export async function diagnose(opts: {
     add(t("沙箱镜像", "Sandbox image"), "ok", t("配置里自定义了 sandbox，不查 podman", "the config sets its own sandbox; podman not checked"));
   } else if (project) {
     const image = defaultImageName(cwd);
-    const containerfile = [join(dir, "Containerfile"), join(cwd, ".sandcastle/Containerfile")].find(existsSync);
+    const containerfile = findContainerfile(cwd, dir);
     // 手动命令与 --fix 跑的同一条（带内容哈希 label，供后续判断镜像是否过期），路径换成相对仓库根的写法。
     // The manual command is the same one --fix runs (with the content hash label, to later tell whether the image is stale), paths made relative to the repo root.
     const buildCommand = containerfile
@@ -449,12 +449,11 @@ export async function diagnose(opts: {
       : t("先跑 onboard 生成 Containerfile", "Run onboard first to generate the Containerfile");
     const info = run("podman", ["info", "--format", "{{.Host.Arch}}"]);
     const S = t("沙箱镜像", "Sandbox image");
-    if (!info.ok) add(S, "fail", t("podman 用不了：", "podman isn't usable: ") + firstLine(info.out), t("装 podman；macOS 上 podman machine start", "Install podman; on macOS, podman machine start"));
-    else if (!run("podman", ["image", "exists", image]).ok) {
-      // --fix 时按 Containerfile 直接建镜像（和补建标签一样），构建输出原样进终端；失败不吞，detail 给 stderr 前几行。
-      // With --fix, build the image from the Containerfile directly (like creating missing labels), the build output going to the terminal as is; a failure isn't swallowed, the detail carries the first few stderr lines.
+    // --fix 时按当前 Containerfile 建镜像（缺失时）或重建（过期时，和补建标签一样），构建输出原样进终端；失败不吞，detail 给 stderr 前几行。没带 --fix（或没有 Containerfile）时返回 undefined，由调用方报自己的说法。
+    // With --fix, build the image from the current Containerfile (when missing) or rebuild it (when stale, like creating missing labels), the build output going to the terminal as is; a failure isn't swallowed, the detail carries the first few stderr lines. Without --fix (or with no Containerfile) it returns undefined and the caller reports its own message.
+    const fixBuild = (okText: string) => {
       const built = opts.fix && containerfile ? build(buildImageArgs(image, containerfile)) : undefined;
-      if (built?.ok) add(S, "ok", t(`建好了镜像 ${image}`, `built the image ${image}`));
+      if (built?.ok) add(S, "ok", okText);
       else if (built)
         add(
           S,
@@ -462,7 +461,16 @@ export async function diagnose(opts: {
           t("构建失败：", "build failed: ") + built.out.split("\n").map((l) => l.trim()).filter(Boolean).slice(0, 5).join(t("；", "; ")),
           buildCommand,
         );
-      else add(S, "fail", t(`没有镜像 ${image}`, `No image ${image}`), buildCommand);
+      return built;
+    };
+    if (!info.ok) add(S, "fail", t("podman 用不了：", "podman isn't usable: ") + firstLine(info.out), t("装 podman；macOS 上 podman machine start", "Install podman; on macOS, podman machine start"));
+    else if (!run("podman", ["image", "exists", image]).ok) {
+      if (!fixBuild(t(`建好了镜像 ${image}`, `built the image ${image}`))) add(S, "fail", t(`没有镜像 ${image}`, `No image ${image}`), buildCommand);
+    } else if (containerfile && imageLabel(image, run) !== containerfileHash(containerfile)) {
+      // 镜像在，但 label 记的哈希和当前 Containerfile 对不上（或没 label，老镜像）：过期了；--fix 重建，否则 warn 提示。
+      // The image exists but its label's hash doesn't match the current Containerfile (or there's no label, an old image): stale; --fix rebuilds it, otherwise a warn with the hint.
+      if (!fixBuild(t(`重建了镜像 ${image}`, `rebuilt the image ${image}`)))
+        add(S, "warn", t("Containerfile 改过，镜像过期", "The Containerfile changed; the image is stale"), t("sandpipe doctor --fix 重建", "sandpipe doctor --fix rebuilds it"));
     } else add(S, "ok", t(`${image}（改了 Containerfile 要重建：${buildCommand}）`, `${image} (rebuild after changing the Containerfile: ${buildCommand})`));
   }
 

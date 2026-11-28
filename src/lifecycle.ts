@@ -209,6 +209,42 @@ export function buildImageArgs(image: string, containerfile: string): string[] {
 }
 
 /**
+ * 找项目的 Containerfile：配置目录（SANDCASTLE_PROJECT_DIR）里的优先，其次目标项目 `.sandcastle/` 里 onboard 装的那份；都没有返回 undefined。
+ * Find the project's Containerfile: the config directory's (SANDCASTLE_PROJECT_DIR) first, then the one onboard installed under the target project's `.sandcastle/`; undefined when neither exists.
+ */
+export function findContainerfile(cwd: string, dir: string): string | undefined {
+  return [join(dir, "Containerfile"), join(cwd, ".sandcastle/Containerfile")].find(existsSync);
+}
+
+/**
+ * 镜像上记录的 Containerfile 哈希 label（`podman image inspect` 读 `IMAGE_LABEL`）：命令失败、trim 后为空或是 `<no value>`（label 没打上时 Go 模板对缺 key 的 index 输出这个）返回 undefined。
+ * 老镜像没打过 label，也返回 undefined，调用方按过期处理。
+ * The Containerfile hash label recorded on the image (`podman image inspect` for `IMAGE_LABEL`): undefined when the command fails, trims to empty, or is `<no value>` (what Go's template prints for index on a missing key).
+ * Images built before the label existed also return undefined; callers treat them as stale.
+ */
+export function imageLabel(tag: string, run: Run = trySh): string | undefined {
+  const r = run("podman", ["image", "inspect", "--format", `{{index .Labels "${IMAGE_LABEL}"}}`, tag], 60_000);
+  if (!r.ok) return undefined;
+  const label = r.out.trim();
+  return label === "" || label === "<no value>" ? undefined : label;
+}
+
+/**
+ * 镜像不是按当前 Containerfile 建的（label 记的哈希对不上，含没 label）时返回一行警告文案，是的话返回 null。
+ * 没有 Containerfile 或镜像不在本地时也返回 null——缺失有别的报法（doctor 的「没有镜像」），这里只在能判断过期时报。
+ * A one-line warning when the image wasn't built from the current Containerfile (the label's hash doesn't match, including no label at all), null when it was.
+ * No Containerfile or no local image also returns null—an absent image is reported elsewhere (doctor's "No image"); this only reports staleness it can establish.
+ */
+export function imageStaleWarning(image: string, containerfile: string | undefined, run: Run = trySh): string | null {
+  if (containerfile === undefined || !imageExists(image, run)) return null;
+  if (imageLabel(image, run) === containerfileHash(containerfile)) return null;
+  return t(
+    `Containerfile 改过，镜像 ${image} 过期，运行 sandpipe doctor --fix 重建`,
+    `The Containerfile changed; the image ${image} is stale. Run sandpipe doctor --fix to rebuild it`,
+  );
+}
+
+/**
  * 这个仓库的路径前缀：仓库根（prep 挂的是工作区本身）和它下面的一切（`.git`、`.sandcastle/worktrees/…`）。
  * 同时认原路径和 realpath（macOS 上 /tmp → /private/tmp 之类）。
  * Path prefixes of this repository: the repo root (prep mounts the workspace itself) and everything under it (`.git`, `.sandcastle/worktrees/…`).

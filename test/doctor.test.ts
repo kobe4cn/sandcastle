@@ -14,9 +14,9 @@ import { DEFAULT_LABELS } from "../src/profile.ts";
 import { trySh } from "../src/shell.ts";
 import { nodeRepo, pythonRepo } from "./fixtures.ts";
 
-/** git 本地命令真跑；连远端和 podman 的换成假的。 */
+/** git 本地命令真跑；连远端和 podman 的换成假的（label 是 image inspect 返回的 `sandpipe.containerfile` 值，缺省当作没打）。 */
 const runner =
-  (opts: { image: boolean; pushed?: boolean }): Runner =>
+  (opts: { image: boolean; pushed?: boolean; label?: string }): Runner =>
   (cmd, args) => {
     if (cmd === "git" && args.includes("ls-remote")) return { ok: true, out: "abc\trefs/heads/main" };
     // git show origin/main:<文件>：默认当作已推送，返回工作区里的内容
@@ -24,7 +24,10 @@ const runner =
       if (opts.pushed === false) return { ok: false, out: "fatal: invalid object name 'origin/main'" };
       return { ok: true, out: readFileSync(join(args[1]!, args.at(-1)!.split(":")[1]!), "utf8") };
     }
-    if (cmd === "podman") return args[0] === "image" ? { ok: opts.image, out: "" } : { ok: true, out: "arm64" };
+    if (cmd === "podman") {
+      if (args[0] === "image" && args[1] === "inspect") return { ok: true, out: opts.label ?? "" };
+      return args[0] === "image" ? { ok: opts.image, out: "" } : { ok: true, out: "arm64" };
+    }
     return trySh(cmd, args);
   };
 
@@ -123,12 +126,12 @@ describe("diagnose", () => {
       detail: expect.stringContaining("CLAUDE_CODE_OAUTH_TOKEN"),
     });
 
-    // 值空着、取宿主机环境变量也算；--fix 建好全部标签
+    // 值空着、取宿主机环境变量也算；--fix 建好全部标签（镜像的 label 与当前 Containerfile 一致，--fix 才不会去重建）
     writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=\n");
     const third = await diagnose({
       cwd: root,
       env: { CLAUDE_CODE_OAUTH_TOKEN: "t" },
-      run: runner({ image: true }),
+      run: runner({ image: true, label: containerfileHash(join(root, ".sandcastle/Containerfile")) }),
       forge: fakeGh(["bug", "Sandcastle"], created),
       fix: true,
     });
@@ -230,6 +233,63 @@ describe("diagnose：--fix 建镜像", () => {
     const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: false }), forge: fakeGh(allLabels, []), fix: true, build });
     expect(calls).toEqual([]);
     expect(check(checks, "沙箱镜像")).toMatchObject({ level: "fail", fix: expect.stringContaining("先跑 onboard") });
+  });
+
+  it("镜像在但 label 对不上当前 Containerfile（含没 label）：不带 fix 报 warn，提示 doctor --fix，不构建", async () => {
+    const root = readyRepo();
+    const { calls, build } = fakeBuild(true);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), build });
+    const c = check(checks, "沙箱镜像");
+    expect(calls).toEqual([]);
+    expect(c).toMatchObject({ level: "warn", detail: "Containerfile 改过，镜像过期" });
+    expect(c?.fix).toContain("sandpipe doctor --fix");
+  });
+
+  it("镜像在且过期：带 fix 按当前 Containerfile 重建，成功后该项 ok（重建了镜像）", async () => {
+    const root = readyRepo();
+    const { calls, build } = fakeBuild(true);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), fix: true, build });
+    const containerfile = join(root, ".sandcastle/Containerfile");
+    expect(calls).toEqual([["build", "-t", defaultImageName(root), "--label", `${IMAGE_LABEL}=${containerfileHash(containerfile)}`, "-f", containerfile, join(root, ".sandcastle")]]);
+    expect(check(checks, "沙箱镜像")).toMatchObject({ level: "ok", detail: expect.stringContaining("重建了镜像") });
+  });
+
+  it("镜像在且过期：带 fix 重建失败 fail，detail 给 stderr 前几行、fix 给构建命令", async () => {
+    const root = readyRepo();
+    const { build } = fakeBuild(false);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), fix: true, build });
+    const c = check(checks, "沙箱镜像");
+    expect(c).toMatchObject({ level: "fail" });
+    expect(c?.detail).toContain("registries.conf");
+    expect(c?.fix).toMatch(/podman build -t \S+ --label sandpipe\.containerfile=[0-9a-f]{64}/);
+  });
+
+  it("镜像在、label 与当前 Containerfile 一致：照旧 ok", async () => {
+    const root = readyRepo();
+    const { calls, build } = fakeBuild(true);
+    const checks = await diagnose({
+      cwd: root,
+      env: {},
+      run: runner({ image: true, label: containerfileHash(join(root, ".sandcastle/Containerfile")) }),
+      forge: fakeGh(allLabels, []),
+      fix: true,
+      build,
+    });
+    expect(calls).toEqual([]);
+    expect(check(checks, "沙箱镜像")).toMatchObject({ level: "ok" });
+  });
+
+  it("镜像在且过期（英文项目）：不带 fix 的警告文案是英文", async () => {
+    const root = pythonRepo();
+    installFiles(root, detectProject(root));
+    writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=y\n");
+    writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "");
+    const { calls, build } = fakeBuild(true);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), build });
+    expect(calls).toEqual([]);
+    const c = check(checks, "Sandbox image");
+    expect(c).toMatchObject({ level: "warn", detail: expect.stringContaining("The Containerfile changed") });
+    expect(c?.fix).toContain("sandpipe doctor --fix");
   });
 
   it("fix 建成功（英文项目）：文案是英文", async () => {
@@ -499,7 +559,13 @@ describe("diagnose：main 兜底测试", () => {
 describe("diagnose 的出错分支", () => {
   it("准备好的项目全部通过", async () => {
     const root = readyRepo();
-    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+    // 镜像是按当前 Containerfile 建的（label 记的哈希一致），沙箱镜像一项才不报过期
+    const checks = await diagnose({
+      cwd: root,
+      env: {},
+      run: runner({ image: true, label: containerfileHash(join(root, ".sandcastle/Containerfile")) }),
+      forge: fakeGh(allLabels, []),
+    });
     expect(checks.filter((c) => c.level !== "ok")).toEqual([]);
   });
 

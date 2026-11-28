@@ -135,3 +135,5 @@ Which profile each phase uses lives in `.sandcastle/models.json` (an ordered pro
 | `sandcastle:trusted` | A maintainer confirmed this ticket can go to Sandcastle (`labels.trusted`; adding a label needs at least triage access). Created by the pipeline on first use |
 
 `sandpipe doctor --fix` creates any missing labels and builds the missing image from the Containerfile.
+
+The image records the sha256 (hex) of the Containerfile's bytes in its `sandpipe.containerfile` label when built. When that label no longer matches the current Containerfile — including images built before the label existed — the image is stale: `sandpipe doctor` reports ⚠ "The Containerfile changed; the image is stale", and `sandpipe doctor --fix` rebuilds it from the current Containerfile. `sandpipe run` also prints a ⚠ warning once at startup in that case but keeps running (an absent image is reported elsewhere, not there).

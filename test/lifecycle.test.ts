@@ -1,4 +1,4 @@
-// 运行的生命周期：运行锁、podman 检查、孤儿容器只删本仓库的、报错只取一行、Ctrl-C 提示、收尾兜底退出。
+// 运行的生命周期：运行锁、podman 检查、孤儿容器只删本仓库的、报错只取一行、Ctrl-C 提示、收尾兜底退出、镜像是否按当前 Containerfile 建（过期判断）。
 // Run lifecycle: run lock, podman check, orphan cleanup limited to this repo, one-line errors, the Ctrl-C notice, the exit fallback.
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { messages } from "../src/i18n.ts";
 import {
-  acquireRunLock, buildImageArgs, containerfileHash, errorLine, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GateInfraError, IMAGE_LABEL, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, missingImage, orphanContainers,
+  acquireRunLock, buildImageArgs, containerfileHash, errorLine, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GateInfraError, IMAGE_LABEL, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, imageLabel, imageStaleWarning, missingImage, orphanContainers,
   parseContainers, podmanProblem, removeOrphanContainers, waitForPodman,
 } from "../src/lifecycle.ts";
 import type { TryResult } from "../src/shell.ts";
@@ -236,6 +236,73 @@ describe("镜像构建参数", () => {
       dirname(file),
     ]);
     expect(IMAGE_LABEL).toBe("sandpipe.containerfile");
+  });
+});
+
+describe("镜像过期判断", () => {
+  /** 建一个 Containerfile 并返回它和内容哈希。 */
+  const containerfile = (name: string, content = "FROM node:22\n") => {
+    const file = join(dir, "stale", name, ".sandcastle", "Containerfile");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, content);
+    return { file, hash: containerfileHash(file) };
+  };
+  /** image exists 成功、image inspect 返回 label 的假 run。 */
+  const withLabel = (label: string) => (_cmd: string, args: string[]) => ({
+    ok: true,
+    out: args[1] === "inspect" ? label : "",
+  });
+
+  it("imageLabel 用 podman image inspect 读 label；失败、空串、<no value> 返回 undefined", () => {
+    const calls: string[][] = [];
+    const inspect = (_cmd: string, args: string[]) => (calls.push(args), { ok: true, out: "  abc\n" });
+    expect(imageLabel("sandcastle:app", inspect)).toBe("abc");
+    expect(calls[0]).toEqual(["image", "inspect", "--format", `{{index .Labels "${IMAGE_LABEL}"}}`, "sandcastle:app"]);
+    expect(imageLabel("sandcastle:app", () => ({ ok: false, out: "Error" }))).toBeUndefined();
+    expect(imageLabel("sandcastle:app", () => ({ ok: true, out: "   " }))).toBeUndefined();
+    // label 没打上时 Go 模板对缺 key 的 index 输出 <no value>
+    expect(imageLabel("sandcastle:app", withLabel("<no value>"))).toBeUndefined();
+  });
+
+  it("imageStaleWarning：label 与当前 Containerfile 的哈希一致时 null", () => {
+    const { file, hash } = containerfile("match");
+    expect(imageStaleWarning("sandcastle:app", file, withLabel(hash))).toBeNull();
+  });
+
+  it("imageStaleWarning：label 对不上或缺失时报过期并提示 doctor --fix", () => {
+    const { file } = containerfile("changed", "FROM node:22\nRUN x\n");
+    const stale = imageStaleWarning("sandcastle:app", file, withLabel("0".repeat(64)));
+    expect(stale).toContain("Containerfile 改过");
+    expect(stale).toContain("sandcastle:app");
+    expect(stale).toContain("sandpipe doctor --fix");
+    expect(imageStaleWarning("sandcastle:app", file, withLabel(""))).toContain("镜像 sandcastle:app 过期");
+  });
+
+  it("imageStaleWarning：镜像不存在或没有 Containerfile 时 null", () => {
+    const { file } = containerfile("absent");
+    expect(imageStaleWarning("sandcastle:app", file, () => ({ ok: false, out: "" }))).toBeNull();
+    expect(imageStaleWarning("sandcastle:app", undefined, withLabel("whatever"))).toBeNull();
+  });
+
+  it("imageStaleWarning（英文）：报过期并提示 doctor --fix", () => {
+    setTermLanguage("en", {});
+    const { file } = containerfile("en");
+    const stale = imageStaleWarning("sandcastle:app", file, withLabel(""));
+    expect(stale).toContain("The Containerfile changed");
+    expect(stale).toContain("sandpipe doctor --fix");
+  });
+
+  it("findContainerfile：配置目录下的优先，其次项目的 .sandcastle/；都没有时 undefined", () => {
+    const cwd = join(dir, "stale", "find");
+    mkdirSync(join(cwd, ".sandcastle"), { recursive: true });
+    expect(findContainerfile(cwd, join(cwd, ".sandcastle"))).toBeUndefined();
+    writeFileSync(join(cwd, ".sandcastle/Containerfile"), "FROM node:22\n");
+    expect(findContainerfile(cwd, join(cwd, ".sandcastle"))).toBe(join(cwd, ".sandcastle/Containerfile"));
+    // 两个都有时配置目录（SANDCASTLE_PROJECT_DIR）里的赢
+    const external = join(dir, "stale", "find-config");
+    mkdirSync(external, { recursive: true });
+    writeFileSync(join(external, "Containerfile"), "FROM node:22\n");
+    expect(findContainerfile(cwd, external)).toBe(join(external, "Containerfile"));
   });
 });
 

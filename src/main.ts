@@ -81,6 +81,7 @@ import { dirname, join, relative } from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import * as sandcastle from "@ai-hero/sandcastle";
 import type { SandboxExecOptions } from "@ai-hero/sandcastle";
+import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import {
   CLAUDE_CREDENTIALS_CLEARED, agentFor, readUsage, recordUsage, reloadModels, runWithProfile, sessionPeak, usageTable,
   type AgentRun, type AllProfilesLimited, type ModelUsageEntry, type Phase, type UsageRecord,
@@ -90,9 +91,9 @@ import { blockersOf, changedFiles, type FlakySighting, flakyTickets, flakyTriage
 import { acceptanceSection, browserSection, checkAcceptanceNotes, pageChangedByReview, replaceGenerated, replaceSection, restSections, sectionOf } from "./pr-body.ts";
 import type { ForgeComment, ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { mainBrokenBlocker, type MergeFlowDeps, type MergeResult, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
-import { loadProject } from "./profile.ts";
+import { configDir, loadProject } from "./profile.ts";
 import {
-  acquireRunLock, errorLine, exitWhenDone, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GATE_INFRA_PREFIX, GateInfraError, imageExists, isAgentIdleTimeout, isGateInfraFailure, logErrorDetail, missingImage, onInterrupt,
+  acquireRunLock, errorLine, exitWhenDone, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GATE_INFRA_PREFIX, GateInfraError, imageExists, isAgentIdleTimeout, isGateInfraFailure, imageStaleWarning, logErrorDetail, missingImage, onInterrupt,
   podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath, waitForPodman,
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
@@ -2480,6 +2481,10 @@ if (!project.customSandbox) {
       ),
     );
   reportOrphans(removeOrphanContainers(process.cwd(), false));
+  // 镜像不是按当前 Containerfile 建的（label 记的哈希对不上，含老镜像没打过 label）：警告一次，不挡运行，doctor --fix 重建；镜像不存在时不在这里报（prep 里另有说法）。
+  // The image wasn't built from the current Containerfile (the label's hash doesn't match, including old images with no label): warn once without blocking the run; sandpipe doctor --fix rebuilds it. An absent image isn't reported here (prep has its own message).
+  const stale = imageStaleWarning(defaultImageName(process.cwd()), findContainerfile(process.cwd(), configDir(process.cwd())));
+  if (stale) console.warn(`⚠ ${stale}`);
 }
 // 门槛依赖的服务（gate.services）：启动时逐个连一次，连不上直接退出，不等第一张票跑到门槛才发现（#55）。
 // Services the gate depends on (gate.services): connect to each once at startup and exit if any is unreachable, instead of finding out when the first ticket reaches the gate (#55).
