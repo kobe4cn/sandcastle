@@ -473,21 +473,43 @@ export function interruptNotice(inProgress: string[], waitingChecks: string[]): 
 export const runLockPath = (root: string) => join(root, RUN_LOCK_FILE);
 
 /**
- * Ctrl-C 时打 interruptNotice、退出码 130。库在有沙箱时也装了 SIGINT 处理（跑完清理后 process.exit(1)），它装得比这里晚、排在后面；
- * 提示放在 exit 事件里用同步写，保证打在库的「Worktree preserved」之后、不被提前退出吞掉，退出码也在这里改回 130。没有沙箱时库不装处理，就由这里退出。
- * On Ctrl-C print interruptNotice and exit with 130. With sandboxes open the library installs its own SIGINT handler too (cleanup then process.exit(1)), registered later so it runs after this one;
- * the notice is written synchronously in the exit event so it lands after the library's "Worktree preserved" and isn't lost to the early exit, and the exit code is set back to 130 there. Without sandboxes the library installs nothing, so this exits.
+ * 连续空转多少次后结束运行：`maxIdlePolls` 配 `Infinity`（一直运行模式，守护进程下用）时永不结束，其余（含默认 12）到数就停。
+ * After how many idle polls in a row the run ends: with `maxIdlePolls: Infinity` (run-forever mode, for daemons) it never ends; otherwise (default 12 included) it stops at the cap.
+ */
+export function idleStop(idlePolls: number, max: number): boolean {
+  return Number.isFinite(max) && idlePolls >= max;
+}
+
+/**
+ * 空转进度的括号文案：有限上限带分母（「空转 3/12」）；一直运行模式没有分母，只给次数（「空转 3 次」），不打「/Infinity」。
+ * The idle-progress parenthesis: a finite cap keeps the denominator ("idle 3/12"); run-forever mode has none and gives just the count ("idle 3"), never printing "/Infinity".
+ */
+export function idleProgress(idlePolls: number, max: number): string {
+  return Number.isFinite(max)
+    ? t(`空转 ${idlePolls}/${max}`, `idle ${idlePolls}/${max}`)
+    : t(`空转 ${idlePolls} 次`, `idle ${idlePolls}`);
+}
+
+/**
+ * Ctrl-C（退出码 130）或 SIGTERM（143，systemd / launchd 停服务时发）时打 interruptNotice，两个信号走同一路径。
+ * 库在有沙箱时也装了 SIGINT 处理（跑完清理后 process.exit(1)），它装得比这里晚、排在后面；
+ * 提示放在 exit 事件里用同步写，保证打在库的「Worktree preserved」之后、不被提前退出吞掉，退出码也在这里改回 130 / 143。没有沙箱时库不装处理，就由这里退出。
+ * On Ctrl-C (exit code 130) or SIGTERM (143, sent when systemd / launchd stops the service) print interruptNotice; both signals take the same path.
+ * With sandboxes open the library installs its own SIGINT handler too (cleanup then process.exit(1)), registered later so it runs after this one;
+ * the notice is written synchronously in the exit event so it lands after the library's "Worktree preserved" and isn't lost to the early exit, and the exit code is set back to 130 / 143 there. Without sandboxes the library installs nothing, so this exits.
  */
 export function onInterrupt(state: () => { inProgress: string[]; waitingChecks: string[] }) {
-  let interrupted = false;
-  process.on("SIGINT", () => {
-    if (interrupted) return;
-    interrupted = true;
-    setImmediate(() => process.exit(130));
-  });
+  let exitCode: number | undefined;
+  const onSignal = (code: number) => () => {
+    if (exitCode !== undefined) return;
+    exitCode = code;
+    setImmediate(() => process.exit(code));
+  };
+  process.on("SIGINT", onSignal(130));
+  process.on("SIGTERM", onSignal(143));
   process.on("exit", () => {
-    if (!interrupted) return;
-    process.exitCode = 130;
+    if (exitCode === undefined) return;
+    process.exitCode = exitCode;
     const s = state();
     try {
       writeSync(2, `${interruptNotice(s.inProgress, s.waitingChecks)}\n`);

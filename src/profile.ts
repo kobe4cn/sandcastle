@@ -155,7 +155,7 @@ export interface ProjectProfile {
   agentIdleTimeoutS?: number;
   /** 有空位时隔多久重新调度一次。默认 10 分钟。 / How often to reschedule when a slot is free. Default 10 minutes. */
   pollIntervalMs?: number;
-  /** 连续多少次空转就结束运行。默认 12。 / Idle polls in a row before the run ends. Default 12. */
+  /** 连续多少次空转就结束运行。默认 12；`Infinity` 表示一直运行（守护进程下用）。 / Idle polls in a row before the run ends. Default 12; `Infinity` means run forever (for daemons). */
   maxIdlePolls?: number;
   /** 一张票最多开几次全新的 implement 会话。默认 3。 / Maximum fresh implement sessions per ticket. Default 3. */
   implementMaxSessions?: number;

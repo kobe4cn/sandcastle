@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { messages } from "../src/i18n.ts";
 import {
-  acquireRunLock, AGENT_AUTH_PREFIX, AgentAuthError, agentAuthReason, AUTH_MAX_HITS, authHitCapped, authRecovered, buildImageArgs, nextAuthHits, containerfileHash, errorLine, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GateInfraError, IMAGE_LABEL, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, imageLabel, imageStaleWarning, missingImage, orphanContainers,
+  acquireRunLock, AGENT_AUTH_PREFIX, AgentAuthError, agentAuthReason, AUTH_MAX_HITS, authHitCapped, authRecovered, buildImageArgs, nextAuthHits, containerfileHash, errorLine, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GateInfraError, idleProgress, idleStop, IMAGE_LABEL, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, imageLabel, imageStaleWarning, missingImage, orphanContainers,
   parseContainers, podmanProblem, removeOrphanContainers, untilAuthRecovered, waitForPodman,
 } from "../src/lifecycle.ts";
 import type { TryResult } from "../src/shell.ts";
@@ -555,6 +555,25 @@ describe("interruptNotice", () => {
   });
 });
 
+describe("空转停止与进度（一直运行模式，#154）", () => {
+  it("idleStop：有限上限到数就停，Infinity 永不停", () => {
+    expect(idleStop(12, 12)).toBe(true);
+    expect(idleStop(11, 12)).toBe(false);
+    expect(idleStop(1000, Infinity)).toBe(false);
+  });
+
+  it("idleProgress：有限上限带分母，Infinity 只给次数", () => {
+    expect(idleProgress(3, 12)).toBe("空转 3/12");
+    expect(idleProgress(3, Infinity)).toBe("空转 3 次");
+  });
+
+  it("英文文案：finite keeps the denominator, Infinity only the count", () => {
+    setTermLanguage("en", {});
+    expect(idleProgress(3, 12)).toBe("idle 3/12");
+    expect(idleProgress(3, Infinity)).toBe("idle 3");
+  });
+});
+
 // 起子进程：真的发 SIGINT、真的留一个漏掉的定时器。 / Child processes: a real SIGINT, a real leaked timer.
 const LIFECYCLE = pathToFileURL(fileURLToPath(new URL("../src/lifecycle.ts", import.meta.url))).href;
 const TSX = pathToFileURL(createRequire(import.meta.url).resolve("tsx")).href;
@@ -586,6 +605,16 @@ describe("子进程", () => {
     );
     expect(r.status).toBe(130);
     expect(r.stderr.indexOf("Worktree preserved")).toBeLessThan(r.stderr.indexOf("waiting for PR checks: #43"));
+  }, 30_000);
+
+  it("SIGTERM：走 Ctrl-C 同一路径打提示，退出码 143", () => {
+    const r = runScript(
+      "term.ts",
+      `onInterrupt(() => ({ inProgress: ["47"], waitingChecks: [] }));\nsetInterval(() => {}, 1000);\nsetTimeout(() => process.kill(process.pid, "SIGTERM"), 50);`,
+    );
+    expect(r.status).toBe(143);
+    expect(r.stderr).toContain("Interrupted. in progress: #47");
+    expect(r.stderr).toContain("no manual cleanup needed");
   }, 30_000);
 
   it("收尾兜底：有漏掉的定时器时按 exitCode 退出（库的空闲提醒 fiber 漏掉后进程不退，e2e L6）", () => {
