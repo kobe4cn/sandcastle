@@ -1,9 +1,9 @@
 // 主动通知（可选）：配了 notify 时，票 stuck、留 PR 给人等事件向 webhook POST 一条 JSON（text 给人看，
-// 兼容只认 text 的接收端如 Slack / 飞书；event / issue / url / reason 给自建接收端）。
+// Slack incoming webhook 直接认，飞书等群机器人要各自的格式、不兼容；event / issue / url / reason 给自建接收端）。
 // webhook URL 是凭据：只从 .sandcastle/.env（值为空时取宿主机同名环境变量）读，不进日志、警告、评论；
 // 发送失败只打一行警告，从不 reject——通知不影响主流程。
 // Proactive notifications (optional): with notify configured, events like a stuck ticket or a PR left for a human POST one JSON
-// message to a webhook (text is for humans, compatible with receivers that only read text, e.g. Slack / Lark;
+// message to a webhook (text is for humans, accepted as-is by a Slack incoming webhook; Lark-style bots need their own formats;
 // event / issue / url / reason are for self-built receivers).
 // The webhook URL is a credential: read only from .sandcastle/.env (falling back to the same-named host environment variable
 // when empty there); it never goes into logs, warnings or comments. A failed send only warns one line and never rejects —

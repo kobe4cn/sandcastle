@@ -278,8 +278,8 @@ const zh = {
 
   // —— 主动通知（webhook，notify.ts） —— / Proactive notifications (webhook, notify.ts)
   /**
-   * webhook 消息的 text：一行给人看，兼容只认 text 的接收端（Slack / 飞书）。
-   * The webhook message's text: one human-readable line, compatible with receivers that only read text (Slack / Lark).
+   * webhook 消息的 text：一行给人看，Slack incoming webhook 直接认（飞书、企业微信、钉钉的群机器人要各自的格式，不兼容）。
+   * The webhook message's text: one human-readable line, accepted as-is by a Slack incoming webhook (Lark, WeCom and DingTalk bots need their own formats and are not compatible).
    */
   notifyText: (event: NotifyEvent, issue: string | undefined, url: string | undefined, reason: string) =>
     notifyLine(zhEventNames[event], issue, url, reason, "Sandcastle："),
@@ -498,8 +498,8 @@ const en: Messages = {
 
   // —— 主动通知（webhook，notify.ts） —— / Proactive notifications (webhook, notify.ts)
   /**
-   * webhook 消息的 text：一行给人看，兼容只认 text 的接收端（Slack / 飞书）。
-   * The webhook message's text: one human-readable line, compatible with receivers that only read text (Slack / Lark).
+   * webhook 消息的 text：一行给人看，Slack incoming webhook 直接认（飞书、企业微信、钉钉的群机器人要各自的格式，不兼容）。
+   * The webhook message's text: one human-readable line, accepted as-is by a Slack incoming webhook (Lark, WeCom and DingTalk bots need their own formats and are not compatible).
    */
   notifyText: (event, issue, url, reason) => notifyLine(enEventNames[event], issue, url, reason, "Sandcastle: "),
   notifyLimited: (phase, profiles, until) =>
