@@ -178,6 +178,21 @@ export interface ProjectProfile {
    */
   preflight?: { minFreeGb?: number };
 
+  /**
+   * 花费上限（#61 决定 1、6）：ticketTokens 是一张票累计 token 的上限，口径是输入、缓存写、缓存读、输出四项相加
+   * （usage.jsonl 里这条票的全部记录，各阶段、各次运行、撞限额的 limited 记录都算；有 models 用各模型合计，没有用主行——
+     第三方档案同样计入，所以上限要按含缓存读的口径设）。开每个会话之前检查（implement、review、rebase、re-review、prep 都算），
+     已用 ≥ 上限就不开这个会话：票打 `sandcastle:stuck`，评论写明已用多少、上限多少。会话中途超出不打断，下一个会话才停。
+     不配就是不限。
+   * Spend caps (#61 decisions 1 and 6): ticketTokens caps one ticket's cumulative tokens, counted as input + cache write +
+     cache read + output summed (every record of this ticket in usage.jsonl — all phases, all runs, limited records included;
+     with models, the per-model totals; without, the main line — third-party profiles count too, so set the cap with cache
+     reads in mind). Checked before each session starts (implement, review, rebase, re-review and prep alike): once the spend
+     reaches the cap no further session opens — the ticket is labelled `sandcastle:stuck` with a comment naming the spend and
+     the cap. A session already running is never cut short; the next one just doesn't start. Omit for no cap.
+   */
+  spendLimit?: { ticketTokens?: number };
+
   /** 标签名。默认见 DEFAULT_LABELS。 / Label names. Defaults in DEFAULT_LABELS. */
   labels?: Partial<Labels>;
 
@@ -338,6 +353,8 @@ export type Project = Required<
   trustedAuthors: string[];
   notify: { env: string };
   preflight: { minFreeGb: number };
+  /** 花费上限：ticketTokens 为 undefined 时单票不限（#61 之一）。 / Spend caps: a ticket is uncapped when ticketTokens is undefined (#61 part 1). */
+  spendLimit: { ticketTokens: number | undefined };
   texts: Required<NonNullable<ProjectProfile["texts"]>>;
 };
 
@@ -374,6 +391,7 @@ export function resolveProject(p: ProjectProfile): Project {
     trustedAuthors: p.trustedAuthors ?? [],
     notify: { env: p.notify?.env || "SANDPIPE_NOTIFY_WEBHOOK" },
     preflight: { minFreeGb: p.preflight?.minFreeGb ?? DEFAULT_MIN_FREE_GB },
+    spendLimit: { ticketTokens: p.spendLimit?.ticketTokens },
     texts: { ...defaultTexts(p.language), ...p.texts },
   };
 }

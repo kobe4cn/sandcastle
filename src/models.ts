@@ -819,7 +819,8 @@ export function readUsage(issue: string, phase?: Phase): UsageRecord[] {
   return records;
 }
 
-const k = (n: number) => `${(n / 1000).toFixed(1)}k`;
+/** token 数格式化成「123.4k」，PR 用量表和花费上限的评论共用这个写法。 / Formats a token count as "123.4k", shared by the PR usage table and the spend-cap comment. */
+export const formatK = (n: number) => `${(n / 1000).toFixed(1)}k`;
 
 /**
  * PR 正文里的用量表：每次 run 一行，表里不显示费用（usage.jsonl 的 models 只给 Claude 档案记 costUSD）；
@@ -836,11 +837,11 @@ export function usageTable(records: readonly UsageRecord[], m: Messages = messag
   for (const r of records) {
     const cells = r.limited
       ? [m.usageLimited, "—", "—", "—", "—", "—"]
-      : [r.sessions, k(r.input), k(r.cacheCreation), k(r.cacheRead), k(r.output), k(r.peak)];
+      : [r.sessions, formatK(r.input), formatK(r.cacheCreation), formatK(r.cacheRead), formatK(r.output), formatK(r.peak)];
     rows.push(`| ${[r.run, m.usageProfile(r.profile, r.model), ...cells].join(" | ")} |`);
     const models = r.models ?? [];
     if (models.length >= 2) {
-      for (const mu of models) rows.push(`| | ↳ ${mu.model} | — | ${k(mu.input)} | ${k(mu.cacheCreation)} | ${k(mu.cacheRead)} | ${k(mu.output)} | — |`);
+      for (const mu of models) rows.push(`| | ↳ ${mu.model} | — | ${formatK(mu.input)} | ${formatK(mu.cacheCreation)} | ${formatK(mu.cacheRead)} | ${formatK(mu.output)} | — |`);
     }
   }
   return [m.usageHeader, "|---|---|---|---|---|---|---|---|", ...rows].join("\n");

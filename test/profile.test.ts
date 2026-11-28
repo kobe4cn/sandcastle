@@ -21,6 +21,7 @@ describe("resolveProject", () => {
     expect(p.integrity).toBeUndefined();
     expect(p.mergeRequires).toEqual({ checks: "all", timeoutMinutes: 30 });
     expect(p.browser).toEqual({ pagePaths: [] });
+    expect(p.spendLimit.ticketTokens).toBeUndefined();
     expect(p.texts.revisePrompt({ issueId: "1", branch: "b", title: "t", viewIssue: "gh issue view 1", items: "- x" })).toContain("gh issue view 1");
   });
 
@@ -49,6 +50,11 @@ describe("resolveProject", () => {
     expect(resolveProject(minimal).notify).toEqual({ env: "SANDPIPE_NOTIFY_WEBHOOK" });
     expect(resolveProject({ ...minimal, notify: { env: "MY_WEBHOOK" } }).notify).toEqual({ env: "MY_WEBHOOK" });
     expect(resolveProject({ ...minimal, notify: {} }).notify).toEqual({ env: "SANDPIPE_NOTIFY_WEBHOOK" });
+  });
+
+  it("spendLimit 不写时 ticketTokens 不限（undefined）、写了原样带出", () => {
+    expect(resolveProject(minimal).spendLimit).toEqual({ ticketTokens: undefined });
+    expect(resolveProject({ ...minimal, spendLimit: { ticketTokens: 2_000_000 } }).spendLimit).toEqual({ ticketTokens: 2_000_000 });
   });
 
   it("needsTriage / trusted 标签默认值，只覆盖一个时另一个取默认值", () => {

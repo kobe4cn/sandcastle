@@ -173,3 +173,22 @@ describe("authExhausted（#142 打回后的上限）", () => {
     expect(en).toContain("`sandcastle:stuck`");
   });
 });
+
+describe("ticketBudget（#151 单票花费上限）", () => {
+  it("中文写明已用、上限，并提示先调大上限再去掉 stuck", () => {
+    const zh = messages("zh").ticketBudget("250.0k", "200.0k", "`sandcastle:stuck`");
+    expect(zh).toContain("已经用掉 250.0k 个 token");
+    expect(zh).toContain("上限 200.0k");
+    expect(zh).toContain("调大 `spendLimit.ticketTokens` 再去掉 `sandcastle:stuck`");
+    expect(zh).toContain("下一个会话会马上再次停下");
+  });
+
+  it("英文写明已用、上限，并提示先调大上限再去掉 stuck", () => {
+    const en = messages("en").ticketBudget("250.0k", "200.0k", "`sandcastle:stuck`");
+    expect(en).toContain("already spent 250.0k tokens");
+    expect(en).toContain("cap of 200.0k");
+    expect(en).toContain("Raise `spendLimit.ticketTokens`");
+    expect(en).toContain("before removing `sandcastle:stuck`");
+    expect(en).toContain("stops again right away");
+  });
+});
