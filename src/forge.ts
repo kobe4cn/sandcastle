@@ -99,10 +99,11 @@ export interface Forge {
   issueState(id: string): IssueState;
   issueUpdatedAt(id: string): string;
   /**
-   * 票在平台上的链接；可选：没实现时通知消息（notify.ts）只带 `#N`。
-   * The ticket's URL on the host; optional: without it a notification message (notify.ts) carries only `#N`.
+   * 票在平台上的链接；可选：没实现或拿不到仓库信息时返回 undefined（不抛错），通知消息（notify.ts）只带 `#N`。
+   * The ticket's URL on the host; optional: unimplemented or missing repository info returns undefined (never throws), and a
+   * notification message (notify.ts) carries only `#N`.
    */
-  issueUrl?(id: string): string;
+  issueUrl?(id: string): string | undefined;
   /**
    * 全部评论（正文与作者），按时间先后。调用方按作者过滤，只认可信作者写的标记（#80）。
    * All comments (body and author), oldest first. Callers filter by author and honour markers only from trusted authors (#80).
