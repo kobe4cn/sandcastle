@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 通知发送失败时（fetch 抛错）警告写明错误类型，方便事后排查：超时（`AbortSignal.timeout` 的 reason，`TimeoutError`）、cause 上的 `code`（如 `ECONNRESET`、`ENOTFOUND`、`ERR_INVALID_URL`；cause 是 AggregateError 时取它的 `code` 或 `errors[0].code`），都取不到时退回错误文本——文本先抹掉 webhook URL 再截到 200 字，URL 仍不进任何输出；非 2xx 的警告照旧只带 HTTP 状态码，重试行为不变（见 #146 的另一张子票）（`src/notify.ts` 新增 `failKind`；docs/internal 同步）（closes #147）
+
 - 会话中途撞上认证失效（401、invalid api key、token 过期、要 /login、`authentication_error`，抛出来的整段认；作为最后输出、不带完成信号返回的只认很短的输出——整段 trim 后不超过 500 字且某一行以报错开头，句子中间、反引号里引用到的不算，避免 review / prep 的结论里引用关键词被误判）不再当票失败：改抛 `AgentAuthError`，不换档案、不记限额、不消耗 implement 轮次、不打 `sandcastle:stuck`，也不按临时错误重试；终端写明原因和处理方法（Claude 档案用 `claude setup-token` 生成新 token 填进 `.sandcastle/.env`，别家档案换 `.env` 里的 key），主循环把它并进每轮预检、暂停开新会话，凭据换过（`.sandcastle/.env` 的 sha256 指纹变化，只比较不打印）或满 30 分钟后在原分支上自动重跑，prep 不写重试标记、下次调度重新来；凭据一直没换时同一张票最多撞 3 次（含第一次）：到上限不再等，按普通失败打 `sandcastle:stuck`、在票上评论写明并照常发 stuck 通知，同时清掉暂停标志，别的票照常调度，凭据换过后计数重新数；prep 也有同样的上限：同一张票的 prep 撞满 3 次就清掉暂停标志、按 prep 的普通失败处理（写重试标记，票更新前不再 prep）（`src/models.ts` 新增 `AGENT_AUTH_PATTERN` / `credentialsFingerprint`，`src/lifecycle.ts` 新增 `AgentAuthError` / `agentAuthReason` / `authRecovered` / `untilAuthRecovered`（`onCap` / `maxAuthHits`）/ `nextAuthHits` / `authHitCapped`；docs/internal 同步）（closes #142）
 
 - `sandpipe run` 每轮调度前预检 gh 登录、被用到的 Claude 档案的凭据和工作目录 / 容器存储的剩余空间（`preflight.minFreeGb`）：有失败时这一轮不开任何新会话（prep / implement 都不开），不打 `sandcastle:stuck`、也不算空转，终端写明每条原因和处理方法（和上一轮相同就只打一行「预检仍未通过」不刷屏），已在跑的票不受影响，下一轮再查，从失败转为通过时打一行「预检通过，继续调度」；磁盘「量不到」不挡运行，只在启动时警告一次（`src/preflight.ts` 新增 `preflightProblems`，`src/models.ts` 新增 `missingCredentials`；docs/config 中英、docs/internal、DEVELOPMENT.md 同步）（closes #141）

@@ -1,13 +1,13 @@
 // 主动通知（可选）：配了 notify 时，票 stuck、留 PR 给人等事件向 webhook POST 一条 JSON（text 给人看，
 // Slack incoming webhook 直接认，飞书等群机器人要各自的格式、不兼容；event / issue / url / reason 给自建接收端）。
 // webhook URL 是凭据：只从 .sandcastle/.env（值为空时取宿主机同名环境变量）读，不进日志、警告、评论；
-// 发送失败只打一行警告，从不 reject——通知不影响主流程。
+// 发送失败只打一行警告（抛错时写明错误类型），从不 reject——通知不影响主流程。
 // Proactive notifications (optional): with notify configured, events like a stuck ticket or a PR left for a human POST one JSON
 // message to a webhook (text is for humans, accepted as-is by a Slack incoming webhook; Lark-style bots need their own formats;
 // event / issue / url / reason are for self-built receivers).
 // The webhook URL is a credential: read only from .sandcastle/.env (falling back to the same-named host environment variable
-// when empty there); it never goes into logs, warnings or comments. A failed send only warns one line and never rejects —
-// notifications don't affect the main flow.
+// when empty there); it never goes into logs, warnings or comments. A failed send only warns one line (naming the error
+// kind when fetch throws) and never rejects — notifications don't affect the main flow.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -45,10 +45,37 @@ export function readNotifyUrl(envKey: string, cwd = process.cwd()): string | und
 }
 
 /**
- * 建发送器：POST 一条 JSON，超时 10 秒；任何错误（网络、非 2xx）只 warn 一行且不带 URL，从不 reject。
+ * 认 fetch 抛错的错误类型，写进发送失败的警告：超时（AbortSignal.timeout 的 reason，name 为 TimeoutError，手动 abort 是 AbortError）、
+ * cause 上的 code（ECONNRESET、ENOTFOUND、ERR_INVALID_URL…；cause 是 AggregateError 且自己没带 code 时取 errors[0].code），
+ * 都取不到退回错误文本——先抹掉 URL 再截到 200 字，凭据不进任何输出。
+ * Identifies the kind of a fetch failure for the send-failed warning: timeout (AbortSignal.timeout's reason, named TimeoutError;
+ * a manual abort is AbortError), the code on cause (ECONNRESET, ENOTFOUND, ERR_INVALID_URL…; an AggregateError cause without
+ * its own code falls back to errors[0].code), or the error message as a last resort — URL scrubbed first and truncated
+ * to 200 chars, so the credential never reaches any output.
+ */
+function failKind(e: unknown, url: string): string {
+  // 抹 URL 的写法照 doctor.ts（局部闭包，不为此 import doctor / preflight）。 / URL scrubbing copied from doctor.ts (a local closure; not worth importing doctor / preflight for).
+  const scrub = (text: string) => (url ? text.replaceAll(url, "…") : text);
+  const prop = (v: unknown, key: string): unknown => (typeof v === "object" && v !== null ? (v as Record<string, unknown>)[key] : undefined);
+  const name = prop(e, "name");
+  if (name === "TimeoutError" || name === "AbortError") return name;
+  const cause = prop(e, "cause");
+  const causeCode = prop(cause, "code");
+  if (typeof causeCode === "string") return causeCode;
+  if (cause instanceof AggregateError) {
+    const nested = prop(cause.errors[0], "code");
+    if (typeof nested === "string") return nested;
+  }
+  const message = e instanceof Error ? e.message : String(e);
+  return scrub(message).slice(0, 200);
+}
+
+/**
+ * 建发送器：POST 一条 JSON，超时 10 秒；任何错误（网络、非 2xx）只 warn 一行且不带 URL，从不 reject，抛错时写明错误类型。
  * 写法照 version.ts 的 latestVersion（fetcher 注入，测试不连网）。
  * Builds the sender: POSTs one JSON message with a 10-second timeout; any error (network, non-2xx) only warns
- * one line without the URL and never rejects. Follows latestVersion in version.ts (injected fetcher, tests stay offline).
+ * one line without the URL and never rejects, naming the error kind when fetch throws. Follows latestVersion in version.ts
+ * (injected fetcher, tests stay offline).
  */
 export function createNotifier(opts: { url?: string; language: Language; fetcher?: typeof fetch; warn?: (line: string) => void }): Notifier {
   const warn = opts.warn ?? (() => {});
@@ -68,8 +95,9 @@ export function createNotifier(opts: { url?: string; language: Language; fetcher
         signal: AbortSignal.timeout(10_000),
       });
       if (!res.ok) warn(t(`  ⚠ 通知发送失败（HTTP ${res.status}），不影响运行`, `  ⚠ Notify webhook failed (HTTP ${res.status}); the run continues`));
-    } catch {
-      warn(t("  ⚠ 通知发送失败，不影响运行", "  ⚠ Notify webhook failed; the run continues"));
+    } catch (e) {
+      const kind = failKind(e, url);
+      warn(t(`  ⚠ 通知发送失败（${kind}），不影响运行`, `  ⚠ Notify webhook failed (${kind}); the run continues`));
     }
   };
 }
