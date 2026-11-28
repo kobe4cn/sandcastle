@@ -1,16 +1,18 @@
 // GitLab：用宿主机上已登录的 glab CLI；REST 调用一律走 `glab api`，路径里的 `:id` 是 glab 的项目占位符
 // （按当前目录的 remote 解析项目，自建实例的 host 也由 remote 推出）；分页列表加 `--output ndjson` 按行解析
-// （glab 的 --paginate 不合并 json 输出，见下方 list 的注释）。这一张（#171）只实现登录检查、
-// 标签、issue 与评论、repoPermission、closingRef；MR / 审查 / 附件 / agentGuide 留给后面的子票，先抛 not implemented。
+// （glab 的 --paginate 不合并 json 输出，见下方 list 的注释）。#171 实现登录检查、标签、issue 与评论、
+// repoPermission、closingRef；#172 补上 MR（查找 / 新建 / 读写描述 / 评论 / 合并 / 检查 / 能否合并）；
+// 附件（截图）和提示词留给后面的子票，先抛 not implemented。
 // test/forge-gitlab.test.ts 锁住了每个方法的 argv。
 // GitLab: uses the glab CLI logged in on the host; every REST call goes through `glab api`, where `:id` in the path is glab's
 // project placeholder (resolved from the current directory's remote, which also gives the self-hosted host); paginated lists
 // add `--output ndjson` and parse per line (glab's --paginate doesn't merge the json output — see list's comment below).
-// This ticket (#171) covers only the login check, labels, issues with comments, repoPermission and closingRef; MRs / reviews /
-// attachments / agentGuide are left to later sub-tickets and throw not implemented for now.
+// #171 covers the login check, labels, issues with comments, repoPermission and closingRef; #172 adds MRs (lookup / creation /
+// description read-write / comments / merging / checks / mergeability); attachments (screenshots) and prompts are left to
+// later sub-tickets and throw not implemented for now.
 // test/forge-gitlab.test.ts pins every method's argv.
 
-import type { Forge, ForgeIssue } from "../forge.ts";
+import type { Forge, ForgeIssue, ForgePr, MergeMethod, PrCheck } from "../forge.ts";
 import { sh } from "../shell.ts";
 import { t } from "../term.ts";
 import type { Author } from "../trust.ts";
@@ -31,6 +33,18 @@ type GlabIssue = {
   state: string;
   web_url?: string;
   author?: { username?: string } | null;
+};
+
+/** GitLab MR 在 REST 里的形状，只取用到的字段（状态是 opened / merged …，源分支是 source_branch）。 / A GitLab MR as REST returns it, only the fields used (state is opened / merged …, the source branch is source_branch). */
+type GlabMr = {
+  iid: number;
+  state: string;
+  source_branch: string;
+  source_project_id?: number;
+  target_project_id?: number;
+  description?: string | null;
+  has_conflicts?: boolean;
+  detailed_merge_status?: string;
 };
 
 /**
@@ -62,12 +76,36 @@ const permissionOf = (level: number): string => {
   return "read";
 };
 
+/** GitLab pipeline job 在 REST 里的形状，只取用到的字段。 / A GitLab pipeline job as REST returns it, only the fields used. */
+type GlabJob = { name: string; status: string; allow_failure?: boolean; web_url?: string };
+
+/**
+ * job 状态 → 检查状态：success / skipped 通过，failed / canceled 失败，其余还在跑。manual 要人手动触发：
+ * 挡 pipeline 的（allow_failure 为假）没跑之前不算过（fail-closed），不挡的（allow_failure 为真）不影响结果——
+ * 两种情况都和 GitLab 自己「pipeline 过没过」的判断一致（本票 decided 评论选项 C）。
+ * job status → check state: success / skipped pass, failed / canceled fail, the rest still running. A manual job needs a
+ * human to start it: one that blocks the pipeline (allow_failure false) doesn't count as passed before it runs (fail-closed),
+ * one that doesn't block (allow_failure true) leaves the result alone — both match GitLab's own "did the pipeline pass"
+ * (this ticket's decided comment, option C).
+ */
+const jobState = (job: GlabJob): PrCheck["state"] => {
+  if (job.status === "success" || job.status === "skipped") return "pass";
+  if (job.status === "failed" || job.status === "canceled") return "fail";
+  if (job.status === "manual") return job.allow_failure ? "pass" : "pending";
+  return "pending";
+};
+
 /** 错误的第一行非空文本（stderr 优先），拼进给用户看的说明。 / The error's first non-empty line (stderr first), folded into user-facing messages. */
 const errorLine = (e: unknown) => String((e as { stderr?: unknown }).stderr || (e as Error).message).split("\n").find(Boolean) ?? "";
 
-/** 本票没做的 MR / 提示词方法，留给后面的子票。 / MR / prompt methods not in this ticket; left to later sub-tickets. */
+/** 还没做的提示词方法，留给后面的子票。 / Prompt methods not done yet; left to later sub-tickets. */
 const todo = (name: string): never => {
   throw new Error(`gitlabForge.${name}: not implemented`);
+};
+
+/** 附件（截图上传）还没做：带附件的调用先抛错，空附件照常走。 / Attachments (screenshot uploads) aren't done yet: calls with attachments throw for now; empty ones go through. */
+const noAttachments = (attachments: string[] | undefined): void => {
+  if (attachments?.length) throw new Error("gitlabForge: attachments not implemented");
 };
 
 export function gitlabForge(glab: GlabRunner = (args, env) => sh("glab", args, undefined, env)): Forge {
@@ -77,6 +115,7 @@ export function gitlabForge(glab: GlabRunner = (args, env) => sh("glab", args, u
   // cache too, with no retry and no throw — notifying is incidental, and issueUrl must never throw into the pipeline (#135).
   const urls = new Map<string, string | undefined>();
   const getIssue = (id: string): GlabIssue => JSON.parse(glab(["api", `projects/:id/issues/${id}`])) as GlabIssue;
+  const getMr = (id: string): GlabMr => JSON.parse(glab(["api", `projects/:id/merge_requests/${id}`])) as GlabMr;
   /**
    * 带分页的列表。glab api --paginate 实测（1.133.0）不合并 json 输出：几页的数组首尾相接打印（[...][...][...]），
    * JSON.parse 撞上第一个数组后面的字符就炸；加 --output ndjson 改成每行一个对象，按行解析、跳过空行（页与页之间
@@ -271,14 +310,100 @@ export function gitlabForge(glab: GlabRunner = (args, env) => sh("glab", args, u
     },
 
     closingRef: (issueId) => `Closes #${issueId}`,
-    linkedPrIds: () => todo("linkedPrIds"),
-    viewPr: () => todo("viewPr"),
-    findPr: () => todo("findPr"),
-    createPr: () => todo("createPr"),
-    prBody: () => todo("prBody"),
-    editPrBody: () => todo("editPrBody"),
-    commentPr: () => todo("commentPr"),
-    mergePr: () => todo("mergePr"),
+    linkedPrIds(issueId) {
+      return list<{ iid: number }>(`projects/:id/issues/${issueId}/closed_by`).map((mr) => String(mr.iid));
+    },
+    viewPr(ref) {
+      try {
+        // 编号直接读；分支名（sandcastle/issue-n 带斜杠，必须编码）从 state=all 里挑最新的一个
+        // Read by number directly; a branch name (sandcastle/issue-n has a slash and must be encoded) picks the newest from state=all
+        const mr = /^\d+$/.test(ref)
+          ? getMr(ref)
+          : (JSON.parse(
+              glab(["api", `projects/:id/merge_requests?source_branch=${encodeURIComponent(ref)}&state=all&order_by=created_at&sort=desc&per_page=1`]),
+            ) as GlabMr[])[0];
+        if (!mr) return null;
+        // system note（改标题、打标签、approved 这些流水账）不是人写的评论，去掉；GitLab 没有 Request changes，
+        // 打回只认 /sandcastle 评论（#1 决定），reviews 恒为空
+        // System notes (title edits, label changes, approved and the like) aren't human comments and are dropped; GitLab has
+        // no Request changes, so send-backs honour only /sandcastle comments (#1 decision) and reviews stays empty
+        const notes = list<{ body: string | null; system?: boolean; created_at: string; author?: { username?: string } | null }>(
+          `projects/:id/merge_requests/${mr.iid}/notes?sort=asc&per_page=100`,
+        );
+        const commits = list<{ committed_date?: string | null }>(`projects/:id/merge_requests/${mr.iid}/commits`);
+        return {
+          id: String(mr.iid),
+          open: mr.state === "opened",
+          branch: mr.source_branch,
+          fromFork: mr.source_project_id !== mr.target_project_id,
+          reviews: [],
+          comments: notes
+            .filter((n) => !n.system)
+            .map((n) => ({ body: n.body ?? "", at: new Date(n.created_at).toISOString(), author: toAuthor(n.author?.username) })),
+          // committed_date 可能带时区偏移（+08:00），各自归一成 UTC ISO 再取最大，编排器按字符串比较时间
+          // committed_date may carry a zone offset (+08:00); normalize each to UTC ISO before taking the max, since the pipeline compares times as strings
+          lastCommitAt:
+            commits
+              .map((c) => (c.committed_date ? new Date(c.committed_date).toISOString() : ""))
+              .sort()
+              .at(-1) ?? "",
+        } satisfies ForgePr;
+      } catch {
+        return null;
+      }
+    },
+    findPr(branch, state) {
+      const found = JSON.parse(
+        glab(["api", `projects/:id/merge_requests?source_branch=${encodeURIComponent(branch)}&state=${state === "open" ? "opened" : "merged"}&per_page=1`]),
+      ) as { iid: number }[];
+      return found[0] ? String(found[0].iid) : undefined;
+    },
+    createPr({ base, head, title, body, attachments }) {
+      noAttachments(attachments);
+      const created = JSON.parse(
+        glab([
+          "api", "--method", "POST", "projects/:id/merge_requests",
+          "-f", `source_branch=${head}`, "-f", `target_branch=${base}`, "-f", `title=${title}`, "-f", `description=${body}`,
+        ]),
+      ) as { iid: number };
+      return String(created.iid);
+    },
+    prBody(id) {
+      return getMr(id).description ?? "";
+    },
+    editPrBody(id, body, attachments = []) {
+      noAttachments(attachments);
+      glab(["api", "--method", "PUT", `projects/:id/merge_requests/${id}`, "-f", `description=${body}`]);
+    },
+    commentPr(id, body, attachments = []) {
+      noAttachments(attachments);
+      glab(["api", "--method", "POST", `projects/:id/merge_requests/${id}/notes`, "-f", `body=${body}`]);
+    },
+    mergePr(id, method: MergeMethod) {
+      // 只控制是否 squash：merge / rebase 分别用哪种合并方式（merge commit / 半线性 / fast-forward）由 GitLab
+      // 项目设置决定。不调 PUT …/rebase（异步）、不带 merge_when_pipeline_succeeds：重试和兜底在 merge-flow.ts，
+      // rebase 补救本来就在沙箱里本地做
+      // Only squash is decided here: which merge style merge / rebase actually use (merge commit / semi-linear /
+      // fast-forward) is the GitLab project setting. No PUT …/rebase (asynchronous) and no merge_when_pipeline_succeeds:
+      // retries and fallbacks live in merge-flow.ts, and rebase recovery happens locally in the sandbox anyway
+      glab(["api", "--method", "PUT", `projects/:id/merge_requests/${id}/merge`, "-f", `squash=${method === "squash"}`]);
+    },
+    prChecks(id, requiredOnly) {
+      // GitLab 没有「分支保护要求的检查」这一说：requiredOnly 时去掉 allow_failure 的 job（不挡 pipeline 的不算数）
+      // GitLab has no "checks required by branch protection": with requiredOnly, allow_failure jobs are dropped (they don't block the pipeline)
+      const pipelines = JSON.parse(glab(["api", `projects/:id/merge_requests/${id}/pipelines?per_page=1`])) as { id: number }[];
+      const latest = pipelines[0];
+      if (!latest) return [];
+      return list<GlabJob>(`projects/:id/pipelines/${latest.id}/jobs`)
+        .filter((job) => !(requiredOnly && job.allow_failure))
+        .map((job): PrCheck => ({ name: job.name, state: jobState(job), ...(job.web_url ? { link: job.web_url } : {}) }));
+    },
+    prMergeable(id) {
+      const mr = getMr(id);
+      if (mr.has_conflicts || mr.detailed_merge_status === "conflict") return "conflicting";
+      if (["unchecked", "checking", "preparing", "approvals_syncing"].includes(mr.detailed_merge_status ?? "")) return "unknown";
+      return "clean";
+    },
     viewIssueCommand: () => todo("viewIssueCommand"),
     agentGuide: () => todo("agentGuide"),
   };
