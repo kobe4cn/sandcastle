@@ -101,6 +101,7 @@ onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-
 | `language` | `"zh"` | issue、PR、评论用的语言，`"zh"` 或 `"en"`：脚本写的固定文字（PR 正文、评论、自动开的票）和 agent 写的内容都跟着变，验收说明的三个小标题也按语言检查。终端输出也跟着变（设 `SANDPIPE_LANG=zh\|en` 可以单独指定；没有项目配置时看 `LANG`）。提交信息的语言看 PROJECT.md「提交」一节。onboard 取 `--lang`，没给时按最近的提交信息判断，提交少于 5 条时按项目文档的主要语言（PROJECT.md 草稿会注明是推断的） |
 | `maxParallel` | 2 | 同时实现的票数，上限看测试依赖的服务和机器负载 |
 | `remote` / `baseBranch` | `origin` / `main` | |
+| `forge` | `githubForge()` | 流水线对接托管平台的 forge。远端是 GitLab 时 onboard 生成 `gitlabForge()`：`.env` 里的 token 是 `GITLAB_TOKEN`——个人或项目访问令牌，要 `api` scope、对项目至少 Developer |
 | `mergeMethod` | `rebase` | |
 | `mainCheckEvery` | 4 | 按依赖选测试的票每合并几张，对 main 跑一次完整测试 |
 | `implementMaxSessions` | 3 | 一张票最多开几次全新的 implement 会话 |

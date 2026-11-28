@@ -101,6 +101,7 @@ When the project has Playwright e2e (onboard detects a `playwright.config.{ts,js
 | `language` | `"zh"` | Language for issues, PRs and comments, `"zh"` or `"en"`: the script's fixed texts (PR bodies, comments, auto-opened tickets) and what the agent writes follow it, and the three acceptance-notes headings are checked in that language. The terminal output follows it too (set `SANDPIPE_LANG=zh\|en` to override; without a project config it follows `LANG`). Commit message language comes from the Commits section of PROJECT.md. onboard picks it from `--lang`, or else from the recent commit messages; with fewer than 5 commits, from the main language of the project docs (the PROJECT.md draft notes that it was inferred) |
 | `maxParallel` | 2 | How many tickets are implemented at once; the limit depends on the services the tests use and the machine load |
 | `remote` / `baseBranch` | `origin` / `main` | |
+| `forge` | `githubForge()` | The forge that talks to the hosting platform. When the remote is GitLab, onboard generates `gitlabForge()`: the token in `.env` is `GITLAB_TOKEN` — a personal or project access token with the `api` scope and at least Developer access to the project |
 | `mergeMethod` | `rebase` | |
 | `mainCheckEvery` | 4 | After every this many merged tickets whose gate selected tests by dependency, run the full suite once on main |
 | `implementMaxSessions` | 3 | Maximum fresh implement sessions per ticket |

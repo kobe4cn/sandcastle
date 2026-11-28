@@ -18,7 +18,7 @@ Run every command in the target project's root; if the config lives elsewhere, f
     - With a web UI, wire browser e2e into the merge gate: install `@playwright/test`, start the dev server inside the gate with Playwright's `webServer` config, add the e2e command to `gate.script`, and put the services it depends on into `gate.services`, following [Browser check in config](config.md#browser-check); without it `sandpipe doctor`'s "Browser e2e" check warns
   - `gate.script` is a gate you're willing to merge on; consider `integrity` if there are migrations
   - Keep the `autoMerge: false` and `maxParallel: 1` that onboard generated
-- [ ] `cp .sandcastle/.env.example .sandcastle/.env` and fill in the token the pipeline uses (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, or `ANTHROPIC_API_KEY`); the pipeline reads only this file, independent of your local Claude Code login
+- [ ] `cp .sandcastle/.env.example .sandcastle/.env` and fill in the token the pipeline uses (`CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`, or `ANTHROPIC_API_KEY`; on GitLab, `GITLAB_TOKEN` instead — a personal or project access token with the `api` scope, at least Developer on the project); the pipeline reads only this file, independent of your local Claude Code login
 - [ ] Run `sandpipe doctor --fix` to build the image (the first build takes a few minutes)
 
 ## 1. doctor passes
