@@ -908,6 +908,21 @@ describe("N1f 用量记录", () => {
     expect(m.readUsage("41", "prep")).toEqual([]);
   });
 
+  it("readAllUsage：返回全部票的全部记录，按文件顺序；坏行和写了一半的末行跳过", () => {
+    const p = profile();
+    const empty = { stdout: "", iterations: [] };
+    m.recordUsage("41", "prep", empty, "prep-41", p);
+    m.recordUsage("42", "implement", empty, "implement-42", p);
+    m.recordUsage("41", "review", empty, "review-41", p);
+    appendFileSync(".sandcastle/logs/usage.jsonl", `{broken\n"str"\nnull\n{"issue":41,"phase":"prep"}\n{"issue":"41","phase":"pr`);
+    expect(m.readAllUsage().map((r) => `${r.issue}/${r.run}`)).toEqual(["41/prep-41", "42/implement-42", "41/review-41"]);
+  });
+
+  it("readAllUsage：usage.jsonl 不存在时返回空数组", () => {
+    profile();
+    expect(m.readAllUsage()).toEqual([]);
+  });
+
   it("usageTable：每次 run 一行，token 以 k 计；没有记录时给提示；英文表头", () => {
     const rec = (run: string, peak: number) => ({
       at: "", issue: "#1", phase: "implement" as const, run, profile: "p1", model: "claude-opus-4-5",

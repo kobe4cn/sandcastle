@@ -184,14 +184,19 @@ export interface ProjectProfile {
      第三方档案同样计入，所以上限要按含缓存读的口径设）。开每个会话之前检查（implement、review、rebase、re-review、prep 都算），
      已用 ≥ 上限就不开这个会话：票打 `sandcastle:stuck`，评论写明已用多少、上限多少。会话中途超出不打断，下一个会话才停。
      不配就是不限。
+   * dayTokens（#152）是运行机器本地日期当天全部票合计的上限，口径同上：超限时暂停开新会话（不打 stuck，只在终端说明），
+     正在跑的会话做完为止，本地 0 点后自动恢复。不配就是不限。
    * Spend caps (#61 decisions 1 and 6): ticketTokens caps one ticket's cumulative tokens, counted as input + cache write +
      cache read + output summed (every record of this ticket in usage.jsonl — all phases, all runs, limited records included;
      with models, the per-model totals; without, the main line — third-party profiles count too, so set the cap with cache
      reads in mind). Checked before each session starts (implement, review, rebase, re-review and prep alike): once the spend
      reaches the cap no further session opens — the ticket is labelled `sandcastle:stuck` with a comment naming the spend and
      the cap. A session already running is never cut short; the next one just doesn't start. Omit for no cap.
+   * dayTokens (#152) caps one local day's total across every ticket on the running machine, counted the same way: over the
+     cap no new sessions open (no stuck label, only a terminal line), a session already running finishes, and it recovers on
+     its own after local midnight. Omit for no cap.
    */
-  spendLimit?: { ticketTokens?: number };
+  spendLimit?: { ticketTokens?: number; dayTokens?: number };
 
   /** 标签名。默认见 DEFAULT_LABELS。 / Label names. Defaults in DEFAULT_LABELS. */
   labels?: Partial<Labels>;
@@ -353,8 +358,8 @@ export type Project = Required<
   trustedAuthors: string[];
   notify: { env: string };
   preflight: { minFreeGb: number };
-  /** 花费上限：ticketTokens 为 undefined 时单票不限（#61 之一）。 / Spend caps: a ticket is uncapped when ticketTokens is undefined (#61 part 1). */
-  spendLimit: { ticketTokens: number | undefined };
+  /** 花费上限：ticketTokens 为 undefined 时单票不限（#61 之一），dayTokens 为 undefined 时当天不限（#152）。 / Spend caps: a ticket is uncapped when ticketTokens is undefined (#61 part 1), a day when dayTokens is undefined (#152). */
+  spendLimit: { ticketTokens: number | undefined; dayTokens: number | undefined };
   texts: Required<NonNullable<ProjectProfile["texts"]>>;
 };
 
@@ -391,7 +396,7 @@ export function resolveProject(p: ProjectProfile): Project {
     trustedAuthors: p.trustedAuthors ?? [],
     notify: { env: p.notify?.env || "SANDPIPE_NOTIFY_WEBHOOK" },
     preflight: { minFreeGb: p.preflight?.minFreeGb ?? DEFAULT_MIN_FREE_GB },
-    spendLimit: { ticketTokens: p.spendLimit?.ticketTokens },
+    spendLimit: { ticketTokens: p.spendLimit?.ticketTokens, dayTokens: p.spendLimit?.dayTokens },
     texts: { ...defaultTexts(p.language), ...p.texts },
   };
 }
