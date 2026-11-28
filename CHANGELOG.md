@@ -4,6 +4,8 @@
 
 - 花费上限之三：`sandpipe doctor` 多一项「花费上限」（Spend limits），只展示不检查（状态总是 ok，doctor 是否通过不随当天用量变）：列出单票上限 `spendLimit.ticketTokens`、当天上限 `spendLimit.dayTokens`（没配写「不限」/ unlimited），以及今日已用 token（按本地日期算 `usage.jsonl` 里当天全部票的记录，没有文件时是 0），配上限之前先在这里看一眼现在的用量；配置加载失败时没有这一项（`src/doctor.ts` 复用 `daySpend` / `readAllUsage` / `formatK` 新增这一项；docs/config 中英的 `spendLimit.*` 两行同步）（closes #153）
 
+- 日志轮转（一直运行的配套）：`.sandcastle/logs/` 里的 `.log` 文件（agent 会话日志、门槛日志、`errors.log`）和 `errors.log.1` 最后修改超过 14 天自动删除，`errors.log` 超过 10 MB 轮转为 `errors.log.1`（覆盖旧备份；报错走追加写，之后自动从空文件开始），守护进程长跑不再把日志目录堆到无限大；`usage.jsonl`（花费上限、prep 用量靠它整份读回）、`flaky.json`、`main-check.json`、`run.lock`、`onboard.md` 不碰。启动拿到运行锁之后和主循环每轮开头各清一次，清理出错只警告一行、不中断运行（新增 `src/log-rotate.ts`；DEVELOPMENT.md、docs/internal 同步）（closes #155）
+
 - 花费上限之二：新配置 `spendLimit.dayTokens`（可选，不配不限）给一天（运行机器的本地日期）全部票的合计 token 设上限，口径同 `ticketTokens`（输入 / 缓存写 / 缓存读 / 输出四项相加，全部记录、`limited` 和第三方档案都算）。已用 ≥ 上限时不再开新会话：主循环每轮预检加一条（固定文本，不打 stuck、不算空转，过本地 0 点自然恢复）；`runAgent` 开会话之前查到超限就在终端写明当天已用、上限和恢复时间，睡到下一个本地 0 点醒来重查再开（等的时候票占着空位）；prep 持宿主机锁、不睡——超限时本轮剩余 prep 跳过。正在跑的会话做完为止（`src/budget.ts` 新增 `daySpend` / `nextLocalMidnight`，`src/models.ts` 抽出 `readAllUsage`；docs/config 中英、docs/internal、DEVELOPMENT.md 同步）（closes #152）
 
 - 一直运行模式（#65 之一）：`maxIdlePolls` 配 `Infinity` 时不空闲退出，供 systemd / launchd 守护下长跑（空闲退出码 0 不会触发 `Restart=on-failure`，`Restart=always` 又会每约 2 小时退出重启一次、重新拿锁清孤儿容器）；空转进度文案在这个模式下只写次数（「空转 3 次」/「idle 3」），不再打「/Infinity」，有限值（含默认 12）的行为和文案不变。守护进程停服务发的 SIGTERM 走 Ctrl-C 同一路径收尾：打 interruptNotice、exit 事件里释放运行锁，退出码 143（`src/lifecycle.ts` 新增纯函数 `idleStop` / `idleProgress`，`onInterrupt` 同时接 SIGINT/SIGTERM；`src/main.ts` 空转分支改用它们；docs/config 中英、docs/internal 同步）（closes #154）

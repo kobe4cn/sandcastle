@@ -35,6 +35,7 @@
 | `src/project-doc.ts` | 解析 `.sandcastle/PROJECT.md`、渲染提示词 |
 | `prompts/` | 通用提示词模板（implement / review / prep / rebase / re-review）与共享片段（设计决定、编码规范、票的大小） |
 | `src/gate-progress.ts` | 门槛进度：输出实时写进 `.sandcastle/logs/gate-*.log`、心跳、用时文案 |
+| `src/log-rotate.ts` | 日志轮转（#155）：`.sandcastle/logs/` 的清理——删最后修改超过 14 天的 `.log`（会话日志、门槛日志、`errors.log`）和过期的 `errors.log.1`，`errors.log` 超过 10 MB 轮转为 `errors.log.1`（`usage.jsonl` 等数据文件不碰）；启动拿到锁后和主循环每轮各清一次，失败只警告一行 |
 | `src/shell.ts` | 宿主机命令（超时、远端重试） |
 | `src/guide.ts` `src/pr-body.ts` `src/models.ts` | 票正文解析、空转退出原因、PR 正文、模型档案 |
 | `src/limit-wait.ts` | 撞用量限额后等到重置、醒来重读 models.json 再重跑 |
