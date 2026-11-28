@@ -1,15 +1,15 @@
 // 运行的生命周期：运行锁、podman 检查、孤儿容器只删本仓库的、报错只取一行、Ctrl-C 提示、收尾兜底退出。
 // Run lifecycle: run lock, podman check, orphan cleanup limited to this repo, one-line errors, the Ctrl-C notice, the exit fallback.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { messages } from "../src/i18n.ts";
 import {
-  acquireRunLock, errorLine, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GateInfraError, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, missingImage, orphanContainers,
+  acquireRunLock, buildImageArgs, containerfileHash, errorLine, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GateInfraError, IMAGE_LABEL, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, missingImage, orphanContainers,
   parseContainers, podmanProblem, removeOrphanContainers, waitForPodman,
 } from "../src/lifecycle.ts";
 import type { TryResult } from "../src/shell.ts";
@@ -208,6 +208,34 @@ describe("镜像不存在的报错", () => {
     expect(imageExists("sandcastle:app", (_c, args) => (calls.push(args), { ok: true, out: "" }))).toBe(true);
     expect(calls[0]).toEqual(["image", "exists", "sandcastle:app"]);
     expect(imageExists("sandcastle:app", () => ({ ok: false, out: "" }))).toBe(false);
+  });
+});
+
+describe("镜像构建参数", () => {
+  it("containerfileHash 是文件字节的 sha256 十六进制；内容变了哈希也变", () => {
+    const file = join(dir, "Containerfile");
+    writeFileSync(file, "abc");
+    // sha256("abc")
+    expect(containerfileHash(file)).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    writeFileSync(file, "abd");
+    expect(containerfileHash(file)).not.toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+  });
+
+  it("buildImageArgs：-t 镜像、--label 带内容哈希、-f Containerfile、上下文目录是它所在目录", () => {
+    const file = join(dir, "app", ".sandcastle", "Containerfile");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "FROM node:22\n");
+    expect(buildImageArgs("sandcastle:app", file)).toEqual([
+      "build",
+      "-t",
+      "sandcastle:app",
+      "--label",
+      `${IMAGE_LABEL}=${containerfileHash(file)}`,
+      "-f",
+      file,
+      dirname(file),
+    ]);
+    expect(IMAGE_LABEL).toBe("sandpipe.containerfile");
   });
 });
 

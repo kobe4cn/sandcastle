@@ -134,4 +134,4 @@ onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-
 | `needs-triage` | 票的作者没有写权限，等有写权限的人确认（`labels.needsTriage`）。流水线第一次用到时自己建 |
 | `sandcastle:trusted` | 有写权限的人确认过这张票可以交给 Sandcastle（`labels.trusted`；打标签至少要 triage 权限）。流水线第一次用到时自己建 |
 
-`sandpipe doctor --fix` 会建好缺的标签。
+`sandpipe doctor --fix` 会建好缺的标签，并按 Containerfile 建好缺的镜像。

@@ -134,4 +134,4 @@ Which profile each phase uses lives in `.sandcastle/models.json` (an ordered pro
 | `needs-triage` | The ticket's author lacks write access; waiting for a maintainer to confirm it (`labels.needsTriage`). Created by the pipeline on first use |
 | `sandcastle:trusted` | A maintainer confirmed this ticket can go to Sandcastle (`labels.trusted`; adding a label needs at least triage access). Created by the pipeline on first use |
 
-`sandpipe doctor --fix` creates any missing labels.
+`sandpipe doctor --fix` creates any missing labels and builds the missing image from the Containerfile.
