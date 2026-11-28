@@ -123,7 +123,13 @@ export interface Forge {
   findPr(branch: string, state: "open" | "merged"): string | undefined;
   createPr(pr: { base: string; head: string; title: string; body: string; attachments: string[] }): string;
   prBody(id: string): string;
-  editPrBody(id: string, body: string): void;
+  /**
+   * attachments 是本地图片路径（同 commentPr）：正文里引用了附件路径的平台会把它改写成上传后的地址，
+   * 没引用的由实现决定放哪（GitHub 的 gh 追加到正文末尾）。
+   * attachments are local image paths (as with commentPr): when the body references an attachment's path, the host rewrites
+   * the reference to the uploaded asset's address; unreferenced ones are placed by the implementation (GitHub's gh appends them to the end of the body).
+   */
+  editPrBody(id: string, body: string, attachments?: string[]): void;
   /**
    * attachments 是本地图片路径；平台不支持附件时实现可以上传后把链接拼进正文。
    * attachments are local image paths; hosts without attachments may upload them and put the links in the body.

@@ -237,8 +237,8 @@ export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefin
     prBody(id) {
       return gh(["pr", "view", id, "--json", "body", "--jq", ".body"]);
     },
-    editPrBody(id, body) {
-      gh(["pr", "edit", id, "--body", body]);
+    editPrBody(id, body, attachments = []) {
+      gh(["pr", "edit", id, "--body", body, ...attachArgs(attachments)]);
     },
     commentPr(id, body, attachments = []) {
       gh(["pr", "comment", id, "--body", body, ...attachArgs(attachments)]);

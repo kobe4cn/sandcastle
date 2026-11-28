@@ -234,9 +234,10 @@ async function dropTestResources(runId: string) {
 }
 
 // 浏览器验收的产物：implementer 写在 worktree 的 .browser-check/（.gitignore 忽略），
-// 关沙箱前拷到宿主机，开 PR 时把截图用 `gh --attach` 附上、RESULT.md 写进正文。
+// 关沙箱前拷到宿主机，开 PR 时把截图用 `gh --attach` 上传（正文 Browser check 一节里引用了路径，gh 改写成上传地址、显示在那里）、RESULT.md 写进正文。
 // Browser check output: the implementer writes it to .browser-check/ in the worktree (ignored by .gitignore);
-// it's copied to the host before the sandbox closes, and when opening the PR screenshots are attached with `gh --attach` and RESULT.md goes into the body.
+// it's copied to the host before the sandbox closes, and when opening the PR screenshots are uploaded with `gh --attach`
+// (the Browser check section of the body references their paths, which gh rewrites to the uploaded addresses so they show there) and RESULT.md goes into the body.
 const BROWSER_DIR = ".browser-check";
 const SHOTS_ROOT = join(tmpdir(), "sandcastle-browser-check");
 
@@ -853,6 +854,7 @@ async function pushAndOpenPr(issue: Issue, notes: PrNotes, shots: string[]): Pro
       forge.editPrBody(
         existing,
         replaceGenerated(replaceSection(body, M.notesTitle, `## ${M.notesTitle}\n\n${notes.acceptance}`), notes.rest),
+        shots,
       );
       // 读回核对（编辑可能没保存上）：两边各取 Review 一节，去首尾空白、\r\n 归一后不一致就抛错，
       // 由落地的兜底打 stuck、评论原因，不会合并。文案避开 TRANSIENT 会匹配的词（不能被当临时错误重跑）。

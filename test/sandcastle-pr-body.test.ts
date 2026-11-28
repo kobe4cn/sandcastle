@@ -119,12 +119,22 @@ describe('Sandcastle PR 正文其余各节 restSections', () => {
 
 describe('Sandcastle PR 正文的 Browser check 一节 browserSection', () => {
   const b = { result: '- ✅ 列表正常（list.png）', shots: ['/tmp/list.png'] };
-  it('有 .browser-check/、票里有 Browser check、评审没给结论：写明没有逐条结论，再放 RESULT.md + 截图说明', () => {
+  it('有 .browser-check/、票里有 Browser check、评审没给结论：写明没有逐条结论，再放 RESULT.md + 截图说明 + 截图引用', () => {
     const zh = messages('zh');
     expect(browserSection(b, false)).toBe(
-      `### ${zh.browserReviewerVerdict}\n\n${zh.browserNoReviewerVerdict}\n\n### ${zh.browserSelfCheck}\n\n- ✅ 列表正常（list.png）\n\n截图 1 张，附在下面。`,
+      `### ${zh.browserReviewerVerdict}\n\n${zh.browserNoReviewerVerdict}\n\n### ${zh.browserSelfCheck}\n\n- ✅ 列表正常（list.png）\n\n截图 1 张，附在下面。\n\n![list.png](/tmp/list.png)`,
     );
     expect(zh.browserNoReviewerVerdict).toBe('评审没有给出逐条结论');
+  });
+  it('截图引用逐张输出、顺序与 shots 相同，路径与传给 --attach 的一致', () => {
+    const two = { ...b, shots: ['/tmp/s/a.png', '/tmp/s/b.png'] };
+    const lines = browserSection(two, false, messages('zh'))!.split('\n').filter((l) => l.startsWith('!['));
+    expect(lines).toEqual(['![a.png](/tmp/s/a.png)', '![b.png](/tmp/s/b.png)']);
+  });
+  it('没有截图时没有 ![ 引用行', () => {
+    const s = browserSection({ result: '- ✅ x', shots: [] }, false, messages('zh'))!;
+    expect(s).toContain('截图 0 张');
+    expect(s).not.toContain('![');
   });
   it('有评审结论：评审结论在前，implement 自评（RESULT.md）在后', () => {
     const zh = messages('zh');
@@ -253,6 +263,22 @@ describe('Sandcastle 每轮替换正文的工具生成节 replaceGenerated', () 
     })), first);
     expect(replaced).not.toContain('## Browser check');
     expect(replaced).toContain('## Review');
+  });
+
+  it('上一轮 Browser check 里的截图引用随整段替换掉，这一轮的引用顶上，不每轮堆积', () => {
+    const replaced = replaceGenerated(body.replace(first, restSections({
+      review: '第一轮摘要。',
+      browser: browserSection({ result: '- ✅ 列表正常（list.png）', shots: ['/tmp/old.png'] }, false, zh),
+      gate: '第一轮门槛。', budget: '第一轮预算。', usage: '第一轮用量。',
+    })), restSections({
+      review: '第二轮摘要。',
+      browser: browserSection({ result: '- ✅ 列表正常（list.png）', shots: ['/tmp/new.png'] }, false, zh),
+      gate: '第二轮门槛。', budget: '第二轮预算。', usage: '第二轮用量。',
+    }));
+    expect(replaced).toContain('![new.png](/tmp/new.png)');
+    expect(replaced).not.toContain('/tmp/old.png');
+    // Commits 之前只剩这一轮那一张（Commits 之后 gh 追加的旧截图行逐字保留，不算）。 / Before Commits only this round's one remains (gh-appended old screenshot lines after Commits stay verbatim and don't count).
+    expect(replaced.slice(0, replaced.indexOf('## Commits')).split('![').length).toBe(2);
   });
 
   it('正文里没有 `## Review` 时插在 `## Commits` 之前，不走 replaceSection 的「插在 Closes 后面」', () => {
