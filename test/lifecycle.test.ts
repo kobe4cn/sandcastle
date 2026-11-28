@@ -6,11 +6,11 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { messages } from "../src/i18n.ts";
 import {
-  acquireRunLock, buildImageArgs, containerfileHash, errorLine, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GateInfraError, IMAGE_LABEL, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, imageLabel, imageStaleWarning, missingImage, orphanContainers,
-  parseContainers, podmanProblem, removeOrphanContainers, waitForPodman,
+  acquireRunLock, AGENT_AUTH_PREFIX, AgentAuthError, agentAuthReason, authRecovered, buildImageArgs, containerfileHash, errorLine, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GateInfraError, IMAGE_LABEL, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, imageLabel, imageStaleWarning, missingImage, orphanContainers,
+  parseContainers, podmanProblem, removeOrphanContainers, untilAuthRecovered, waitForPodman,
 } from "../src/lifecycle.ts";
 import type { TryResult } from "../src/shell.ts";
 import { setTermLanguage } from "../src/term.ts";
@@ -195,6 +195,112 @@ describe("waitForPodman", () => {
     const sleeps: number[] = [];
     expect(await waitForPodman(() => ({ ok: false, out: "down" }), async (ms) => void sleeps.push(ms), 30_000, 15_000)).toBe(false);
     expect(sleeps).toEqual([15_000, 15_000]);
+  });
+});
+
+describe("会话认证失效（#62 之三）", () => {
+  it("AgentAuthError 的消息带固定前缀；agentAuthReason 取出那一行，包了一层 (FiberFailure) 的也认，别的报错返回 null", () => {
+    const e = new AgentAuthError("invalid API key · Please run /login");
+    expect(e.message).toBe(`${AGENT_AUTH_PREFIX} invalid API key · Please run /login`);
+    expect(e.name).toBe("AgentAuthError");
+    expect(AGENT_AUTH_PREFIX).toBe("agent auth:");
+    expect(agentAuthReason(e)).toBe("invalid API key · Please run /login");
+    // Effect 会把错误包成 (FiberFailure)：前缀在整段文本里，indexOf 认得到，不能靠 instanceof。
+    // Effect wraps errors as (FiberFailure): the prefix sits inside the whole text, so indexOf finds it; instanceof can't be relied on.
+    expect(agentAuthReason(new Error("(FiberFailure) Error: agent auth: OAuth token has expired\n    at x"))).toBe("OAuth token has expired");
+    expect(agentAuthReason(new GateEnvError("connect ECONNREFUSED 127.0.0.1:5432"))).toBeNull();
+    expect(agentAuthReason(new Error("boom"))).toBeNull();
+    expect(agentAuthReason(undefined)).toBeNull();
+  });
+
+  it("太长的原因截到 200 个字符", () => {
+    expect(agentAuthReason(new AgentAuthError("x".repeat(300)))?.length).toBe(200);
+  });
+
+  it("authRecovered：指纹变了就算恢复；没变要等满 maxWaitMs（默认 30 分钟）", () => {
+    const down = { fingerprint: "aaa", since: 1_000 };
+    expect(authRecovered(down, "bbb", 1_000)).toBe(true);
+    expect(authRecovered(down, "aaa", 1_000 + 30 * 60_000)).toBe(true);
+    expect(authRecovered(down, "aaa", 1_000 + 30 * 60_000 - 1)).toBe(false);
+    expect(authRecovered(down, "aaa", 1_000 + 60_000, 60_000)).toBe(true);
+    expect(authRecovered(down, "aaa", 1_000 + 60_000 - 1, 60_000)).toBe(false);
+  });
+
+  it("untilAuthRecovered：凭据换过就重跑成功，并调 onUp", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    let fp = "aaa";
+    let calls = 0;
+    const downs: string[] = [];
+    let ups = 0;
+    const sleeps: number[] = [];
+    const out = await untilAuthRecovered(
+      "#7",
+      async () => {
+        if (++calls === 1) throw new AgentAuthError("OAuth token has expired");
+        return 42;
+      },
+      {
+        fingerprint: () => fp,
+        onDown: (reason) => downs.push(reason),
+        onUp: () => ups++,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          fp = "bbb"; // 睡的这一会儿里有人换了凭据 / the credentials get swapped while it sleeps
+        },
+        now: () => 1_000,
+      },
+    );
+    expect(out).toBe(42);
+    expect(calls).toBe(2);
+    expect(downs).toEqual(["OAuth token has expired"]);
+    expect(ups).toBe(1);
+    expect(sleeps).toEqual([60_000]);
+    expect(log.mock.calls.flat().join("\n")).toContain("凭据已换过");
+    log.mockRestore();
+  });
+
+  it("untilAuthRecovered：指纹不变，等满 maxWaitMs 才重跑", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    let now = 1_000_000;
+    let calls = 0;
+    const sleeps: number[] = [];
+    const out = await untilAuthRecovered(
+      "#7",
+      async () => {
+        if (++calls === 1) throw new AgentAuthError("invalid API key");
+        return "done";
+      },
+      {
+        fingerprint: () => "same",
+        onDown: () => {},
+        onUp: () => {},
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          now += ms;
+        },
+        now: () => now,
+        maxWaitMs: 180_000,
+      },
+    );
+    expect(out).toBe("done");
+    expect(calls).toBe(2);
+    expect(sleeps).toEqual([60_000, 60_000, 60_000]);
+    expect(log.mock.calls.flat().join("\n")).toContain("等满 30 分钟");
+    log.mockRestore();
+  });
+
+  it("untilAuthRecovered：其他错误照抛，不调 onDown", async () => {
+    let downs = 0;
+    await expect(
+      untilAuthRecovered(
+        "#7",
+        async () => {
+          throw new Error("container exited 137");
+        },
+        { fingerprint: () => "x", onDown: () => downs++, onUp: () => {} },
+      ),
+    ).rejects.toThrow("container exited 137");
+    expect(downs).toBe(0);
   });
 });
 

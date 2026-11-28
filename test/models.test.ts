@@ -1,7 +1,7 @@
 // src/models.ts 的纯逻辑：按阶段挑档案、撞限额换档案、重置时间解析、别家档案的环境变量、热重载、用量记录（e2e 计划 N1a–N1f）。
 // 不起容器、不调真实 claude：runWithProfile 传假的 fn，agentFor 只看拼出的命令行。
 // models.ts 的配置和「跳过到何时」是模块级状态，每个用例重新 import 一份；路径是相对当前目录的，用例在临时目录里 chdir。
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -576,6 +576,71 @@ describe("missingCredentials（run 每轮预检用的凭据检查，#62）", () 
     writeFileSync(".sandcastle/.env", `CLAUDE_CODE_OAUTH_TOKEN=tok\n${VAR}=k\nGH_TOKEN=x\n`);
     m.reloadModels();
     expect(m.missingCredentials()).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("会话认证失效（#62 之三）", () => {
+  beforeEach(() => {
+    project({
+      profiles: { opus: claude(), glm: { model: "glm-4.6", env: { ANTHROPIC_BASE_URL: "https://glm.example" } } },
+      phases: phasesAll(["opus", "glm"]),
+    });
+    m.reloadModels();
+  });
+
+  it("认证文本作为最后的输出、不带完成信号返回：抛 AgentAuthError，不换档案、不记限额、不调 onLimited", async () => {
+    const tried: string[] = [];
+    const limited = vi.fn();
+    const err = await m
+      .runWithProfile("implement", "#7", async (p) => {
+        tried.push(p.name);
+        return p.name === "opus" ? { iterations: [], stdout: "...\nOAuth token has expired\n" } : done();
+      }, limited)
+      .catch((e: unknown) => e);
+    // vi.resetModules 后 lifecycle 是另一个实例，instanceof 不可靠：认 name 和消息前缀。
+    // After vi.resetModules lifecycle is another instance, so instanceof is unreliable: check the name and message prefix.
+    expect((err as Error).name).toBe("AgentAuthError");
+    expect((err as Error).message).toBe("agent auth: OAuth token has expired");
+    expect(tried).toEqual(["opus"]);
+    expect(limited).not.toHaveBeenCalled();
+    expect(existsSync(".sandcastle/logs/limits.json")).toBe(false);
+  });
+
+  it("认证报错抛出来也认（AGENT_AUTH_PATTERN 对所有档案生效）：抛 AgentAuthError，不换档案、不记限额", async () => {
+    const tried: string[] = [];
+    const err = await m
+      .runWithProfile("implement", "#7", async (p) => {
+        tried.push(p.name);
+        throw new Error("API Error: 401 · Invalid API key · Please run /login");
+      })
+      .catch((e: unknown) => e);
+    expect((err as Error).name).toBe("AgentAuthError");
+    expect((err as Error).message).toBe("agent auth: API Error: 401 · Invalid API key · Please run /login");
+    expect(tried).toEqual(["opus"]);
+    expect(existsSync(".sandcastle/logs/limits.json")).toBe(false);
+  });
+
+  it("带完成信号、输出里提到 401 的不算：照常返回", async () => {
+    const { profile, run } = await m.runWithProfile("implement", "#9", async () => done(`讨论 API Error: 401 这个报错`));
+    expect(profile.name).toBe("opus");
+    expect(run.stdout).toContain("401");
+  });
+
+  it("credentialsFingerprint：.env 的值改了指纹就变，键换序不变，改回去还原", () => {
+    project({ profiles: { opus: claude() }, phases: phasesAll(["opus"]) }, "ANTHROPIC_API_KEY=one\n");
+    m.reloadModels();
+    const first = m.credentialsFingerprint();
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    writeFileSync(".sandcastle/.env", "ANTHROPIC_API_KEY=two\n");
+    expect(m.credentialsFingerprint()).not.toBe(first);
+    writeFileSync(".sandcastle/.env", "ANTHROPIC_API_KEY=one\n");
+    expect(m.credentialsFingerprint()).toBe(first);
+    // 键的顺序不影响：指纹只用来比较「换过没有」 / Key order doesn't matter: the fingerprint only compares "has it changed"
+    writeFileSync(".sandcastle/.env", "ANTHROPIC_API_KEY=one\nCLAUDE_CODE_OAUTH_TOKEN=tok\n");
+    const two = m.credentialsFingerprint();
+    writeFileSync(".sandcastle/.env", "CLAUDE_CODE_OAUTH_TOKEN=tok\nANTHROPIC_API_KEY=one\n");
+    expect(m.credentialsFingerprint()).toBe(two);
   });
 });
 
