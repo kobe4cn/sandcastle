@@ -26,6 +26,7 @@ const zhEventNames: Record<NotifyEvent, string> = {
   mainBroken: "main 坏了",
   limited: "撞上用量限额",
   crashed: "运行中断了",
+  test: "测试消息",
 };
 const enEventNames: Record<NotifyEvent, string> = {
   stuck: "ticket stuck",
@@ -33,6 +34,7 @@ const enEventNames: Record<NotifyEvent, string> = {
   mainBroken: "main is broken",
   limited: "usage limit hit",
   crashed: "the run crashed",
+  test: "test message",
 };
 
 /**
@@ -288,6 +290,8 @@ const zh = {
   notifyPrepLimited: (until: string) => `prep 撞上了用量限额，预计 ${until}（本地时间）恢复后接着跑。`,
   /** 通知 stuck 事件的原因：prep 会话在沙箱里打的 stuck（#133）。 / The stuck event's reason: a stuck label the prep session added in the sandbox (#133). */
   notifyPrepStuck: "prep 要人拍板或缺信息，见票上的评论。",
+  /** 通知 test 事件的原因：doctor --notify-test 发的测试消息（#134）。 / The test event's reason: the test message sent by doctor --notify-test (#134). */
+  notifyTest: "这是 sandpipe doctor --notify-test 发的测试消息。",
 
   // —— 给 agent 的输出语言规则（渲染进每个提示词开头，以及内联的 revise / fix 提示词） ——
   // Output language rule for the agent (rendered at the top of every prompt, and in the inline revise / fix prompts)
@@ -502,6 +506,7 @@ const en: Messages = {
     `every profile for phase ${phase} (${profiles.join(", ")}) hit its usage limit; the run resumes around ${until} (local time).`,
   notifyPrepLimited: (until) => `prep hit its usage limit; it resumes around ${until} (local time).`,
   notifyPrepStuck: "prep needs a human decision or more information; see the comments on the ticket.",
+  notifyTest: "this is a test message from sandpipe doctor --notify-test.",
 
   outputLanguage:
     "Output language: write everything that goes onto the issue tracker or a PR in English: ticket titles and bodies, progress comments, acceptance notes, the review summary (translate the fixed labels in the output templates below, but keep `<tags>`, HTML comments, `## Implementation guide`, `## Blocked by`, `## Acceptance criteria` and the other `##` section names exactly as written). Commit messages follow the “提交” section of PROJECT.md. The instructions below are in Chinese; read them, but answer in English.",

@@ -556,6 +556,143 @@ describe("diagnose：main 兜底测试", () => {
   });
 });
 
+describe("diagnose：通知", () => {
+  /** 记录每次请求的假 fetch，每次都返回同一个 res / 抛同一个 err（不连网）。 */
+  const fakeFetch = (res: Response | Error) => {
+    const calls: { url: unknown; init: RequestInit | undefined }[] = [];
+    return {
+      calls,
+      fetch: (async (url: unknown, init?: RequestInit) => {
+        calls.push({ url, init });
+        if (res instanceof Error) throw res;
+        return res;
+      }) as typeof fetch,
+    };
+  };
+  const WEBHOOK = "https://hooks.example.invalid/secret";
+  const withWebhook = (root: string) =>
+    writeFileSync(join(root, ".sandcastle/.env"), `GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=y\nSANDPIPE_NOTIFY_WEBHOOK=${WEBHOOK}\n`);
+  /** detail / fix 拼起来不该出现 webhook URL（URL 是凭据）。 */
+  const noLeak = (c: Check | undefined) => `${c?.detail ?? ""}\n${c?.fix ?? ""}`;
+
+  it("没配 webhook（.env 和宿主机环境里都没有）：ok「未配置，不发通知」，不发请求", async () => {
+    const root = readyRepo();
+    const { calls, fetch } = fakeFetch(new Response(null, { status: 200 }));
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), notifyFetch: fetch });
+    expect(check(checks, "通知")).toMatchObject({ level: "ok", detail: "未配置，不发通知" });
+    expect(calls).toEqual([]);
+  });
+
+  it("配了 webhook：发一次 HEAD，收到任何 HTTP 响应（如 405）都算连得上", async () => {
+    const root = readyRepo();
+    withWebhook(root);
+    const { calls, fetch } = fakeFetch(new Response(null, { status: 405 }));
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), notifyFetch: fetch });
+    const c = check(checks, "通知");
+    expect(c).toMatchObject({ level: "ok", detail: "连得上" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ url: WEBHOOK, init: { method: "HEAD" } });
+    expect(noLeak(c)).not.toContain(WEBHOOK);
+  });
+
+  it("网络错误：warn，detail 只写错误那一句", async () => {
+    const root = readyRepo();
+    withWebhook(root);
+    const { fetch } = fakeFetch(new TypeError("fetch failed"));
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), notifyFetch: fetch });
+    const c = check(checks, "通知");
+    expect(c).toMatchObject({ level: "warn", detail: "fetch failed" });
+    expect(noLeak(c)).not.toContain(WEBHOOK);
+  });
+
+  it("URL 不合法时错误消息里带出 URL：detail 先抹掉", async () => {
+    const root = readyRepo();
+    withWebhook(root);
+    const { fetch } = fakeFetch(new TypeError(`Failed to parse URL from ${WEBHOOK}`));
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), notifyFetch: fetch });
+    const c = check(checks, "通知");
+    expect(c).toMatchObject({ level: "warn" });
+    expect(c?.detail).toContain("Failed to parse URL");
+    expect(noLeak(c)).not.toContain(WEBHOOK);
+  });
+
+  it("没给 notifyFetch：跳过这一节", async () => {
+    const root = readyRepo();
+    withWebhook(root);
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+    expect(check(checks, "通知")).toBeUndefined();
+  });
+
+  it("没配 webhook（英文项目）：文案是英文", async () => {
+    const root = pythonRepo();
+    installFiles(root, detectProject(root));
+    writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=y\n");
+    writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "");
+    const { calls, fetch } = fakeFetch(new Response(null, { status: 200 }));
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), notifyFetch: fetch });
+    expect(check(checks, "Notify")).toMatchObject({ level: "ok", detail: "not configured, no notifications" });
+    expect(calls).toEqual([]);
+  });
+
+  it("--notify-test：用 notifier 发一条 test 消息，2xx 为 ok", async () => {
+    const root = readyRepo();
+    withWebhook(root);
+    const { calls, fetch } = fakeFetch(new Response("{}", { status: 200 }));
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), notifyFetch: fetch, notifyTest: true });
+    const c = check(checks, "通知");
+    expect(c).toMatchObject({ level: "ok" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].init?.method).toBe("POST");
+    const body = JSON.parse(String(calls[0].init?.body));
+    expect(body.event).toBe("test");
+    expect(body.reason).toContain("doctor");
+    expect(body.text).toContain("测试消息");
+    expect(noLeak(c)).not.toContain(WEBHOOK);
+  });
+
+  it("--notify-test 非 2xx：warn，detail 写状态码", async () => {
+    const root = readyRepo();
+    withWebhook(root);
+    const { calls, fetch } = fakeFetch(new Response("nope", { status: 500 }));
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), notifyFetch: fetch, notifyTest: true });
+    const c = check(checks, "通知");
+    expect(c).toMatchObject({ level: "warn", detail: expect.stringContaining("500") });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].init?.method).toBe("POST");
+    expect(noLeak(c)).not.toContain(WEBHOOK);
+  });
+
+  it("--notify-test 配 --fix：不发测试消息，只做 HEAD 连通检查", async () => {
+    const root = readyRepo();
+    withWebhook(root);
+    const { calls, fetch } = fakeFetch(new Response(null, { status: 200 }));
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), notifyFetch: fetch, notifyTest: true, fix: true });
+    expect(check(checks, "通知")).toMatchObject({ level: "ok" });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].init?.method).toBe("HEAD");
+  });
+
+  it("--notify-test（英文项目）：test 消息的文案是英文", async () => {
+    const root = pythonRepo();
+    installFiles(root, detectProject(root));
+    withWebhook(root);
+    writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "");
+    const { calls, fetch } = fakeFetch(new Response("{}", { status: 200 }));
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), notifyFetch: fetch, notifyTest: true });
+    expect(check(checks, "Notify")).toMatchObject({ level: "ok" });
+    const body = JSON.parse(String(calls[0].init?.body));
+    expect(body.event).toBe("test");
+    expect(body.reason).toContain("doctor");
+    expect(body.text).toContain("test message");
+  });
+
+  it("cli help 中英写明 --notify-test", () => {
+    const cli = readFileSync(new URL("../src/cli.ts", import.meta.url), "utf8");
+    expect(cli).toContain("[--notify-test] 发一条测试通知");
+    expect(cli).toContain("[--notify-test] send a test notification");
+  });
+});
+
 describe("diagnose 的出错分支", () => {
   it("准备好的项目全部通过", async () => {
     const root = readyRepo();
