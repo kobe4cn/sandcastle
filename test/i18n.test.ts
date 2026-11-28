@@ -145,6 +145,11 @@ describe("通知原因（#133）", () => {
     expect(messages("zh").notifyPrepStuck).toBe("prep 要人拍板或缺信息，见票上的评论。");
     expect(messages("en").notifyPrepStuck).toBe("prep needs a human decision or more information; see the comments on the ticket.");
   });
+
+  it("doctor --notify-test 发的测试消息：中英各一句（#134）", () => {
+    expect(messages("zh").notifyTest).toBe("这是 sandpipe doctor --notify-test 发的测试消息。");
+    expect(messages("en").notifyTest).toBe("this is a test message from sandpipe doctor --notify-test.");
+  });
 });
 
 describe("gateEnvDown（#54）", () => {

@@ -15,8 +15,8 @@ import { parseEnv } from "node:util";
 import { messages, type Language } from "./i18n.ts";
 import { t } from "./term.ts";
 
-/** 通知事件；后三个给后续票（main 坏了、撞限额、运行中断）。 / Notify events; the last three are for later tickets (main broken, usage limit, crashed run). */
-export type NotifyEvent = "stuck" | "leftForHuman" | "mainBroken" | "limited" | "crashed";
+/** 通知事件；test 给 doctor 的 --notify-test（发一条测试消息）。 / Notify events; test is for doctor's --notify-test (sends a test message). */
+export type NotifyEvent = "stuck" | "leftForHuman" | "mainBroken" | "limited" | "crashed" | "test";
 
 /** 发出的一条通知。 / One notification being sent. */
 export interface Notification {

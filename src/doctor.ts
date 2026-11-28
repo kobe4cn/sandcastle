@@ -1,9 +1,9 @@
 // doctor：跑流水线之前把能在宿主机上查的都查一遍，每项给出结论和修法。
-// 查：仓库根目录、配置能加载、宿主机依赖与 env 文件、PROJECT.md 与提示词能渲染、浏览器验收、合并条件（有 CI workflow 却不等检查时警告）、项目知识（缺口清单）、models.json、.env 的 token、平台登录与权限、
+// 查：仓库根目录、配置能加载、宿主机依赖与 env 文件、PROJECT.md 与提示词能渲染、浏览器验收、合并条件（有 CI workflow 却不等检查时警告）、项目知识（缺口清单）、models.json、.env 的 token、通知 webhook（--notify-test 时发一条测试消息）、平台登录与权限、
 // 标签、镜像（--fix 时补建 / 直接建，与 Containerfile 不一致时报过期、--fix 重建）、Sandcastle 票的 Blocked by 引用、开着的 main-broken 票、远端基础分支、沙箱镜像、门槛依赖的服务、上下文预算 hook、.gitignore 里的工作目录、.claude/ 里本工具的文件、是否有新版本。
 // 有一项 ✗ 退出码就是 1。
 // doctor: before running the pipeline, check everything that can be checked on the host, giving a verdict and a fix for each.
-// Checks: repository root, config loads, host dependencies and env files, PROJECT.md and prompts render, browser check, merge requirements (warns when there are CI workflows but checks aren't awaited), project knowledge (open questions list), models.json, .env tokens, forge login and permissions,
+// Checks: repository root, config loads, host dependencies and env files, PROJECT.md and prompts render, browser check, merge requirements (warns when there are CI workflows but checks aren't awaited), project knowledge (open questions list), models.json, .env tokens, the notify webhook (a test message with --notify-test), forge login and permissions,
 // labels and the image (created / built with --fix, reported stale and rebuilt with --fix when it doesn't match the Containerfile), Blocked by references in Sandcastle tickets, open main-broken tickets, remote base branch, sandbox image, gate services, context budget hook, working directories in .gitignore, this tool's files in .claude/, newer versions.
 // Exit code 1 if any check is ✗.
 
@@ -16,8 +16,10 @@ import { browserSetupWarning } from "./browser-gate.ts";
 import { detectProject } from "./detect.ts";
 import type { Forge, IssueState } from "./forge.ts";
 import { blockersOf } from "./guide.ts";
+import { messages } from "./i18n.ts";
 import { buildImageArgs, containerfileHash, findContainerfile, imageLabel } from "./lifecycle.ts";
 import { inspectModels } from "./models.ts";
+import { createNotifier } from "./notify.ts";
 import { setTermLanguage, t, termLanguage } from "./term.ts";
 import { CLAUDE_FILES, fillDocsHint, manual, HOOK_FILE, hasGlobalSkill, staleGlobalSkillFiles, TODO_MARK, mergeGitignore, mergeSandcastleIgnore, toolFile, typesTsconfig } from "./onboard.ts";
 import { OPEN_QUESTIONS, readOpenQuestions } from "./open-questions.ts";
@@ -98,6 +100,10 @@ export async function diagnose(opts: {
   latest?: () => Promise<string | undefined>;
   /** 连门槛依赖的服务；测试里换成假实现，默认 probeTcp / Connects to the gate's services; a fake in tests, probeTcp by default */
   probe?: Probe;
+  /** 检查通知 webhook；不给就跳过「通知」一节（测试里不连网） / Checks the notify webhook; the Notify section is skipped when absent (no network in tests) */
+  notifyFetch?: typeof fetch;
+  /** --notify-test：发一条测试消息（--fix 时不发，只做连通检查） / --notify-test: send a test message (not with --fix, which only checks reachability) */
+  notifyTest?: boolean;
 }): Promise<Check[]> {
   const cwd = opts.cwd ?? process.cwd();
   const env = opts.env ?? process.env;
@@ -294,10 +300,12 @@ export async function diagnose(opts: {
   // ---- .env ----
   let agentToken: string | undefined;
   const envPath = join(cwd, ENV_FILE);
+  // .env 不存在时 vars 当空对象：下面的「通知」一节也读它（变量不存在就当没配 webhook）。
+  // An absent .env leaves vars empty: the Notify section below reads it too (a missing variable means no webhook).
+  const vars = existsSync(envPath) ? parseEnv(readFileSync(envPath, "utf8")) : {};
   if (!existsSync(envPath)) {
     add(".env", "fail", t(`没有 ${ENV_FILE}`, `No ${ENV_FILE}`), t(`cp ${ENV_FILE}.example ${ENV_FILE}，填 token`, `cp ${ENV_FILE}.example ${ENV_FILE} and fill in the tokens`));
   } else {
-    const vars = parseEnv(readFileSync(envPath, "utf8"));
     const has = (k: string) => k in vars && Boolean(vars[k] || env[k]);
     const missing: string[] = [];
     // 有阶段用 Claude 自家的档案（没设 ANTHROPIC_BASE_URL）才要 Claude 凭据
@@ -323,6 +331,51 @@ export async function diagnose(opts: {
       );
     else add(".env", "ok", t("token 齐全，已被 git 忽略", "tokens present, ignored by git"));
     agentToken = forge ? vars[forge.tokenEnv] || env[forge.tokenEnv] : undefined;
+  }
+
+  // ---- 通知 ---- / Notify
+  // 可选功能：连不上 / 发不出去只 warn，不挡运行。URL 是凭据，绝不能进 detail / fix（错误消息里带出来时先抹掉）。
+  // Optional: an unreachable webhook or a failed send only warns and doesn't block the run. The URL is a credential and must never reach detail / fix (scrub it from error messages).
+  if (project && opts.notifyFetch) {
+    const doFetch = opts.notifyFetch;
+    const name = t("通知", "Notify");
+    // 不用 readNotifyUrl：它读全局 process.env，会忽略 diagnose 收到的 env（测试会被宿主机变量污染）。
+    // Not readNotifyUrl: it reads the global process.env, ignoring the env diagnose received (host variables would pollute tests).
+    const url = vars[project.notify.env] || env[project.notify.env] || undefined;
+    const scrub = (text: string) => (url ? text.replaceAll(url, "…") : text);
+    if (!url) add(name, "ok", t("未配置，不发通知", "not configured, no notifications"));
+    else if (!opts.notifyTest || opts.fix) {
+      // 只做连通检查：收到任何 HTTP 响应（哪怕 405）都算连得上；网络错误 / 超时是 warn。
+      // Reachability only: any HTTP response (even 405) counts as reachable; a network error or timeout warns.
+      try {
+        await doFetch(url, { method: "HEAD", signal: AbortSignal.timeout(10_000) });
+        add(name, "ok", t("连得上", "reachable"));
+      } catch (e) {
+        add(name, "warn", scrub(errText(e)));
+      }
+    } else {
+      // --notify-test（不带 --fix）用 #132 的 notifier 发一条 test 消息；notifier 从不 reject、不返回状态码，
+      // 所以包一层 fetcher 记下响应或错误，发完自己判 2xx。
+      // --notify-test (without --fix) sends a test message via #132's notifier; the notifier never rejects and returns
+      // no status, so wrap the fetcher to record the response or the error and judge 2xx ourselves afterwards.
+      const outcome: { status?: number; error?: unknown } = {};
+      const fetcher: typeof fetch = async (input, init) => {
+        try {
+          const res = await doFetch(input, init);
+          outcome.status = res.status;
+          return res;
+        } catch (e) {
+          outcome.error = e;
+          throw e;
+        }
+      };
+      await createNotifier({ url, language: project.language, fetcher, warn: () => {} })({ event: "test", reason: messages(project.language).notifyTest });
+      if (outcome.status !== undefined && outcome.status >= 200 && outcome.status < 300)
+        add(name, "ok", t(`测试消息发到了（HTTP ${outcome.status}）`, `test message delivered (HTTP ${outcome.status})`));
+      else if (outcome.status !== undefined)
+        add(name, "warn", t(`测试消息没发出去（HTTP ${outcome.status}）`, `test message wasn't delivered (HTTP ${outcome.status})`));
+      else add(name, "warn", scrub(errText(outcome.error)));
+    }
   }
 
   // ---- 平台与标签 ---- / Forge and labels
@@ -607,7 +660,7 @@ export function formatChecks(checks: Check[]): string {
 }
 
 export async function doctor(argv: string[]) {
-  const checks = await diagnose({ fix: argv.includes("--fix"), latest: () => latestVersion() });
+  const checks = await diagnose({ fix: argv.includes("--fix"), latest: () => latestVersion(), notifyFetch: fetch, notifyTest: argv.includes("--notify-test") });
   console.log(formatChecks(checks));
   const failed = checks.filter((c) => c.level === "fail").length;
   const warned = checks.filter((c) => c.level === "warn").length;
