@@ -27,7 +27,6 @@
 //    Things needing a human (a conflict file saved as .new, a PROJECT.md validation failure, an agent failure, the GitLab warning) always get their own prominent line and are never folded into the counts.
 //    After the checks a language line prints (languageLine: how the current language was decided and how to switch it); "Next" lists one command or action per line, the launch checklist as a link only.
 
-import { defaultImageName } from "@ai-hero/sandcastle/sandboxes/podman";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -1236,8 +1235,9 @@ export async function onboard(argv: string[], root = process.cwd(), decide: Deci
         t("看一遍 .sandcastle/PROJECT.md 和 sandcastle.config.ts，按项目实际修改", "Read .sandcastle/PROJECT.md and sandcastle.config.ts, adjust them to fit the project"),
         ...(remaining > 0 ? [fillDocsHint(remaining)] : []),
         envStepHint(),
-        `${t("建镜像：", "Build the image: ")}podman build -t ${defaultImageName(root)} -f .sandcastle/Containerfile .sandcastle`,
-        t("sandpipe doctor --fix 检查一遍（顺带建好标签）", "sandpipe doctor --fix to check everything (and create the labels)"),
+        // 生成的 Containerfile 只是草稿，镜像等 doctor --fix 看过配置后再建（#89 决定）
+        // The generated Containerfile is only a draft; the image is built after doctor --fix has seen the config (decided in #89)
+        t("sandpipe doctor --fix 检查一遍（顺带建好标签和镜像，第一次建镜像要几分钟）", "sandpipe doctor --fix to check everything (and create the labels and the image; the first image build takes a few minutes)"),
         `${t("上线清单：", "Launch checklist: ")}${checklist}`,
       ].map((step, i) => `  ${i + 1}. ${step}`),
     ].join("\n"),

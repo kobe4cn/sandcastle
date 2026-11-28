@@ -890,6 +890,51 @@ describe("起 agent 的提示和 .env 那一步", () => {
     }
   });
 
+  it("「下一步」不再让人手动建镜像：doctor --fix 那步写明会建镜像、第一次要几分钟", async () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    writeFileSync(join(root, ".sandcastle/PROJECT.md"), "人改过");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await onboard(["--no-agent"], root, async () => "keep");
+      const out = log.mock.calls.flat().join("\n");
+      expect(out).toContain("sandpipe doctor --fix 检查一遍");
+      expect(out).toContain("顺带建好标签和镜像");
+      expect(out).toContain("第一次建镜像要几分钟");
+      expect(out).not.toContain("podman build");
+    } finally {
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it("「下一步」doctor --fix 建镜像的英文文案", async () => {
+    const root = nodeRepo();
+    installFiles(root, detectProject(root));
+    writeFileSync(join(root, ".sandcastle/PROJECT.md"), "human edit");
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // vitest 固定 SANDPIPE_LANG=zh：空串算没设，--lang en 才生效
+    // vitest pins SANDPIPE_LANG=zh: an empty string counts as unset so --lang en takes effect
+    vi.stubEnv("SANDPIPE_LANG", "");
+    try {
+      await onboard(["--no-agent", "--lang", "en"], root, async () => "keep");
+      const out = log.mock.calls.flat().join("\n");
+      expect(out).toContain("sandpipe doctor --fix to check everything");
+      expect(out).toContain("and create the labels and the image");
+      expect(out).toContain("the first image build takes a few minutes");
+      expect(out).not.toContain("podman build");
+    } finally {
+      vi.unstubAllEnvs();
+      // onboard 改了全局终端语言，复原成中文
+      // onboard changed the global terminal language; restore Chinese
+      setTermLanguage("zh", {});
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it("onboard 的「下一步」里有带 token 说明的 .env 一步", async () => {
     const root = nodeRepo();
     installFiles(root, detectProject(root));
