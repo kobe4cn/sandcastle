@@ -46,6 +46,7 @@ const LABEL_META: Record<keyof Labels, [color: string, zh: string, en: string]> 
   decided: ["fef2c0", "agent 代拍板过设计决定，等人事后确认", "The agent made a design decision; confirm it afterwards"],
   flaky: ["fbca04", "偶发失败的测试（Sandcastle 门槛自动开票）", "Flaky test (opened automatically by the Sandcastle gate)"],
   mainBroken: ["d73a4a", "main 上的兜底完整测试失败（Sandcastle 自动开票）", "Fallback full test run on main failed (opened automatically by Sandcastle)"],
+  waitingMain: ["d4c5f9", "被 main-broken 挡住留 PR 的票；main 修好后自动 rebase 重跑门槛再合并", "Held as a PR by a main-broken ticket; auto-rebased and re-gated once main is fixed"],
   readyForAgent: ["0075ca", "可以交给 agent 做", "Ready for an agent"],
   readyForHuman: ["e4e669", "需要人来做", "Needs a human"],
   needsTriage: ["d876e3", "票的作者没有写权限，等有写权限的人确认", "Ticket author lacks write access; waiting for a maintainer"],
@@ -56,7 +57,7 @@ const LABEL_META: Record<keyof Labels, [color: string, zh: string, en: string]> 
  * 流水线第一次用到时自己建（main.ts 里 ensureLabel），缺了不算问题。
  * Created by the pipeline when first needed (ensureLabel in main.ts), so missing ones aren't a problem.
  */
-const AUTO_LABELS: (keyof Labels)[] = ["flaky", "mainBroken", "merging", "reviewed", "needsTriage", "trusted"];
+const AUTO_LABELS: (keyof Labels)[] = ["flaky", "mainBroken", "waitingMain", "merging", "reviewed", "needsTriage", "trusted"];
 
 const firstLine = (s: string) => s.trim().split("\n")[0] ?? "";
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));

@@ -129,6 +129,7 @@ Which profile each phase uses lives in `.sandcastle/models.json` (an ordered pro
 | `sandcastle:decided` | The agent made a design decision on a human's behalf; remove it after you've reviewed it |
 | `flaky` | Tests that only passed on a rerun in the gate; the pipeline opens these tickets automatically |
 | `sandcastle:main-broken` | The fallback full run on main failed; the pipeline opens this ticket automatically and puts it first; while one is open, other tickets are left as PRs until it's fixed (ADR 0007) |
+| `sandcastle:waiting-main` | Tickets held as PRs by a main-broken ticket; once main is fixed they are auto-rebased and re-gated before merging (ADR 0007). Created by the pipeline on first use |
 | `ready-for-agent` / `ready-for-human` | Triage after splitting tickets |
 | `needs-triage` | The ticket's author lacks write access; waiting for a maintainer to confirm it (`labels.needsTriage`). Created by the pipeline on first use |
 | `sandcastle:trusted` | A maintainer confirmed this ticket can go to Sandcastle (`labels.trusted`; adding a label needs at least triage access). Created by the pipeline on first use |

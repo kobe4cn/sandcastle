@@ -23,5 +23,15 @@ main 上定期的兜底完整测试失败时，脚本自动开一张带 `sandcas
 
 ## 后果
 
-- main 坏掉期间自动合并暂停（只有修复票及其子票例外），PR 会积压等人处理；main-broken 票关掉后，之后走到合并这一步的票恢复自动合并；这期间已经留下的 PR 不会自动重试，要人手动合。
+- main 坏掉期间自动合并暂停（只有修复票及其子票例外），PR 会积压等人处理；main-broken 票关掉后，之后走到合并这一步的票恢复自动合并；这期间已经留下的 PR 由「恢复」（下节）自动接回，不再要人手动合。
 - 判断逻辑放在已受保护的 `src/merge-flow.ts`（判合并文件），但它依赖未受保护的 `src/guide.ts` 的 `splitChildren` 解析子票：那里解析错了只影响「放行子票」这一侧（多放行或少放行一张子票），不影响 fail-closed 的挡合并本身。
+
+## 恢复
+
+被挡住（含列票出错 fail-closed）而留 PR 的票打 `sandcastle:waiting-main`；main-broken 票都关掉后，调度时自动回到合并流程（#86）：
+
+- **只恢复带 waiting-main 的票**：本机制上线前只带 `sandcastle:pr-open` 的老 PR 仍要人手动合——不知道它们被挡的原因是不是 main-broken，自动合并它们等于凭空放宽「为什么留 PR」这道说明。
+- **恢复时强制 rebase 并重跑门槛**：被挡时的门槛是对着坏 main 跑的，不能沿用；rebase 后 agent 解过冲突时照旧再查受保护路径、复审、浏览器验收，不放宽任何关卡。分支已包含最新 main 时（如修复票没合代码就关了）不强制 rebase，照普通合并流程等检查。
+- **列票出错时这一轮不恢复**（fail-closed）：和挡住时的判定同口径，查不到开着的 main-broken 票就不动，下一轮再试。
+- **票离开「只被 main-broken 挡住」的状态就去掉 waiting-main**：打回（去 pr-open）、带 merging 却没有开着的 PR 交回调度（去 merging）时一并去掉。waiting-main 只能表示「其他关卡都过了、只被 main-broken 挡住」；残留的话，重新实现后因别的原因（reviewer 给 `pr`、受保护路径、浏览器验收没过）留下的 PR 会被误恢复、自动合并。
+- 恢复途中又开出新的 main-broken 票时，合并流程里的同一套检查会再次挡住并重新打上 waiting-main。已关闭票上残留的 waiting-main 由 `cleanupClosedIssues` 清掉。

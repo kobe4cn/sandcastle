@@ -270,6 +270,7 @@ export type Labels = {
   decided: string;
   flaky: string;
   mainBroken: string;
+  waitingMain: string;
   readyForAgent: string;
   readyForHuman: string;
   needsTriage: string;
@@ -286,6 +287,7 @@ export const DEFAULT_LABELS: Labels = {
   decided: "sandcastle:decided", // agent 代拍板过设计决定，等人事后确认（人看过后去掉） / The agent made design decisions awaiting human confirmation (remove once reviewed)
   flaky: "flaky", // 门槛里重跑才通过的测试文件，脚本自动开票 / Test files that only passed on a gate retry; the pipeline opens the ticket
   mainBroken: "sandcastle:main-broken", // main 上的兜底完整测试失败，脚本自动开票；调度和 prep 时排最前 / The fallback full test run on main failed; the pipeline opens the ticket, scheduled and prepped first
+  waitingMain: "sandcastle:waiting-main", // 被 main-broken 挡住留 PR 的票；main 修好后自动 rebase 重跑门槛再合并（脚本自动建标签） / Tickets held as PRs by a main-broken ticket; auto-rebased and re-gated once main is fixed (created by the pipeline)
   readyForAgent: "ready-for-agent",
   readyForHuman: "ready-for-human",
   needsTriage: "needs-triage", // 票作者没有写权限，等有写权限的人确认（脚本自动建标签） / Ticket author lacks write access; waiting for a maintainer (created by the pipeline)
