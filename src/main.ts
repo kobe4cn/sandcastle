@@ -112,7 +112,7 @@ import { detectProject } from "./detect.ts";
 import { probeTcp, servicesProblem } from "./preflight.ts";
 import { manual } from "./onboard.ts";
 import { attempt, envPrefix, gitRemote, gitRemoteOrThrow, REMOTE_TRANSIENT, sh, shellQuote, trySh } from "./shell.ts";
-import { labelsToRemoveOnLeave, resumableWaitingMain, shouldRemovePrOpenOnResume } from "./waiting-main.ts";
+import { isAfterMainFix, labelsToRemoveOnLeave, removeWaitingMainAfterResume, resumableWaitingMain, shouldRemovePrOpenOnResume, type ResumeOutcome } from "./waiting-main.ts";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -751,8 +751,8 @@ const peakContext = (...runs: ({ readonly iterations: readonly sandcastle.Iterat
  * reviewed: the ticket is labelled sandcastle:reviewed (#49, set by plan); build updates it when adding / removing the label so a retryTransient rerun of build sees it.
  * allowProtected：票实现指引里 `- **Protected**` 允许改的受保护路径（protected-paths.ts 的 allowedProtected，#76）；plan 和恢复路径从票正文取，缺省（如外部 PR）按 [] 处理，命中全挡。
  * allowProtected: protected paths the ticket's implementation guide allows via `- **Protected**` (allowedProtected in protected-paths.ts, #76); plan and the resume path read it from the ticket body, and when absent (e.g. external PRs) it's treated as [], so every hit blocks.
- * afterMainFix：票带 sandcastle:waiting-main（#86），是 main-broken 修好后的恢复：先去标签，再强制 rebase、重跑门槛后合并。
- * afterMainFix: the ticket carries sandcastle:waiting-main (#86), a resume after main-broken was fixed: the label comes off first, then a forced rebase reruns the gate before merging.
+ * afterMainFix：票带 sandcastle:waiting-main（#86），是 main-broken 修好后的恢复：强制 rebase、重跑门槛后合并，waiting-main 留到结果出来再去（#119）。
+ * afterMainFix: the ticket carries sandcastle:waiting-main (#86), a resume after main-broken was fixed: a forced rebase reruns the gate before merging, and waiting-main comes off only once the outcome is in (#119).
  */
 type Issue = { id: string; title: string; branch: string; browserCheck?: boolean; reviewed?: boolean; allowProtected?: string[]; afterMainFix?: boolean };
 
@@ -1656,12 +1656,24 @@ function markMerging(issueId: string, on: boolean): boolean {
 
 let waitingMainLabelEnsured = false;
 /**
+ * 这一轮恢复里又被 main-broken 挡住的票（markWaitingMain 被调过就在，不管 addLabel 成没成功；#119）。
+ * 放在模块级而不是 finishMerge 的 deps 里：rebase 那条路在 rebaseAndMerge 里自己另建一份 mergeDeps，捕获不到。
+ * Tickets held again by main-broken during this resume (present once markWaitingMain was called, whether or not addLabel
+ * succeeded; #119). Module-level rather than wrapped into finishMerge's deps: the rebase path builds its own mergeDeps
+ * inside rebaseAndMerge, which a wrapper couldn't capture.
+ */
+const heldThisResume = new Set<string>();
+/**
  * 被 main-broken 挡住（含列票出错 fail-closed）留 PR 的票打 sandcastle:waiting-main（#86）：第一次用时先建标签。
+ * 每次被调用都先记进 heldThisResume（#119）：afterMainFix 恢复据此分辨这次是不是又被挡住，被挡时保留 waiting-main。
  * 出错只警告，不影响留 PR：标签没打上时 main 修好后不会自动恢复，要人手动合并。
  * Add sandcastle:waiting-main to a ticket held as a PR by a main-broken ticket, including the fail-closed listing error (#86); the label is created on first use.
- * Errors only warn and don't change leaving the PR: without the label there's no automatic resume after main is fixed, so a human merges manually.
+ * Every call records the ticket in heldThisResume first (#119): the afterMainFix resume uses that to tell a fresh hold
+ * apart and keeps waiting-main for it. Errors only warn and don't change leaving the PR: without the label there's no
+ * automatic resume after main is fixed, so a human merges manually.
  */
 function markWaitingMain(issueId: string) {
+  heldThisResume.add(issueId);
   if (!waitingMainLabelEnsured) {
     waitingMainLabelEnsured = true;
     attempt(() => forge.ensureLabel(LABEL.waitingMain, "d4c5f9", M.waitingMainLabelDesc));
@@ -1964,7 +1976,7 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
  * 自动合并收尾（land 的最后一步，也是 resumeMerging 接着做的那一步）：等检查 → 合并 → 删分支。整个过程票上带 sandcastle:merging。
  * The auto-merge finish (the last step of land, and the step resumeMerging continues): wait for checks → merge → delete the branch. The ticket carries sandcastle:merging throughout.
  */
-async function finishMerge(issue: Issue, pr: string, host: HostGap, tier: GateTier, forceRebase = false) {
+async function finishMerge(issue: Issue, pr: string, host: HostGap, tier: GateTier, forceRebase = false): Promise<"merged" | "left"> {
   // 先合并的票可能让这张冲突：rebase 到最新的 origin/main（冲突交给 agent）、重跑门槛，再合并一次。
   // 一致性检查要先在宿主机上查：没有文本冲突时平台会照样合并，坏掉的状态就进了 main。
   // An earlier merge may make this one conflict: rebase onto the latest origin/main (conflicts go to the agent), rerun the gate, and merge again.
@@ -1981,11 +1993,12 @@ async function finishMerge(issue: Issue, pr: string, host: HostGap, tier: GateTi
     { issueId: issue.id, pr, chainOk, brokenOut: forceRebase ? M.mainFixedRebase : `${integrityBroken()}。`, rebase: () => untilAfterLimit(`rebase #${issue.id}`, () => rebaseAndMerge(issue, pr, host), undefined, { comment: limitedComment(issue.id) }) },
     mergeDeps(issue, pr, host),
   );
-  if (r === "left") return;
+  if (r === "left") return "left";
   await gitRemote(["push", REMOTE, "--delete", issue.branch]);
   trySh("git", ["branch", "-D", issue.branch]);
   console.log(t(`  ✓ #${issue.id} 已合并（PR #${pr}）`, `  ✓ #${issue.id} merged (PR #${pr})`));
   noteMerged(tier);
+  return "merged";
 }
 
 /**
@@ -1995,8 +2008,8 @@ async function finishMerge(issue: Issue, pr: string, host: HostGap, tier: GateTi
  * Tickets interrupted last run while waiting for checks / merging (labelled sandcastle:merging): the PR is open and the gate passed, so don't reimplement; go straight back to finishMerge.
  * If there's no open PR on the ticket's own branch (a human closed the PR or deleted the branch), remove the label and hand it back to plan.
  * The gate tier is no longer known, so it's counted as dependency-selected (one extra count only brings the fallback full run forward, never skips it).
- * main-broken 修好后的恢复（afterMainFix，#86）也走这里：去掉 waiting-main 后强制 rebase、重跑门槛再合并。
- * The resume after main-broken was fixed (afterMainFix, #86) also comes through here: waiting-main comes off, then a forced rebase reruns the gate before merging.
+ * main-broken 修好后的恢复（afterMainFix，#86）也走这里：强制 rebase、重跑门槛再合并，waiting-main 留到结果出来按结果去（#119）。
+ * The resume after main-broken was fixed (afterMainFix, #86) also comes through here: a forced rebase reruns the gate before merging, and waiting-main comes off per the outcome once it is in (#119).
  */
 async function resumeMerging(issue: Issue, host: HostGap) {
   const pr = prFor(issue.id);
@@ -2015,17 +2028,24 @@ async function resumeMerging(issue: Issue, host: HostGap) {
     await gitRemoteOrThrow(["fetch", REMOTE, `${issue.branch}:${issue.branch}`]);
   }
   if (issue.afterMainFix) {
-    // 先去 waiting-main 再 finishMerge：rebase 后又遇到新开的 main-broken 票时，mergeAfterPush 会重新打上（#86）。
-    // waiting-main must come off before finishMerge: if a new main-broken ticket appears after the rebase, mergeAfterPush re-adds it (#86).
-    attempt(() => forge.removeLabel(issue.id, LABEL.waitingMain));
     console.log(t(`  ↻ main 修好了，#${issue.id} rebase 后重跑门槛`, `  ↻ main is fixed; #${issue.id} reruns the gate after a rebase`));
   } else {
     console.log(t(`  ↻ #${issue.id} 上次运行在等 PR #${pr.id} 的检查 / 合并时中断，接着等，不重新实现`, `  ↻ #${issue.id} was interrupted while waiting for checks / merging PR #${pr.id}; resuming that without reimplementing`));
   }
   if (!project.autoMerge) {
     leaveForHuman(issue, pr.id, M.reasonAutoMergeOff);
+    // afterMainFix 时 waiting-main 留到这里才去（#119）：autoMerge 关着留了 PR，票已离开「只被 main-broken 挡住」的状态。
+    // 先 leaveForHuman 让 pr-open 落上，再去 waiting-main，两步之间崩了下轮只多恢复一次，不会 fail-open。
+    // On afterMainFix waiting-main comes off only here (#119): the PR is left with autoMerge off, so the ticket has left
+    // "held only by main-broken". leaveForHuman puts pr-open on first and waiting-main comes off second; a crash in
+    // between only costs one extra resume next pass, never a fail-open.
+    if (issue.afterMainFix) attempt(() => forge.removeLabel(issue.id, LABEL.waitingMain));
     attempt(() => forge.removeLabel(issue.id, LABEL.merging));
     console.log(t(`  ◐ #${issue.id} autoMerge 关着，留 PR #${pr.id} 等人合并`, `  ◐ #${issue.id} autoMerge is off; PR #${pr.id} left for a human to merge`));
+    return;
+  }
+  if (!issue.afterMainFix) {
+    await finishMerge(issue, pr.id, host, "selected", false);
     return;
   }
   // 分支已包含最新 origin/main 时（如修复票没合代码就关了）不能强制 rebase：rebaseAndMerge 会按 rebaseNotBehind
@@ -2033,9 +2053,38 @@ async function resumeMerging(issue: Issue, host: HostGap) {
   // When the branch already contains the latest origin/main (e.g. the fix ticket closed without merging code) a forced
   // rebase isn't possible: rebaseAndMerge would report rebaseNotBehind and count as a merge failure, so the plain
   // finishMerge path runs instead (leaving the gate rerun to the integrity check). Fetch first so the check runs against the latest origin/main.
-  if (issue.afterMainFix) await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
+  await gitRemoteOrThrow(["fetch", REMOTE, BASE_BRANCH]);
   const upToDate = trySh("git", ["merge-base", "--is-ancestor", BASE_REF, issue.branch]).ok;
-  await finishMerge(issue, pr.id, host, "selected", issue.afterMainFix === true && !upToDate);
+  // afterMainFix：waiting-main 不在一开始就去（#119），留到结果出来按结果处理。先清掉这张票上一轮被挡的记录，
+  // finishMerge 里再被挡（rebase 后新开的 main-broken 票、列票出错的 fail-closed）会经 markWaitingMain 重新记上。
+  // afterMainFix: waiting-main no longer comes off up front (#119); the outcome decides. The ticket's earlier hold record
+  // is cleared first, and a fresh hold inside finishMerge (a new main-broken ticket after the rebase, or the fail-closed
+  // listing error) records it again through markWaitingMain.
+  heldThisResume.delete(issue.id);
+  let outcome: ResumeOutcome;
+  try {
+    outcome = await finishMerge(issue, pr.id, host, "selected", !upToDate);
+  } catch (e) {
+    // 抛错被 catch 时 mergeWhenReady 的 finally 已经去掉 merging，票已离开「其他关卡都过了、只被 main-broken 挡住」的状态：
+    // start 的兜底会打 stuck、下一轮 listIssues([picked, merging]) 捡不到它，保留 waiting-main 起不到「仍走 afterMainFix」的作用，
+    // 只会让人去掉 stuck 重新实现后因别的原因留 PR 的票被 resumeWaitingMain 误自动合并（fail-open），所以去掉再重新抛出。
+    // 「中断后下一轮仍走 afterMainFix」只覆盖进程被杀、finally 没跑、merging 还在的情形。
+    // When the throw is caught here, mergeWhenReady's finally has already removed merging and the ticket has left
+    // "every other gate passed; held only by main-broken": start's fallback marks stuck and listIssues([picked, merging])
+    // won't pick it up next pass, so keeping waiting-main would not keep the afterMainFix path alive — it would only let
+    // a PR later left for another reason be auto-merged by resumeWaitingMain once a human removes stuck and the ticket
+    // is reimplemented (fail-open). Remove it, then rethrow. "Next pass still afterMainFix" covers only a killed
+    // process (the finally never ran; merging is still on).
+    if (removeWaitingMainAfterResume("threw")) attempt(() => forge.removeLabel(issue.id, LABEL.waitingMain));
+    console.warn(t(`  ⚠ #${issue.id} 恢复合并出错，去掉 ${LABEL.waitingMain}（merging 已被去掉，下一轮不再按 main 修好后的恢复处理）：`, `  ⚠ Resuming the merge of #${issue.id} failed; removing ${LABEL.waitingMain} (merging is already off, so the next pass no longer treats it as an after-main-fix resume): `) + errorLine(e));
+    throw e;
+  }
+  // 合并了、或因别的原因留 PR（pr-open 已在 merge-flow 的 leaveForHuman 里先落上）→ 去 waiting-main；又被挡住 → 保留。
+  // Merged, or the PR left for another reason (pr-open already on via merge-flow's leaveForHuman) → waiting-main comes
+  // off; held again → it stays.
+  if (removeWaitingMainAfterResume(heldThisResume.has(issue.id) ? "held" : outcome)) {
+    attempt(() => forge.removeLabel(issue.id, LABEL.waitingMain));
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2410,13 +2459,13 @@ async function schedule(): Promise<ScheduleResult> {
   }
 
   // 上次运行在等检查 / 合并时中断的票：接着等，不重新实现（见 resumeMerging）。带 waiting-main 的是
-  // main-broken 修好后的恢复（resumeWaitingMain 刚打过 merging、去过 pr-open），走强制 rebase。
+  // main-broken 修好后的恢复（resumeWaitingMain 刚打过 merging、去过 pr-open，或上次恢复没做完、去标签前被中断，#119），走强制 rebase。
   // Tickets interrupted last run while waiting for checks / merging: resume that, without reimplementing (see resumeMerging).
-  // One carrying waiting-main is a resume after main-broken was fixed (resumeWaitingMain just added merging and
-  // removed pr-open); it takes the forced-rebase path.
+  // One carrying waiting-main is a resume after main-broken was fixed (resumeWaitingMain just added merging and removed
+  // pr-open, or the previous resume was interrupted before the label came off, #119); it takes the forced-rebase path.
   for (const issue of listIssues([LABEL.picked, LABEL.merging], [LABEL.prOpen, LABEL.stuck]).sort(byUrgency)) {
     if (!allowed(issue.number) || running.has(String(issue.number))) continue;
-    start({ id: String(issue.number), title: issue.title, branch: ownBranch(issue.number), allowProtected: allowedProtected(issue.body), afterMainFix: issue.labels.includes(LABEL.waitingMain) }, true);
+    start({ id: String(issue.number), title: issue.title, branch: ownBranch(issue.number), allowProtected: allowedProtected(issue.body), afterMainFix: isAfterMainFix(issue.labels, LABEL.waitingMain) }, true);
   }
 
   // Plan

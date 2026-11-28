@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { labelsToRemoveOnLeave, resumableWaitingMain, shouldRemovePrOpenOnResume } from "../src/waiting-main.ts";
+import { isAfterMainFix, labelsToRemoveOnLeave, removeWaitingMainAfterResume, resumableWaitingMain, shouldRemovePrOpenOnResume } from "../src/waiting-main.ts";
 import { DEFAULT_LABELS } from "../src/profile.ts";
 
 /** main-broken 修好后的恢复（#86）：waiting-main 候选里哪些票这一轮可以回到合并流程。 */
@@ -38,5 +38,40 @@ describe("shouldRemovePrOpenOnResume", () => {
 
   it("打 merging 失败 → 不去 pr-open，下一轮再试", () => {
     expect(shouldRemovePrOpenOnResume(false)).toBe(false);
+  });
+});
+
+/** afterMainFix 恢复留到结果出来再去 waiting-main（#119）：只有又被 main-broken 挡住保留，其余都去掉。 */
+describe("removeWaitingMainAfterResume", () => {
+  it("合并了、或因别的原因留 PR（受保护路径、复审、检查失败等）→ 去掉 waiting-main", () => {
+    expect(removeWaitingMainAfterResume("merged")).toBe(true);
+    expect(removeWaitingMainAfterResume("left")).toBe(true);
+  });
+
+  it("autoMerge 关着留 PR → 去掉 waiting-main", () => {
+    expect(removeWaitingMainAfterResume("autoMergeOff")).toBe(true);
+  });
+
+  it("rebase 后又被新开的 main-broken 票挡住 → 保留 waiting-main（#86 行为不变）", () => {
+    expect(removeWaitingMainAfterResume("held")).toBe(false);
+  });
+
+  it("恢复中途抛错（mergeWhenReady 的 finally 已去掉 merging）→ 去掉 waiting-main，残留会被人重新实现后的 resumeWaitingMain 误自动合并", () => {
+    expect(removeWaitingMainAfterResume("threw")).toBe(true);
+  });
+});
+
+/** 去标签前中断的票下一轮仍带 waiting-main、仍是 afterMainFix（#119），不退化成普通的中断恢复。 */
+describe("isAfterMainFix", () => {
+  it("去标签前中断（还带 merging + waiting-main）→ 下一轮仍是 afterMainFix，走强制 rebase", () => {
+    expect(isAfterMainFix([DEFAULT_LABELS.picked, DEFAULT_LABELS.merging, DEFAULT_LABELS.waitingMain], DEFAULT_LABELS.waitingMain)).toBe(true);
+  });
+
+  it("只带 merging（普通的中断恢复）→ 不是 afterMainFix", () => {
+    expect(isAfterMainFix([DEFAULT_LABELS.picked, DEFAULT_LABELS.merging], DEFAULT_LABELS.waitingMain)).toBe(false);
+  });
+
+  it("waiting-main 用项目配置的标签名判断，别的同名前缀不算", () => {
+    expect(isAfterMainFix([DEFAULT_LABELS.picked, "sandcastle:waiting-main-old"], DEFAULT_LABELS.waitingMain)).toBe(false);
   });
 });
