@@ -14,6 +14,9 @@ import { DEFAULT_LABELS } from "../src/profile.ts";
 import { trySh } from "../src/shell.ts";
 import { nodeRepo, pythonRepo } from "./fixtures.ts";
 
+/** runner 给 podman info 的 GraphRoot 假路径。 / The fake GraphRoot path the runner returns for podman info. */
+const STORE_PATH = "/var/lib/containers/storage";
+
 /** git 本地命令真跑；连远端和 podman 的换成假的（label 是 image inspect 返回的 `sandpipe.containerfile` 值，缺省当作没打）。 */
 const runner =
   (opts: { image: boolean; pushed?: boolean; label?: string }): Runner =>
@@ -26,6 +29,8 @@ const runner =
     }
     if (cmd === "podman") {
       if (args[0] === "image" && args[1] === "inspect") return { ok: true, out: opts.label ?? "" };
+      // 磁盘预检要量的容器存储路径（假路径，配假 statfs 用）
+      if (args[0] === "info" && args.includes("{{.Store.GraphRoot}}")) return { ok: true, out: `${STORE_PATH}\n` };
       return args[0] === "image" ? { ok: opts.image, out: "" } : { ok: true, out: "arm64" };
     }
     return trySh(cmd, args);
@@ -487,6 +492,87 @@ describe("diagnose：门槛依赖的服务", () => {
     const { checks, probed } = await run(null);
     expect(probed).toEqual([]);
     expect(checks.filter((c) => c.name.startsWith("门槛服务"))).toEqual([]);
+  });
+});
+
+describe("diagnose：磁盘", () => {
+  const GB = 1024 ** 3;
+  /** 按路径返回剩余字节的假 statfs（bsize 固定 4096）；路径不在表里抛 ENOENT（量不到）。 */
+  const statfsWith = (free: Record<string, number>) =>
+    (path: string): { bavail: number; bsize: number } => {
+      const v = free[path];
+      if (v === undefined) throw new Error(`ENOENT: no such file or directory, statfs '${path}'`);
+      return { bavail: v / 4096, bsize: 4096 };
+    };
+  const run = (root: string, statfs: ReturnType<typeof statfsWith>, override?: Runner) =>
+    diagnose({ cwd: root, env: {}, run: override ?? runner({ image: true }), forge: fakeGh(allLabels, []), statfs });
+
+  it("工作目录和容器存储各一行：够 ok，detail 写剩余 GB", async () => {
+    const root = readyRepo();
+    const checks = await run(root, statfsWith({ [root]: 42 * GB, [STORE_PATH]: 6 * GB }));
+    expect(check(checks, "磁盘（工作目录）")).toMatchObject({ level: "ok", detail: "剩余 42.0 GB" });
+    expect(check(checks, "磁盘（容器存储）")).toMatchObject({ level: "ok", detail: "剩余 6.0 GB" });
+  });
+
+  it("低于阈值：fail，detail 写剩余和阈值，fix 给清理命令", async () => {
+    const root = readyRepo();
+    const checks = await run(root, statfsWith({ [root]: 3.2 * GB, [STORE_PATH]: 6 * GB }));
+    const c = check(checks, "磁盘（工作目录）");
+    expect(c).toMatchObject({ level: "fail", detail: "剩余 3.2 GB，少于阈值 5 GB" });
+    expect(c?.fix).toContain("podman image prune");
+    expect(c?.fix).toContain("podman system prune");
+    expect(c?.fix).toContain("git worktree prune");
+    expect(check(checks, "磁盘（容器存储）")).toMatchObject({ level: "ok" });
+  });
+
+  it("量不到（statfs 抛错）：warn，detail 带错误那一句，容器存储的 fix 提示 macOS 的 podman machine", async () => {
+    const root = readyRepo();
+    const checks = await run(root, statfsWith({ [root]: 6 * GB }));
+    const c = check(checks, "磁盘（容器存储）");
+    expect(c).toMatchObject({ level: "warn", detail: expect.stringContaining("ENOENT") });
+    expect(c?.fix).toContain("podman machine");
+  });
+
+  it("取不到 GraphRoot（podman info 失败）：容器存储 warn，工作目录照查", async () => {
+    const root = readyRepo();
+    const noStore: Runner = (cmd, args) =>
+      cmd === "podman" && args.includes("{{.Store.GraphRoot}}") ? { ok: false, out: "Cannot connect to Podman" } : runner({ image: true })(cmd, args);
+    const checks = await run(root, statfsWith({ [root]: 6 * GB }), noStore);
+    expect(check(checks, "磁盘（容器存储）")).toMatchObject({ level: "warn", detail: expect.stringContaining("podman info") });
+    expect(check(checks, "磁盘（工作目录）")).toMatchObject({ level: "ok" });
+  });
+
+  it("配置里自定义了 sandbox：不查容器存储，工作目录照查", async () => {
+    const root = readyRepo();
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(config, readFileSync(config, "utf8").replace("export default defineProject({", "export default defineProject({\n  sandbox: () => ({}) as never,"));
+    const checks = await run(root, statfsWith({ [root]: 6 * GB }));
+    expect(check(checks, "磁盘（工作目录）")).toMatchObject({ level: "ok" });
+    expect(check(checks, "磁盘（容器存储）")).toBeUndefined();
+  });
+
+  it("preflight.minFreeGb 配了阈值：按配置判", async () => {
+    const root = readyRepo();
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(config, readFileSync(config, "utf8").replace("export default defineProject({", "export default defineProject({\n  preflight: { minFreeGb: 2 },"));
+    const checks = await run(root, statfsWith({ [root]: 3 * GB, [STORE_PATH]: 3 * GB }));
+    expect(check(checks, "磁盘（工作目录）")).toMatchObject({ level: "ok", detail: "剩余 3.0 GB" });
+    expect(check(checks, "磁盘（容器存储）")).toMatchObject({ level: "ok" });
+  });
+
+  it("没给 statfs：整节跳过（不碰真实磁盘）", async () => {
+    const checks = await diagnose({ cwd: readyRepo(), env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+    expect(checks.filter((c) => c.name.startsWith("磁盘"))).toEqual([]);
+  });
+
+  it("低于阈值（英文项目）：行名和文案是英文", async () => {
+    const root = pythonRepo();
+    installFiles(root, detectProject(root));
+    writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=y\n");
+    writeFileSync(join(root, ".sandcastle/OPEN-QUESTIONS.md"), "");
+    const checks = await run(root, statfsWith({ [root]: 3 * GB, [STORE_PATH]: 6 * GB }));
+    expect(check(checks, "Disk (working dir)")).toMatchObject({ level: "fail", detail: "3.0 GB free, below the 5 GB threshold" });
+    expect(check(checks, "Disk (container storage)")).toMatchObject({ level: "ok", detail: "6.0 GB free" });
   });
 });
 

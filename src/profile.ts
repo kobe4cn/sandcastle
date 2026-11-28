@@ -19,6 +19,7 @@ import { podman } from "@ai-hero/sandcastle/sandboxes/podman";
 import type { Forge, MergeMethod } from "./forge.ts";
 import { githubForge } from "./forges/github.ts";
 import { messages, type Language, type Messages } from "./i18n.ts";
+import { DEFAULT_MIN_FREE_GB } from "./preflight.ts";
 import { t } from "./term.ts";
 
 export const CONFIG_FILE = "sandcastle.config.ts";
@@ -167,6 +168,15 @@ export interface ProjectProfile {
    * After every this many merged dependency-selected tickets, run the full suite on main as a fallback. Default 4.
    */
   mainCheckEvery?: number;
+
+  /**
+   * 预检阈值：minFreeGb 是磁盘最低剩余空间（GB），工作目录和容器存储（podman 的 GraphRoot）各查一行，低于时
+   * doctor 不通过并给清理命令；量不到只警告。默认 5（见 src/preflight.ts）。
+   * Preflight thresholds: minFreeGb is the minimum free disk space (GB); the working directory and the container storage
+   * (podman's GraphRoot) each get a line, and doctor fails below it with cleanup commands, while an unmeasurable path only
+   * warns. Default 5 (see src/preflight.ts).
+   */
+  preflight?: { minFreeGb?: number };
 
   /** 标签名。默认见 DEFAULT_LABELS。 / Label names. Defaults in DEFAULT_LABELS. */
   labels?: Partial<Labels>;
@@ -327,6 +337,7 @@ export type Project = Required<
   protectedPaths: RegExp[];
   trustedAuthors: string[];
   notify: { env: string };
+  preflight: { minFreeGb: number };
   texts: Required<NonNullable<ProjectProfile["texts"]>>;
 };
 
@@ -362,6 +373,7 @@ export function resolveProject(p: ProjectProfile): Project {
     protectedPaths: p.protectedPaths ?? [],
     trustedAuthors: p.trustedAuthors ?? [],
     notify: { env: p.notify?.env || "SANDPIPE_NOTIFY_WEBHOOK" },
+    preflight: { minFreeGb: p.preflight?.minFreeGb ?? DEFAULT_MIN_FREE_GB },
     texts: { ...defaultTexts(p.language), ...p.texts },
   };
 }
