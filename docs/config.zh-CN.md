@@ -100,7 +100,7 @@ onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-
 | `reviseMax` | 2 | reviewer 最多打回几次 |
 | `contextBudget` | 150000 | 单个会话的上下文预算（token） |
 | `agentIdleTimeoutS` | 2400 | agent 多久没输出算卡死 |
-| `pollIntervalMs` / `maxIdlePolls` | 10 分钟 / 12 | 调度间隔；连续空转多少次后结束。`Infinity` 表示一直运行（不空闲退出）——守护进程下用一个：systemd / launchd 停服务时发 SIGTERM，和 Ctrl-C 一样收尾，退出码 143 |
+| `pollIntervalMs` / `maxIdlePolls` | 10 分钟 / 12 | 调度间隔；连续空转多少次后结束。`Infinity` 表示一直运行（不空闲退出）——守护进程下用它：systemd / launchd 停服务时发 SIGTERM，和 Ctrl-C 一样收尾，退出码 143 |
 | `preflight.minFreeGb` | 5 | 磁盘预检的阈值：工作目录和容器存储（podman 的 GraphRoot）的最低剩余空间（GB）。`sandpipe doctor` 各查一行：够 ✓ 写剩余；低于阈值 ✗ 写剩余 / 阈值，fix 给清理命令（`podman image prune`、`podman system prune`、`git worktree prune`）；量不到只 ⚠（比如 macOS 的 podman machine 下 GraphRoot 在虚拟机里，宿主机上量不到）。配置里自定义了 `sandbox` 时不查容器存储。`sandpipe run` 每轮也查，不够时暂停开新会话 |
 | `spendLimit.ticketTokens` | 不限 | 单票花费上限（token）：开每个会话之前（implement、review、rebase、re-review、prep 都算）把 `usage.jsonl` 里这张票的全部记录折算成 token 求和——每条记录有 `models`（各模型合计，含子代理）就取它，没有取主行；输入、缓存写、缓存读、输出四项相加（缓存读往往比其他几项大一个数量级，上限要按这个口径设），撞限额的 `limited` 记录、第三方档案的记录同样计入，跨运行、重启后照旧有效。已用 ≥ 上限就不开这个会话：票打 `sandcastle:stuck`，评论写明已用多少、上限多少，提示先调大上限再去掉标签（不调大的话，去掉标签后下一个会话会马上再次停下）；会话中途超出不打断，下一个会话才停 |
 | `labels` | 见下 | 改标签名 |
