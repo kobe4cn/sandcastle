@@ -63,6 +63,7 @@ Run every command in the target project's root; if the config lives elsewhere, f
 - [ ] Remove `autoMerge: false` from `sandcastle.config.ts` (auto-merge is the default)
 - [ ] Raise `maxParallel` gradually; the limit depends on the services the tests use (such as database connections) and machine load
 - [ ] For the first few runs without `SANDCASTLE_ONLY` over all labelled tickets, watch whether the fallback full run passes and whether `main-broken` / `flaky` tickets get opened
+- [ ] To run unattended for long stretches, set `maxIdlePolls: Infinity` and put `sandpipe run` under a supervisor — see [Running as a service in config](config.md#running-as-a-service)
 
 ## Rolling back
 

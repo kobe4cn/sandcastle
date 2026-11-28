@@ -123,6 +123,72 @@ onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-
 | `beforeSchedule()` | 无 | 每次调度开头在宿主机上跑的维护 |
 | `texts` | 通用版 | 自动开的票和内联提示词的正文 |
 
+## 进程守护
+
+无人值守长跑（过夜、周末）时，把 `sandpipe run` 交给进程守护，在跑 worktree 的那台机器上：Linux 用 systemd，macOS 用 launchd。一个项目一个实例——运行锁会让同一项目的第二个实例马上报错退出。配 `maxIdlePolls: Infinity`（见「可选」表）让它不自己退出：默认下连续空转到数就以退出码 0 退出，`Restart=on-failure` 不会拉起，launchd 的 `KeepAlive` 则每次空闲退出都重启一轮。
+
+- **路径与环境**：`WorkingDirectory` 设为项目根。用户 unit / launchd 代理不继承 shell 的环境：`HOME` 要设（gh 和 Claude 的配置在里面），`PATH` 要能找到 `node`、`git`、`gh`、`podman`。跑发版的包——全局安装（`sandpipe run`），或固定版本的 `npx sandpipe@<version> run` / `pnpm dlx sandpipe@<version> run`。
+- **重启策略**：systemd 用 `Restart=on-failure` 加 `RestartSec`（重启间隔拉开，环境坏掉时不会疯狂打转）；`KillMode=mixed` 让停服务的 SIGTERM 到主进程，剩下的子进程清掉。失败的重启计入 systemd 的启动限制——长跑的服务把 `StartLimitBurst` 调大。launchd 用 `KeepAlive`。
+- **停服务**：`systemctl stop`（或 `launchctl unload`）发 SIGTERM，和 Ctrl-C 一样收尾——列出进行中的会话、释放运行锁、退出码 143——守护自己发起的停止不算失败，不会再拉起。`kill -9` 后残留的 `run.lock` 由下次启动接管。
+- **日志**：终端输出进 journald（`journalctl --user -u sandpipe.service`）或 launchd 的 `StandardOutPath` / `StandardErrorPath` 文件，后者不会自动轮转——长跑自己配 newsyslog。`.sandcastle/logs/` 下的文件由流水线自己清：`.log` 最后修改超过 14 天就删，`errors.log` 到 10 MB 轮转为 `errors.log.1`；`usage.jsonl` 等数据文件不删。
+- **凭据与环境变量**：Claude 凭据照旧放 `.sandcastle/.env`——unit / plist 里不写任何密钥。可选环境变量：`SANDPIPE_LANG`（zh / en，只管终端）、`SANDPIPE_NOTIFY_WEBHOOK`（异常退出那条在 `.sandcastle/.env` 里为空时从宿主机环境变量取）、`SANDCASTLE_ONLY`（逗号分隔票号；守护进程下一般不设）。
+
+示例（systemd 用户 unit，`~/.config/systemd/user/sandpipe.service`；`systemctl --user enable --now sandpipe` 启用——不开 `loginctl enable-linger` 时用户单元登出后跟着停）：
+
+```ini
+[Unit]
+Description=sandpipe run（我的项目）
+# 失败的重启计入 systemd 的启动限制，长跑的服务留出余量
+StartLimitBurst=10
+
+[Service]
+WorkingDirectory=/path/to/project
+# 用户 unit 不继承 shell 的 PATH——node、git、gh、podman 在哪要写全
+Environment=PATH=/home/you/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/you
+ExecStart=/home/you/.local/share/pnpm/sandpipe run
+Restart=on-failure
+RestartSec=30
+# 停服务的 SIGTERM 到主进程，正常收尾（退出码 143），剩下的子进程清掉
+KillMode=mixed
+
+[Install]
+WantedBy=default.target
+```
+
+示例（launchd 代理，`~/Library/LaunchAgents/com.example.sandpipe.plist`；macOS 上 podman 跑在虚拟机里、开机不会自己起——先 `podman machine start`，或给虚拟机也配一个代理）：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.sandpipe</string>
+  <key>WorkingDirectory</key>
+  <string>/path/to/project</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/sandpipe</string>
+    <string>run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/you</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/you/Library/Logs/sandpipe.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/you/Library/Logs/sandpipe.log</string>
+</dict>
+</plist>
+```
+
 ## 模型
 
 每个阶段用哪些档案写在 `.sandcastle/models.json`（每个阶段一个有序的档案列表、撞限额时换下一个，档案带 model、effort、env；当前的选择看 `sandpipe doctor`）。无论哪个档案，沙箱里的每条 claude 命令都关掉了 Claude Code 自带的提交 / PR 署名：`--settings '{"includeCoAuthoredBy":false,"attribution":{"commit":"","pr":""}}'`，优先级高于项目自己的 `.claude/settings.json`，在那里改不回来。提交和 PR 因此不带模型名的 `Co-Authored-By` 署名；不这么做的话，别家档案（把 `opus` 经 `ANTHROPIC_BASE_URL` 转到别家）的提交仍会被署名成 Anthropic 的模型，因为 Claude Code 只看得到别名。各阶段实际用的档案 / 模型记在 PR 正文的 Usage 表里。

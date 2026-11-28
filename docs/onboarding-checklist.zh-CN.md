@@ -63,6 +63,7 @@
 - [ ] `sandcastle.config.ts` 去掉 `autoMerge: false`（默认就是自动合并）
 - [ ] `maxParallel` 逐步调高；上限看测试依赖的服务（比如数据库连接数）和机器负载
 - [ ] 前几轮去掉 `SANDCASTLE_ONLY` 跑全部带标签的票时，留意：兜底完整测试是否通过，有没有自动开出 `main-broken` / `flaky` 票
+- [ ] 要长时间无人值守运行，配 `maxIdlePolls: Infinity` 并把 `sandpipe run` 交给进程守护——见 [config 的「进程守护」](config.zh-CN.md#进程守护)
 
 ## 回退
 
