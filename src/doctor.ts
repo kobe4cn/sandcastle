@@ -80,6 +80,17 @@ function scanEnvFiles(configFile: string): string[] {
   return [...new Set(found)].filter((p) => !p.startsWith(".sandcastle/") && !p.endsWith(".example") && !p.endsWith(".sample"));
 }
 
+/**
+ * 门槛脚本是否跑了浏览器 e2e：文本里出现 playwright，或包含探测到的 e2e 命令（onboard 会把它接在 gate.script 末尾，但用户也可以换一种写法跑）。
+ * 「项目有没有页面」（探测到 webUi 或配了 browser.pagePaths）由调用方判断。
+ * Whether the gate script runs browser e2e: playwright appears in its text, or it contains the detected e2e command (onboard appends it to gate.script, but the user may run it another way).
+ * Whether the project "has pages" (a detected web UI or browser.pagePaths set) is the caller's call.
+ */
+export function gateRunsE2e(script: string, e2e?: string): boolean {
+  if (/playwright/.test(script)) return true;
+  return !!e2e && script.includes(e2e);
+}
+
 export async function diagnose(opts: {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -209,10 +220,39 @@ export async function diagnose(opts: {
   // 文案和 run 启动时的警告共用 browserSetupWarning。PROJECT.md 解析失败上面已经报过，这里跳过。
   // A heuristic check that only warns: a web UI was detected or browser.pagePaths is set, but PROJECT.md doesn't say how to start the dev server in the sandbox, so tickets that change pages are left for a human;
   // the text is shared with run's startup warning via browserSetupWarning. A PROJECT.md parse failure was already reported above, so skip it here.
-  if (doc && ((project?.browser.pagePaths.length ?? 0) > 0 || detectProject(cwd).webUi)) {
+  // 下面「浏览器 e2e」一项也用探测结果，detectProject 只跑一次。
+  // The Browser e2e check below uses the same detection, so detectProject runs once.
+  const facts = detectProject(cwd);
+  const hasPages = (project?.browser.pagePaths.length ?? 0) > 0 || facts.webUi;
+  if (doc && hasPages) {
     const name = t("浏览器验收", "Browser check");
     if (doc.hasBrowser) add(name, "ok", t("PROJECT.md 写了浏览器验收", "PROJECT.md has a browser check"));
     else add(name, "warn", browserSetupWarning(manual("config", termLanguage())));
+  }
+
+  // ---- 浏览器 e2e ---- / Browser e2e
+  // 有页面但门槛没跑浏览器 e2e：改坏页面时门槛拦不住，提示怎么接（#66 期望 4）。不依赖 PROJECT.md，配置加载失败时跳过；
+  // gate.script 是用户代码，取门槛文本要包 try/catch，抛错时这一项跳过而不是不通过。
+  // Pages but no browser e2e in the gate: broken pages slip past the gate, so hint how to wire it up (#66, item 4). Doesn't depend on PROJECT.md; skipped when the config fails to load;
+  // gate.script is user code, so reading the gate text is wrapped in try/catch and a throw skips this check instead of failing it.
+  if (project && hasPages) {
+    const name = t("浏览器 e2e", "Browser e2e");
+    try {
+      if (gateRunsE2e(project.gate.script({ baseRef: "origin/main" }), facts.commands.e2e))
+        add(name, "ok", t("门槛跑了浏览器 e2e", "The gate runs browser e2e"));
+      else
+        add(
+          name,
+          "warn",
+          t(
+            `项目有页面，但门槛没跑浏览器 e2e：改坏页面时拦不住。把 e2e 命令接进 gate.script（装 @playwright/test，用 Playwright 的 webServer 在门槛里起 dev server），依赖的服务写进 gate.services（沙箱访问用 isolation.env 配合 toContainerHost），接法见 ${manual("config", termLanguage())} 的「浏览器验收」一节`,
+            `The project has pages but the gate runs no browser e2e: broken pages slip through. Add the e2e command to gate.script (install @playwright/test and start the dev server inside the gate with Playwright's webServer), put the services it depends on into gate.services (the sandbox reaches them through isolation.env with toContainerHost), following the Browser check section of ${manual("config", termLanguage())}`,
+          ),
+        );
+    } catch {
+      // 取不到门槛文本：跳过这一项
+      // No gate text: skip this check
+    }
   }
 
   // ---- 合并条件 ---- / Merge requirements

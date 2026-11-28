@@ -99,6 +99,8 @@ describe("diagnose", () => {
       "PROJECT.md": "warn",
       // nodeRepo 有 react，草稿不生成浏览器验收
       浏览器验收: "warn",
+      // 门槛也没接 e2e（nodeRepo 没有 test:e2e script）
+      "浏览器 e2e": "warn",
       // onboard 生成的配置 autoMerge: false
       合并条件: "ok",
       受保护路径: "ok",
@@ -132,7 +134,14 @@ describe("diagnose", () => {
     });
 
     // 值空着、取宿主机环境变量也算；--fix 建好全部标签（镜像的 label 与当前 Containerfile 一致，--fix 才不会去重建）
+    // 有页面还要把 e2e 接进门槛（「浏览器 e2e」一项才不警告）：先加 script，再把已生成的配置里 gate 末尾接上
     writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=\n");
+    const pkg = join(root, "package.json");
+    const json = JSON.parse(readFileSync(pkg, "utf8")) as { scripts: Record<string, string> };
+    json.scripts["test:e2e"] = "playwright test";
+    writeFileSync(pkg, JSON.stringify(json));
+    const gate = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(gate, readFileSync(gate, "utf8").replace(`&& pnpm test",`, `&& pnpm test && pnpm test:e2e",`));
     const third = await diagnose({
       cwd: root,
       env: { CLAUDE_CODE_OAUTH_TOKEN: "t" },
@@ -157,9 +166,14 @@ describe("diagnose", () => {
 /** nodeRepo 有 react（探测到网页界面），准备好的项目要写上浏览器验收。 */
 const BROWSER_SECTION = "\n## 浏览器验收\n\n1. 起服务：`pnpm dev --port 5180 &`，等 curl 通。\n";
 
-/** onboard 生成、.env 填好、PROJECT.md 写完（去掉「待补」）的项目。 */
+/** onboard 生成、.env 填好、PROJECT.md 写完（去掉「待补」）、门槛接了 e2e 的项目。 */
 function readyRepo() {
   const root = nodeRepo();
+  // 有页面的项目门槛要跑 e2e（doctor 有「浏览器 e2e」一项）：加 test:e2e script，installFiles 生成的 gate 会接上
+  const pkg = join(root, "package.json");
+  const json = JSON.parse(readFileSync(pkg, "utf8")) as { scripts: Record<string, string> };
+  json.scripts["test:e2e"] = "playwright test";
+  writeFileSync(pkg, JSON.stringify(json));
   installFiles(root, detectProject(root));
   writeFileSync(join(root, ".sandcastle/.env"), "GH_TOKEN=x\nCLAUDE_CODE_OAUTH_TOKEN=y\n");
   writeFileSync(join(root, ".env"), "DATABASE_URL=postgres://u:p@localhost:5432/app\n");
@@ -385,6 +399,56 @@ describe("diagnose：浏览器验收", () => {
     const root = pythonRepo();
     installFiles(root, detectProject(root));
     expect(check(await run(root), "浏览器验收")).toBeUndefined();
+  });
+});
+
+describe("diagnose：浏览器 e2e", () => {
+  const run = (root: string) => diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
+  /** 把 readyRepo 生成的 gate 里的 e2e 命令换掉（replacement 为空即去掉），模拟门槛没跑 e2e / 用别的写法跑。 */
+  const gateWithoutE2e = (root: string, replacement = "") => {
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(config, readFileSync(config, "utf8").replace(" && pnpm test:e2e", replacement ? ` && ${replacement}` : ""));
+    return root;
+  };
+
+  it("有网页界面、门槛没跑 e2e：警告，说明接法并指向 config 文档", async () => {
+    expect(check(await run(gateWithoutE2e(readyRepo())), "浏览器 e2e")).toMatchObject({
+      level: "warn",
+      detail: expect.stringMatching(/浏览器 e2e[\s\S]*gate\.script[\s\S]*gate\.services[\s\S]*docs\/config\.zh-CN\.md/),
+    });
+  });
+
+  it("门槛脚本里有 playwright：通过", async () => {
+    expect(check(await run(gateWithoutE2e(readyRepo(), "pnpm exec playwright test")), "浏览器 e2e")?.level).toBe("ok");
+  });
+
+  it("门槛接了探测到的 test:e2e 命令：通过", async () => {
+    expect(check(await run(readyRepo()), "浏览器 e2e")?.level).toBe("ok");
+  });
+
+  it("没有网页界面：没有这一项", async () => {
+    const root = pythonRepo();
+    installFiles(root, detectProject(root));
+    expect(check(await run(root), "浏览器 e2e")).toBeUndefined();
+  });
+
+  it("gate.script 抛错：跳过这一项，不报错", async () => {
+    const root = readyRepo();
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(config, readFileSync(config, "utf8").replace(/script: \(\) => ".*",/, 'script: () => {\n      throw new Error("配置读不了");\n    },'));
+    expect(check(await run(root), "浏览器 e2e")).toBeUndefined();
+  });
+
+  it("英文文案：警告说明接法并指向英文 config 文档", async () => {
+    const root = pythonRepo();
+    installFiles(root, detectProject(root));
+    const config = join(root, ".sandcastle/sandcastle.config.ts");
+    writeFileSync(config, readFileSync(config, "utf8").replace("  autoMerge: false,", "  autoMerge: false,\n  browser: { pagePaths: [/\\.tsx$/] },"));
+    // 这个夹具是英文项目，检查项名和文案都是英文
+    expect(check(await run(root), "Browser e2e")).toMatchObject({
+      level: "warn",
+      detail: expect.stringMatching(/browser e2e[\s\S]*gate\.script[\s\S]*gate\.services[\s\S]*docs\/config\.md/),
+    });
   });
 });
 
