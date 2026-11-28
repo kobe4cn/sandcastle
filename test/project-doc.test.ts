@@ -109,6 +109,12 @@ describe("用 duckdb_crm 的 PROJECT.md 渲染", () => {
     expect(out.prep).toContain("/fill-project-docs");
   });
 
+  it("验收说明的多行内容用代码块写，行内代码不换行（#125）", () => {
+    expect(out.implement).toContain("多行命令或多行内容");
+    expect(out.implement).toContain("行内代码（单个反引号）只用于不换行的短片段");
+    expect(out.review).toContain("行内代码里没有换行");
+  });
+
   it("Blocked by 的写法：一个 blocker 一行列表项，不写在标题行上（#100）", () => {
     expect(out.prep).toContain("`- #{{TASK_ID}}`");
     expect(out.prep).not.toContain("## Blocked by #{{TASK_ID}}");
