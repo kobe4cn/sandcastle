@@ -94,7 +94,7 @@ import type { ForgeComment, ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { mainBrokenBlocker, type MergeFlowDeps, type MergeResult, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
 import { configDir, loadProject } from "./profile.ts";
 import {
-  acquireRunLock, agentAuthReason, authHitCapped, type AuthHits, authRecovered, errorLine, exitWhenDone, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GATE_INFRA_PREFIX, GateInfraError, imageExists, isAgentIdleTimeout, isGateInfraFailure, imageStaleWarning, logErrorDetail, missingImage, onInterrupt,
+  acquireRunLock, agentAuthReason, authHitCapped, type AuthHits, authRecovered, errorLine, exitWhenDone, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GATE_INFRA_PREFIX, GateInfraError, idleProgress, idleStop, imageExists, isAgentIdleTimeout, isGateInfraFailure, imageStaleWarning, logErrorDetail, missingImage, onInterrupt,
   nextAuthHits, podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath, untilAuthRecovered, waitForPodman,
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
@@ -2756,7 +2756,7 @@ for (let pass = 1; ; pass++) {
       continue;
     } else {
       idlePolls++;
-      if (idlePolls >= MAX_ITERATIONS) {
+      if (idleStop(idlePolls, MAX_ITERATIONS)) {
         console.log(
           t(
             `没有可以开工的票（都在等 blocker、等人审 PR，或需要人处理），连续空转 ${idlePolls} 次，结束运行。`,
@@ -2766,10 +2766,11 @@ for (let pass = 1; ; pass++) {
         break;
       }
       const mins = POLL_INTERVAL_MS / 60_000;
+      const progress = idleProgress(idlePolls, MAX_ITERATIONS);
       console.log(
         t(
-          `没有可以开工的票（都在等 blocker、等人审 PR，或需要人处理），${mins} 分钟后再查（空转 ${idlePolls}/${MAX_ITERATIONS}）。`,
-          `No tickets can start (all waiting on blockers, PR reviews, or a human); checking again in ${mins} min (idle ${idlePolls}/${MAX_ITERATIONS}).`,
+          `没有可以开工的票（都在等 blocker、等人审 PR，或需要人处理），${mins} 分钟后再查（${progress}）。`,
+          `No tickets can start (all waiting on blockers, PR reviews, or a human); checking again in ${mins} min (${progress}).`,
         ),
       );
     }
