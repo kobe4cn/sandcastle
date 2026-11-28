@@ -92,6 +92,11 @@ const GITHUB_AGENT_GUIDE = `平台是 GitHub，用已登录的 \`gh\`。issue �
 const lines = (out: string) => out.split("\n").filter(Boolean);
 
 export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefined, env)): Forge {
+  // issueUrl 的仓库链接：第一次用到时探测一次并缓存（null = 还没探过）。gh 报错或输出为空也缓存成
+  // undefined、以后不再重试——发通知是顺带的事，issueUrl 绝不能抛错打断调用它的编排流程（#135）。
+  // Repository URL for issueUrl: probed once on first use and cached (null = not yet probed). A failing or empty gh
+  // output also caches undefined with no retry — notifying is incidental, and issueUrl must never throw into the pipeline (#135).
+  let repoUrl: string | undefined | null = null;
   return {
     name: "github",
     tokenEnv: "GH_TOKEN",
@@ -179,6 +184,20 @@ export function githubForge(gh: GhRunner = (args, env) => sh("gh", args, undefin
     },
     issueUpdatedAt(id) {
       return gh(["issue", "view", id, "--json", "updatedAt", "--jq", ".updatedAt"]);
+    },
+    issueUrl(id) {
+      // 用 --json url 而不是 nameWithOwner：url 自带 host（GHE 也适用）。探测只在第一次做，结果连失败一起缓存。
+      // --json url, not nameWithOwner: the url carries its host (works on GHE too). The probe runs only once, and its
+      // result — including failure — is cached.
+      if (repoUrl === null) {
+        try {
+          const url = gh(["repo", "view", "--json", "url", "-q", ".url"]).trim();
+          repoUrl = url || undefined;
+        } catch {
+          repoUrl = undefined;
+        }
+      }
+      return repoUrl === undefined ? undefined : `${repoUrl}/issues/${id}`;
     },
     issueComments(id) {
       // REST 接口按创建时间升序；--paginate 配 --jq 时每页单独输出，按行拆即可。字段是 user，不是 GraphQL 的 author。

@@ -65,6 +65,30 @@ describe("githubForge 发给 gh 的参数", () => {
     expect(() => failing("error connecting to api.github.com").issueState("99")).toThrow();
   });
 
+  it("issueUrl 用 gh repo view --json url 探一次仓库链接并缓存，拼出票的链接（#135）", () => {
+    const { forge, calls } = fakeGh("https://github.com/o/r\n");
+    expect(forge.issueUrl!("7")).toBe("https://github.com/o/r/issues/7");
+    expect(forge.issueUrl!("8")).toBe("https://github.com/o/r/issues/8");
+    expect(calls).toEqual([["repo", "view", "--json", "url", "-q", ".url"]]);
+  });
+
+  it("issueUrl 在 gh 报错时返回 undefined 不抛错，失败也缓存、不再重试", () => {
+    let calls = 0;
+    const forge = githubForge(() => {
+      calls += 1;
+      throw new Error("error connecting to api.github.com");
+    });
+    expect(forge.issueUrl!("7")).toBeUndefined();
+    expect(forge.issueUrl!("8")).toBeUndefined();
+    expect(calls).toBe(1);
+  });
+
+  it("issueUrl 输出为空时返回 undefined", () => {
+    const { forge, calls } = fakeGh("  \n");
+    expect(forge.issueUrl!("7")).toBeUndefined();
+    expect(calls).toEqual([["repo", "view", "--json", "url", "-q", ".url"]]);
+  });
+
   it("prChecks 发 gh pr checks --json，bucket 归一成 pass / fail / pending", () => {
     const rows = [
       { name: "a", bucket: "pass", link: "https://x/a" },
