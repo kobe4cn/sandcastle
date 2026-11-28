@@ -87,15 +87,17 @@ try {
   console.error(process.env.SANDPIPE_DEBUG ? e : `✗ ${e instanceof Error ? e.message : String(e)}`);
   if (!process.env.SANDPIPE_DEBUG) console.error(t("（设 SANDPIPE_DEBUG=1 看完整堆栈）", "(set SANDPIPE_DEBUG=1 for the full stack)"));
   // run 异常退出前发一条 crashed 通知（原因只取错误第一行；notify.ts 自带 10 秒上限、从不 reject，发不出去照常退出码 1）。
-  // cli 不加载项目配置，只认默认变量名，自定义了 notify.env 的项目异常退出时收不到。
+  // 这条不重试（retry: false），总等待不因为重试变长、仍封顶 10 秒；cli 不加载项目配置，只认默认变量名，
+  // 自定义了 notify.env 的项目异常退出时收不到。
   // Send a crashed notification before an abnormal run exit (reason is the error's first line; notify.ts caps at 10 s
-  // and never rejects; exit code stays 1 when it can't be sent). The CLI loads no project config, so only the default
-  // variable name is recognized — projects that customized notify.env get no crash notification.
+  // and never rejects; exit code stays 1 when it can't be sent). This one doesn't retry (retry: false), so the total
+  // wait doesn't grow and still caps at 10 s; the CLI loads no project config, so only the default variable name is
+  // recognized — projects that customized notify.env get no crash notification.
   if (cmd === "run") {
     try {
       const { createNotifier, readNotifyUrl } = await import("./notify.ts");
       const reason = (e instanceof Error ? e.message : String(e)).split("\n")[0] ?? "";
-      await createNotifier({ url: readNotifyUrl("SANDPIPE_NOTIFY_WEBHOOK"), language: termLanguage(), warn: console.warn })({ event: "crashed", reason });
+      await createNotifier({ url: readNotifyUrl("SANDPIPE_NOTIFY_WEBHOOK"), language: termLanguage(), warn: console.warn, retry: false })({ event: "crashed", reason });
     } catch {
       // 通知本身出错不改变退出行为。 / A failure in the notification doesn't change how the process exits.
     }

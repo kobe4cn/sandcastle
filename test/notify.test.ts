@@ -86,6 +86,7 @@ describe("createNotifier", () => {
         throw new Error("network down");
       }) as typeof fetch,
       warn: (l) => warns.push(l),
+      sleep: async () => {},
     });
     await expect(throwing({ event: "stuck", issue: "1", reason: "r" })).resolves.toBeUndefined();
     const failing = createNotifier({
@@ -93,6 +94,7 @@ describe("createNotifier", () => {
       language: "zh",
       fetcher: (async () => new Response("nope", { status: 500 })) as typeof fetch,
       warn: (l) => warns.push(l),
+      sleep: async () => {},
     });
     await expect(failing({ event: "stuck", issue: "1", reason: "r" })).resolves.toBeUndefined();
     expect(warns).toHaveLength(2);
@@ -111,6 +113,7 @@ describe("createNotifier", () => {
         throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
       }) as typeof fetch,
       warn: (l) => warns.push(l),
+      sleep: async () => {},
     });
     await notify({ event: "stuck", issue: "1", reason: "r" });
     expect(warns).toEqual(["  ⚠ 通知发送失败（TimeoutError），不影响运行"]);
@@ -125,6 +128,7 @@ describe("createNotifier", () => {
         throw new TypeError("fetch failed", { cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }) });
       }) as typeof fetch,
       warn: (l) => warns.push(l),
+      sleep: async () => {},
     });
     await reset({ event: "stuck", issue: "1", reason: "r" });
     const aggregate = createNotifier({
@@ -136,6 +140,7 @@ describe("createNotifier", () => {
         });
       }) as typeof fetch,
       warn: (l) => warns.push(l),
+      sleep: async () => {},
     });
     await aggregate({ event: "stuck", issue: "1", reason: "r" });
     expect(warns).toEqual(["  ⚠ 通知发送失败（ECONNRESET），不影响运行", "  ⚠ 通知发送失败（ENOTFOUND），不影响运行"]);
@@ -150,6 +155,7 @@ describe("createNotifier", () => {
         throw new Error("Failed to parse URL from https://hooks.example/secret");
       }) as typeof fetch,
       warn: (l) => warns.push(l),
+      sleep: async () => {},
     });
     await notify({ event: "stuck", issue: "1", reason: "r" });
     expect(warns).toEqual(["  ⚠ 通知发送失败（Failed to parse URL from …），不影响运行"]);
@@ -166,12 +172,107 @@ describe("createNotifier", () => {
           throw new TypeError("fetch failed", { cause: Object.assign(new Error("x"), { code: "ECONNRESET" }) });
         }) as typeof fetch,
         warn: (l) => warns.push(l),
+        sleep: async () => {},
       });
       await notify({ event: "stuck", issue: "1", reason: "r" });
       expect(warns).toEqual(["  ⚠ Notify webhook failed (ECONNRESET); the run continues"]);
     } finally {
       setTermLanguage("zh", {});
     }
+  });
+
+  /** 按调用次数返回不同结果（抛错或 Response）的 fetcher；越界时重复最后一步。 / A fetcher returning a different result per call (throwing or a Response); past the end it repeats the last step. */
+  const sequence = (steps: (() => Response)[]) => {
+    const calls: { url: string; init: RequestInit }[] = [];
+    let i = 0;
+    return {
+      calls,
+      fetcher: (async (url: string | RequestInfo | URL, init?: RequestInit) => {
+        calls.push({ url: String(url), init: init ?? {} });
+        return steps[Math.min(i++, steps.length - 1)]();
+      }) as typeof fetch,
+    };
+  };
+
+  /** 记录 ms 的假 sleep。 / A fake sleep recording the waited ms. */
+  const sleepLog = () => {
+    const sleeps: number[] = [];
+    return { sleeps, sleep: async (ms: number) => void sleeps.push(ms) };
+  };
+
+  it("抛错后等 5 秒重试一次：重试成功就不警告", async () => {
+    const { calls, fetcher } = sequence([
+      () => {
+        throw new Error("network down");
+      },
+      () => new Response("{}"),
+    ]);
+    const { sleeps, sleep } = sleepLog();
+    const warns: string[] = [];
+    const notify = createNotifier({ url: "https://hooks.example/z", language: "zh", fetcher, warn: (l) => warns.push(l), sleep });
+    await notify({ event: "stuck", issue: "1", reason: "r" });
+    expect(calls).toHaveLength(2);
+    expect(warns).toEqual([]);
+    expect(sleeps).toEqual([5000]);
+  });
+
+  it("重试也抛错：只 warn 一行，带错误类型、不含 webhook URL", async () => {
+    const warns: string[] = [];
+    const notify = createNotifier({
+      url: "https://hooks.example/secret",
+      language: "zh",
+      fetcher: (async () => {
+        throw new TypeError("fetch failed", { cause: Object.assign(new Error("x"), { code: "ECONNRESET" }) });
+      }) as typeof fetch,
+      warn: (l) => warns.push(l),
+      sleep: async () => {},
+    });
+    await notify({ event: "stuck", issue: "1", reason: "r" });
+    expect(warns).toEqual(["  ⚠ 通知发送失败（ECONNRESET），不影响运行"]);
+    expect(warns[0]).not.toContain("hooks.example");
+  });
+
+  it("4xx（除 429）不重试：404 只发一次、不睡，警告带状态码", async () => {
+    const { calls, fetcher } = sequence([() => new Response("nope", { status: 404 })]);
+    const { sleeps, sleep } = sleepLog();
+    const warns: string[] = [];
+    const notify = createNotifier({ url: "https://hooks.example/z", language: "zh", fetcher, warn: (l) => warns.push(l), sleep });
+    await notify({ event: "stuck", issue: "1", reason: "r" });
+    expect(calls).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+    expect(warns).toEqual(["  ⚠ 通知发送失败（HTTP 404），不影响运行"]);
+  });
+
+  it("5xx 和 429 重试一次：重试后仍失败按最后一次的结果警告", async () => {
+    for (const status of [500, 429]) {
+      const { calls, fetcher } = sequence([
+        () => new Response("nope", { status }),
+        () => new Response("still no", { status: 503 }),
+      ]);
+      const { sleeps, sleep } = sleepLog();
+      const warns: string[] = [];
+      const notify = createNotifier({ url: "https://hooks.example/z", language: "zh", fetcher, warn: (l) => warns.push(l), sleep });
+      await notify({ event: "stuck", issue: "1", reason: "r" });
+      expect(calls).toHaveLength(2);
+      expect(sleeps).toEqual([5000]);
+      expect(warns).toEqual(["  ⚠ 通知发送失败（HTTP 503），不影响运行"]);
+    }
+  });
+
+  it("retry: false：抛错只发一次、不睡，仍只 warn 一行", async () => {
+    const { calls, fetcher } = sequence([
+      () => {
+        throw new Error("network down");
+      },
+      () => new Response("{}"),
+    ]);
+    const { sleeps, sleep } = sleepLog();
+    const warns: string[] = [];
+    const notify = createNotifier({ url: "https://hooks.example/z", language: "zh", fetcher, warn: (l) => warns.push(l), sleep, retry: false });
+    await notify({ event: "crashed", reason: "r" });
+    expect(calls).toHaveLength(1);
+    expect(sleeps).toEqual([]);
+    expect(warns).toEqual(["  ⚠ 通知发送失败（network down），不影响运行"]);
   });
 
   it("没配 URL 时是空操作，不发起请求", async () => {
