@@ -24,7 +24,7 @@ export interface ProjectFacts {
   install: string;
   /** 从宿主机拷进 worktree 的目录（省掉从头安装） / Directories copied from the host into the worktree (saves a full install) */
   copyToWorktree: string[];
-  commands: { typecheck?: string; lint?: string; test?: string; testFile?: string; format?: string };
+  commands: { typecheck?: string; lint?: string; test?: string; testFile?: string; format?: string; e2e?: string };
   /** 测试文件路径的正则源码（不带 ^$） / Regex source for test file paths (no ^$) */
   testFilePattern: string;
   testDirs: string[];
@@ -51,8 +51,8 @@ export interface ProjectFacts {
   /** 页面文件路径的正则源码（按前端框架给的默认值），没有网页界面时为空 / Regex sources for page file paths (defaults by frontend framework); empty without a web UI */
   pagePaths: string[];
   /**
-   * 受保护路径的正则源码（按探测结果给：快照、Playwright 快照、CI workflow、迁移目录），都没有时为空；lockfile 不进默认值
-   * Regex sources for protected paths (by what was detected: snapshots, Playwright snapshots, CI workflows, migration directory); empty when none; lockfiles are not a default
+   * 受保护路径的正则源码（按探测结果给：快照、CI workflow、迁移目录；有网页界面或探测到 Playwright 时总有基准截图目录），都没有时为空；lockfile 不进默认值
+   * Regex sources for protected paths (by what was detected: snapshots, CI workflows, migration directory; the baseline screenshot directory is always included with a web UI or detected Playwright); empty when none; lockfiles are not a default
    */
   protectedPaths: string[];
   /**
@@ -112,6 +112,9 @@ const PAGE_PATHS: [(deps: Record<string, string>) => boolean, string][] = [
   [(d) => "astro" in d, "^src/(pages|components|layouts)/"],
 ];
 const PAGE_PATHS_FALLBACK = String.raw`^src/.*\.(tsx|jsx|vue|svelte|css)$`;
+
+/** Playwright 配置文件的后缀，根目录有任一个就算探测到 Playwright / Playwright config file extensions; any one in the root counts as detected Playwright */
+const PLAYWRIGHT_CONFIG_EXTS = ["ts", "js", "mjs", "cjs"];
 
 /** 镜像名里的关键字 → 服务名（pgvector 也是 PostgreSQL）；服务名用英文，会写进 PROJECT.md 草稿和配置注释。 / Image-name keyword → service name (pgvector is PostgreSQL too); names are English since they go into the PROJECT.md draft and config comments. */
 const SERVICE_IMAGES: [RegExp, string][] = [
@@ -213,6 +216,17 @@ function nodeFacts(root: string, pkg: Record<string, any>) {
   const fmt = pick("format", "fmt");
   const webUi = WEB_DEPS.some((d) => d in deps);
   const runner = deps.vitest ? "vitest" : deps.jest ? "jest" : deps.mocha ? "mocha" : undefined;
+  // Playwright e2e 命令：写了 test:e2e / e2e script 就用它（前者优先）；没写但根目录有 playwright.config 时给默认命令，门槛直接能跑。
+  // The Playwright e2e command: the test:e2e / e2e script when there is one (the former wins); with no script but a playwright.config in the root, a default so the gate runs it out of the box.
+  const e2eScript = pick("test:e2e", "e2e");
+  const hasPlaywrightConfig = PLAYWRIGHT_CONFIG_EXTS.some((ext) => existsSync(join(root, `playwright.config.${ext}`)));
+  let e2e: string | undefined;
+  if (e2eScript) e2e = run(e2eScript);
+  else if (hasPlaywrightConfig) {
+    if (pm === "npm") e2e = "npx playwright test";
+    else if (pm === "bun") e2e = "bunx playwright test";
+    else e2e = `${pm} exec playwright test`;
+  }
   // 宿主机（macOS）的 node_modules 缺 linux 原生包，沙箱里按锁文件重装。pnpm 由镜像全局装好 package.json 里的版本，yarn 是 node 镜像自带的，
   // 门槛和 agent 也直接用 pnpm / yarn 命令。
   // The host's (macOS) node_modules lacks linux native packages, so the sandbox reinstalls from the lockfile. The image installs pnpm globally at the version in package.json and yarn comes with the node image,
@@ -244,6 +258,7 @@ function nodeFacts(root: string, pkg: Record<string, any>) {
               ? "npx mocha <file>"
               : undefined,
       format: fmt ? run(fmt) : undefined,
+      e2e,
     },
     testFilePattern: String.raw`\S+\.(test|spec)\.[cm]?[jt]sx?`,
     webUi,
@@ -260,7 +275,7 @@ function nodeFacts(root: string, pkg: Record<string, any>) {
   };
 }
 
-function otherLanguageFacts(root: string, language: Language) {
+function otherLanguageFacts(root: string, language: Language): Pick<ProjectFacts, "install" | "copyToWorktree" | "commands" | "testFilePattern" | "migrations"> {
   if (language === "python") {
     const uv = existsSync(join(root, "uv.lock"));
     const poetry = existsSync(join(root, "poetry.lock"));
@@ -380,22 +395,27 @@ function scanServiceEnv(root: string): { serviceEnv: ServiceEnvKey[]; serviceEnv
   return { serviceEnv, serviceEnvFrom };
 }
 
+/** Playwright 基准截图目录的规则 / The rule for the Playwright baseline screenshot directory */
+const PLAYWRIGHT_SNAPSHOTS = "-snapshots/";
 /** 快照类规则，每组里有一条命中仓库文件就整组写上 / Snapshot rules; a group is written whole when any of its rules matches a repo file */
-const SNAPSHOT_RULES = [["(^|/)__snapshots__/", String.raw`\.snap$`], ["-snapshots/"]];
+const SNAPSHOT_RULES = [["(^|/)__snapshots__/", String.raw`\.snap$`], [PLAYWRIGHT_SNAPSHOTS]];
 
 const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * 受保护路径的默认值。快照按 git 跟踪（含未忽略的未跟踪文件）的文件判断，git 不可用时不写；workflow 与迁移按目录判断。
+ * 有网页界面或探测到 Playwright 时，基准截图目录（-snapshots/）即使还没有快照文件也默认受保护：更新基准只能由人确认后合并。
  * Default protected paths. Snapshots are judged from files git knows (tracked plus untracked, not ignored), skipped when git is unavailable; workflows and migrations by directory.
+ * With a web UI or detected Playwright, the baseline screenshot directory (-snapshots/) is protected by default even with no snapshot files yet: a baseline update only merges after a human confirms it.
  */
-function defaultProtectedPaths(root: string, migrations: ProjectFacts["migrations"]): string[] {
+function defaultProtectedPaths(root: string, migrations: ProjectFacts["migrations"], web: boolean): string[] {
   const ls = trySh("git", ["-C", root, "ls-files", "--cached", "--others", "--exclude-standard"]);
   const files = ls.ok ? ls.out.split("\n").filter(Boolean) : [];
   const out: string[] = [];
   // 探测条件和写出的规则用同一组源码，改一边不会漏另一边。
   // Detection and the written rules share the same sources, so changing one can't miss the other.
   for (const group of SNAPSHOT_RULES) if (files.some((f) => group.some((src) => new RegExp(src).test(f)))) out.push(...group);
+  if (web && !out.includes(PLAYWRIGHT_SNAPSHOTS)) out.push(PLAYWRIGHT_SNAPSHOTS);
   if (isDir(join(root, ".github/workflows"))) out.push(String.raw`^\.github/workflows/`);
   if (migrations) out.push(`^${escapeRegex(migrations.dir)}/`);
   return out;
@@ -463,7 +483,7 @@ export function detectProject(root = process.cwd()): ProjectFacts {
     ...scanServiceEnv(root),
     webUi: lang.webUi,
     pagePaths: lang.pagePaths,
-    protectedPaths: defaultProtectedPaths(root, migrations),
+    protectedPaths: defaultProtectedPaths(root, migrations, lang.webUi || !!lang.commands.e2e),
     browserHints: browserHints(root),
     recentCommits,
     commitLanguage: fromDocs ?? fromCommits,

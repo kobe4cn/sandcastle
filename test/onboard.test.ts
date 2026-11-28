@@ -104,6 +104,27 @@ describe("detectProject", () => {
     expect(detectProject(pythonRepo()).pagePaths).toEqual([]);
   });
 
+  it("探测 Playwright：package.json 的 test:e2e / e2e script 优先；只有 playwright.config 时按包管理器给命令；没探测到就没有 e2e", () => {
+    const e2e = (pkg: Record<string, unknown>, files: Record<string, string> = {}, remove: string[] = []) => {
+      const root = nodeRepo();
+      writeFileSync(join(root, "package.json"), JSON.stringify({ name: "shop", dependencies: { react: "19" }, ...pkg }));
+      for (const f of remove) rmSync(join(root, f));
+      for (const [f, s] of Object.entries(files)) writeFileSync(join(root, f), s);
+      return detectProject(root).commands.e2e;
+    };
+    // script 优先：test:e2e 排在 e2e 前，有 playwright.config 也不抢
+    expect(e2e({ packageManager: "pnpm@10.4.1", scripts: { "test:e2e": "playwright test", e2e: "wrong" } }, { "playwright.config.ts": "" })).toBe("pnpm test:e2e");
+    expect(e2e({ packageManager: "pnpm@10.4.1", scripts: { e2e: "wright" } })).toBe("pnpm e2e");
+    // 没有 script、根目录有 playwright.config.{ts,js,mjs,cjs}：npm 用 npx，pnpm / yarn 用 <pm> exec，bun 用 bunx
+    expect(e2e({ packageManager: "npm@10" }, { "playwright.config.ts": "" }, ["pnpm-lock.yaml"])).toBe("npx playwright test");
+    expect(e2e({}, { "playwright.config.mjs": "" })).toBe("pnpm exec playwright test");
+    expect(e2e({ packageManager: "yarn@4" }, { "playwright.config.js": "" }, ["pnpm-lock.yaml"])).toBe("yarn exec playwright test");
+    // bun 只按 bun.lock / bun.lockb 认，packageManager 字段不算
+    expect(e2e({}, { "playwright.config.cjs": "", "bun.lock": "" }, ["pnpm-lock.yaml"])).toBe("bunx playwright test");
+    // 没探测到 Playwright：没有 e2e 命令
+    expect(e2e({ packageManager: "pnpm@10.4.1", scripts: { test: "vitest run" } })).toBeUndefined();
+  });
+
   it("protectedPaths 按探测结果给：快照、Playwright 快照、CI workflow、迁移目录；都没有时为空", () => {
     const add = (root: string, files: Record<string, string>) => {
       for (const [f, s] of Object.entries(files)) {
@@ -113,8 +134,8 @@ describe("detectProject", () => {
       execFileSync("git", ["-C", root, "add", "-A"], { stdio: "ignore" });
       return detectProject(root).protectedPaths;
     };
-    // nodeRepo 有 drizzle 迁移目录
-    expect(detectProject(nodeRepo()).protectedPaths).toEqual(["^drizzle/"]);
+    // nodeRepo 有 drizzle 迁移目录、有网页界面（react）：默认补 Playwright 基准截图目录
+    expect(detectProject(nodeRepo()).protectedPaths).toEqual(["-snapshots/", "^drizzle/"]);
     expect(detectProject(pythonRepo()).protectedPaths).toEqual([]);
     expect(add(pythonRepo(), { ".github/workflows/ci.yml": "", "src/__snapshots__/a.test.ts.snap": "", "e2e/cart.spec.ts-snapshots/cart.png": "" })).toEqual([
       "(^|/)__snapshots__/",
@@ -132,6 +153,10 @@ describe("detectProject", () => {
     writeFileSync(join(prisma, "package.json"), JSON.stringify({ name: "shop", dependencies: { prisma: "6" } }));
     mkdirSync(join(prisma, "prisma/migrations"), { recursive: true });
     expect(detectProject(prisma).protectedPaths).toEqual(["^prisma/migrations/"]);
+    // 没有网页界面但探测到 Playwright（test:e2e script）：也默认补 -snapshots/，没有快照文件也补
+    const api = nodeRepo();
+    writeFileSync(join(api, "package.json"), JSON.stringify({ name: "shop", packageManager: "pnpm@10.4.1", scripts: { "test:e2e": "playwright test" } }));
+    expect(detectProject(api).protectedPaths).toEqual(["-snapshots/"]);
     // 不是 git 仓库：快照查不了，不写；目录类的照常
     const plain = mkdtempSync(join(tmpdir(), "sc-plain-"));
     mkdirSync(join(plain, ".github/workflows"), { recursive: true });
@@ -300,6 +325,34 @@ describe("configSource", () => {
     const nextSrc = configSource({ ...f, pagePaths: ["^(app|pages|components|src/(app|pages|components))/"] }, "sandpipe");
     expect(nextSrc).toContain("pagePaths: [/^(app|pages|components|src\\/(app|pages|components))\\//]");
     expect(configSource(detectProject(pythonRepo()), "sandpipe")).not.toContain("pagePaths");
+  });
+
+  it("探测到 e2e：gate.script 末尾接 e2e 命令，加载后照常能跑；没探测到时门槛不变", async () => {
+    const withE2e = () => {
+      const root = nodeRepo();
+      writeFileSync(
+        join(root, "package.json"),
+        JSON.stringify({
+          name: "shop",
+          packageManager: "pnpm@10.4.1+sha512.abc",
+          scripts: { typecheck: "tsc --noEmit", lint: "eslint .", test: "vitest run", "test:e2e": "playwright test" },
+          dependencies: { react: "19", "drizzle-orm": "1" },
+          devDependencies: { vitest: "3", "drizzle-kit": "1", typescript: "5" },
+        }),
+      );
+      return root;
+    };
+    const root = withE2e();
+    const f = detectProject(root);
+    expect(configSource(f, "sandpipe")).toContain(`script: () => "pnpm typecheck && pnpm lint && pnpm test && pnpm test:e2e",`);
+    installFiles(root, f);
+    const project = await loadProject(join(root, ".sandcastle"));
+    expect(project.gate.script({ baseRef: "origin/main" })).toBe("pnpm typecheck && pnpm lint && pnpm test && pnpm test:e2e");
+    expect(project.gate.typecheck).toBe("pnpm typecheck"); // e2e 不进 typecheck（只在 rebase 留 PR 时跑）
+    // 没探测到 e2e：门槛和现在一样，末尾没有 e2e
+    const src = configSource(detectProject(nodeRepo()), "sandpipe");
+    expect(src).toContain(`script: () => "pnpm typecheck && pnpm lint && pnpm test",`);
+    expect(src).not.toContain("playwright");
   });
 
   it("探测到受保护路径：写 protectedPaths，加载后的正则能匹配对应文件；为空不写", async () => {

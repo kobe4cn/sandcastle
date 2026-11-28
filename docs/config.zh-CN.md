@@ -69,6 +69,13 @@ export default defineProject({
 
 onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-cli 和 Chromium。onboard 会先读项目已有的验收资料（README、测试说明、旧的 `.sandcastle` 提示词、`scripts/` 里建验收数据的脚本），能拼出下面四步就写这一节，拼不全就把缺的信息（dev server 启动命令与端口、验收数据怎么建、登录方式与账号、dev server 要的变量）列进缺口清单。后端项目加了前端：在 PROJECT.md 加浏览器验收一节（照下面的示例），并配 `browser.pagePaths`（见「可选」），沙箱已经装好浏览器。
 
+项目有 Playwright e2e（onboard 探测到根目录的 `playwright.config.{ts,js,mjs,cjs}`，或 package.json 有 `test:e2e` / `e2e` script）时，onboard 把 e2e 命令接在 `gate.script` 末尾由合并门槛跑：改坏了页面、即使 diff 没命中 `browser.pagePaths`，也会被门槛拦下。Playwright 的基准截图目录（`-snapshots/`）同时默认进 `protectedPaths`——更新基准的票只能留 PR 由人确认，不自动合并。门槛里跑 e2e 要注意：
+
+- dev server 由 Playwright 配置里的 `webServer` 在门槛内自己起；`gate.services` 只在宿主机做 TCP 预检，不负责起服务。e2e 依赖的服务（数据库等）写进 `gate.services`。
+- 沙箱镜像装了 Chromium（`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`）但没有 `@playwright/test`；版本不匹配时在 `install.onSandboxReady` 里加跑 `playwright install chromium`。
+- 失败 spec 的路径要能被 `gate.testFile` 的正则认出来，fix 和偶发失败重跑才用得上（node 的默认 `\S+\.(test|spec)\.[cm]?[jt]sx?` 已盖住 `e2e/xxx.spec.ts`）。
+- 不要把 e2e 加进 `gate.typecheck`（它只在 rebase 留 PR 时跑）。
+
 - **dev server 要的变量放进 `isolation.env`**：dev server 在沙箱里读的变量（数据库、会话密钥、对象存储等）都要出现在 `isolation.env` 的返回值里，少一个就起不来。用上一节的 `readHostEnv` 从宿主机 env 文件读出来，指向本机服务的值过一遍 `toContainerHost`。
 - **用独立的库**：和测试一样，库名用 `withDbSuffix` 加上 `` `_i${runId}` `` 后缀，验收数据不会碰到开发库，也不会和并行的票互相清表（写法见开头的示例）。
 - **验收数据**：在 PROJECT.md 这一节第一步写建数据的命令（种子脚本、建账号）；给人验收时的固定准备步骤写在 `acceptancePrep`（见「可选」）。
@@ -110,7 +117,7 @@ onboard 生成的 Containerfile 不管有没有网页界面都装好 playwright-
 | `appendOnlyFiles` | `[]` | 只追加的索引文件。几张票同时追加不算改同一个文件，可以并行 |
 | `acceptancePrep(branch)` | 无 | 改了页面的票，PR「验收说明」最前面固定的准备步骤 |
 | `browser.pagePaths` | `[]` | 页面文件路径（相对仓库根）的正则数组，如 `[/^app\/routes\//]`；票改到匹配的文件算「改了页面」。onboard 按探测到的前端框架（next、remix / react-router、nuxt / vue、svelte、astro，其它有网页界面的项目按 `src/` 下的 tsx / jsx / vue / svelte / css）写默认值，没有网页界面不写 |
-| `protectedPaths` | `[]` | 受保护路径（相对仓库根、不带前导 `/`，和 `git diff --name-only` 的输出一致）的正则数组，如 `[/^\.github\//, /^migrations\//]`。票的最终 diff（review / 打回 / fix 之后）改到命中的文件就不自动合并，留 PR，评论逐条列出「文件 — 命中的规则」；rebase 时 agent 解过冲突的，push 前重取 diff 再查一次。配了规则但取不到 diff 时也留 PR。票的实现指引里写一项 `- **Protected**: \`path\`, \`dir/\``（相对仓库根，`/` 结尾表示目录下所有文件，否则与 diff 里的文件全等）可以放行这些文件：被允许的命中不挡合并，PR 正文多一节 `## Protected paths` 标出来（已有 PR 时出现在更新评论里；rebase 解冲突后新改到的放行文件另发一条评论）。开头的 `./`、`/` 会去掉；因受保护路径留 PR 时，评论会列出一个文件都没匹配上的放行项。`onboard` 按探测结果写默认值：有快照（`__snapshots__/` 或 `.snap`）写 `/(^\|\/)__snapshots__\//`、`/\.snap$/`，有 Playwright 快照目录写 `/-snapshots\//`，有 `.github/workflows/` 写 `/^\.github\/workflows\//`，探测到迁移目录写 `/^<目录>\//`，都没有就不写；`sandpipe doctor` 列出当前的规则。lockfile 不进默认值（加依赖的票都会改它），需要的项目自己加（见 `docs/adr/0003-protected-paths.md`） |
+| `protectedPaths` | `[]` | 受保护路径（相对仓库根、不带前导 `/`，和 `git diff --name-only` 的输出一致）的正则数组，如 `[/^\.github\//, /^migrations\//]`。票的最终 diff（review / 打回 / fix 之后）改到命中的文件就不自动合并，留 PR，评论逐条列出「文件 — 命中的规则」；rebase 时 agent 解过冲突的，push 前重取 diff 再查一次。配了规则但取不到 diff 时也留 PR。票的实现指引里写一项 `- **Protected**: \`path\`, \`dir/\``（相对仓库根，`/` 结尾表示目录下所有文件，否则与 diff 里的文件全等）可以放行这些文件：被允许的命中不挡合并，PR 正文多一节 `## Protected paths` 标出来（已有 PR 时出现在更新评论里；rebase 解冲突后新改到的放行文件另发一条评论）。开头的 `./`、`/` 会去掉；因受保护路径留 PR 时，评论会列出一个文件都没匹配上的放行项。`onboard` 按探测结果写默认值：有快照（`__snapshots__/` 或 `.snap`）写 `/(^\|\/)__snapshots__\//`、`/\.snap$/`，有 Playwright 快照目录写 `/-snapshots\//`（有网页界面或探测到 Playwright e2e 的项目即使还没有快照文件也默认写它，见「浏览器验收」一节），有 `.github/workflows/` 写 `/^\.github\/workflows\//`，探测到迁移目录写 `/^<目录>\//`，都没有就不写；`sandpipe doctor` 列出当前的规则。lockfile 不进默认值（加依赖的票都会改它），需要的项目自己加（见 `docs/adr/0003-protected-paths.md`） |
 | `trustedAuthors` | `[]` | 额外视为可信的票作者登录名，例如没装成 GitHub App 的机器人账号。票作者是机器人、在这个名单里、或在仓库有 admin / write 权限（maintain 算 write）才算可信；不可信、又没有 `sandcastle:trusted` 的票不 prep、不开工，打 `needs-triage` 并评论一次。评论里的标记（代拍板、评审已过、reprep、限额等待）和 PR 上的 `/sandcastle`、Request changes 也只认可信作者的。agent 在沙箱里读评论只看 `author_association` 是 OWNER / MEMBER / COLLABORATOR 或机器人的，不看这个名单 |
 | `beforeSchedule()` | 无 | 每次调度开头在宿主机上跑的维护 |
 | `texts` | 通用版 | 自动开的票和内联提示词的正文 |

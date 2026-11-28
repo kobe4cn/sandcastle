@@ -439,8 +439,8 @@ describe("diagnose：受保护路径", () => {
   const run = (root: string) => diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []) });
 
   it("onboard 按探测写了：逐条列出正则，通过", async () => {
-    // nodeRepo 有 drizzle 迁移目录
-    expect(check(await run(readyRepo()), "受保护路径")).toMatchObject({ level: "ok", detail: "/^drizzle\\//" });
+    // nodeRepo 有 drizzle 迁移目录、有网页界面（react）：默认补 Playwright 基准截图目录（#157）
+    expect(check(await run(readyRepo()), "受保护路径")).toMatchObject({ level: "ok", detail: "/-snapshots\\//、/^drizzle\\//" });
   });
 
   it("手动配了多条：逐条列出", async () => {

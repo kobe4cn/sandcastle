@@ -91,7 +91,9 @@ const guessServiceEnv = (services: string[]) =>
 const prop = (obj: string, key: string) => (/^[A-Za-z_$][\w$]*$/.test(key) ? `${obj}.${key}` : `${obj}[${q(key)}]`);
 
 export function configSource(f: ProjectFacts, importFrom: string, lang: Language = f.commitLanguage): string {
-  const gateSteps = [f.commands.typecheck, f.commands.lint, f.commands.test].filter(Boolean) as string[];
+  // e2e 接在门槛末尾：改坏了页面即使没命中 browser.pagePaths，门槛也拦得下（#66 的决定：不新增配置字段）。
+  // The e2e command goes at the end of the gate: broken pages are caught even when they miss browser.pagePaths (decided in #66: no new config field).
+  const gateSteps = [f.commands.typecheck, f.commands.lint, f.commands.test, f.commands.e2e].filter(Boolean) as string[];
   const gate = gateSteps.length ? gateSteps.join(" && ") : "echo 'gate.script not configured / 门槛还没配：.sandcastle/sandcastle.config.ts' && exit 1";
   const forgeLine =
     f.forge.kind === "gitlab"
