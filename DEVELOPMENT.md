@@ -30,7 +30,7 @@
 | `src/protected-paths.ts` | 受保护路径作为合并关卡：票的 diff 里哪些文件命中 `protectedPaths`、各命中哪条规则、挡不挡合并（取不到 diff 时 fail-closed）；票实现指引 `- **Protected**` 允许的路径（`allowedProtected` / `splitAllowed`）和 PR 正文 Protected paths 一节（`allowedSection`，rebase 后补报新命中也用它） |
 | `src/merge-flow.ts` | 合并收尾的编排：等检查（不占空位、放开宿主机锁）→ 合并 → 分支保护 / rebase 补救 → 留 PR；依赖由 main.ts 注入 |
 | `src/profile.ts` | **ProjectProfile**：项目配置（测试隔离、门槛、安装、一致性检查、文案）与默认值 |
-| `src/notify.ts` | 主动通知（可选 webhook，`notify.env`）：`readNotifyUrl` 从 `.sandcastle/.env` 读 URL、`createNotifier` POST 一条 JSON（text / event / issue / url / reason）；票 stuck、留 PR 给人、main-broken、撞限额等待、prep 撞限额 / stuck、run 异常退出、doctor --notify-test 时发，失败只警告不阻塞，URL 不进日志 |
+| `src/notify.ts` | 主动通知（可选 webhook，`notify.env`）：`readNotifyUrl` 从 `.sandcastle/.env` 读 URL、`createNotifier` POST 一条 JSON（text / event / issue / url / reason）；票 stuck、留 PR 给人、main-broken、撞限额等待、prep 撞限额 / stuck、run 异常退出、doctor --notify-test 时发，失败（抛错、5xx、429）等 5 秒重试一次、仍失败只警告不阻塞（crashed 和 --notify-test 不重试），URL 不进日志 |
 | `src/isolation.ts` | 给 config 的 `isolation.env` / `cleanup` 用的辅助函数（从包入口导出）：读宿主机 env 文件、换宿主机地址、加库名后缀、跑回收脚本 |
 | `src/project-doc.ts` | 解析 `.sandcastle/PROJECT.md`、渲染提示词 |
 | `prompts/` | 通用提示词模板（implement / review / prep / rebase / re-review）与共享片段（设计决定、编码规范、票的大小） |

@@ -1,16 +1,18 @@
 // 主动通知（可选）：配了 notify 时，票 stuck、留 PR 给人等事件向 webhook POST 一条 JSON（text 给人看，
 // Slack incoming webhook 直接认，飞书等群机器人要各自的格式、不兼容；event / issue / url / reason 给自建接收端）。
 // webhook URL 是凭据：只从 .sandcastle/.env（值为空时取宿主机同名环境变量）读，不进日志、警告、评论；
-// 发送失败只打一行警告（抛错时写明错误类型），从不 reject——通知不影响主流程。
+// 发送失败（抛错、5xx、429）等 5 秒重试一次，仍失败才打一行警告（抛错时写明错误类型），从不 reject——通知不影响主流程。
 // Proactive notifications (optional): with notify configured, events like a stuck ticket or a PR left for a human POST one JSON
 // message to a webhook (text is for humans, accepted as-is by a Slack incoming webhook; Lark-style bots need their own formats;
 // event / issue / url / reason are for self-built receivers).
 // The webhook URL is a credential: read only from .sandcastle/.env (falling back to the same-named host environment variable
-// when empty there); it never goes into logs, warnings or comments. A failed send only warns one line (naming the error
-// kind when fetch throws) and never rejects — notifications don't affect the main flow.
+// when empty there); it never goes into logs, warnings or comments. A failed send (a throw, 5xx or 429) waits 5 s and
+// retries once; only when the retry also fails does it warn one line (naming the error kind when fetch throws) — and it
+// never rejects, so notifications don't affect the main flow.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { setTimeout as sleepFor } from "node:timers/promises";
 import { parseEnv } from "node:util";
 import { messages, type Language } from "./i18n.ts";
 import { t } from "./term.ts";
@@ -71,15 +73,26 @@ function failKind(e: unknown, url: string): string {
 }
 
 /**
- * 建发送器：POST 一条 JSON，超时 10 秒；任何错误（网络、非 2xx）只 warn 一行且不带 URL，从不 reject，抛错时写明错误类型。
- * 写法照 version.ts 的 latestVersion（fetcher 注入，测试不连网）。
- * Builds the sender: POSTs one JSON message with a 10-second timeout; any error (network, non-2xx) only warns
- * one line without the URL and never rejects, naming the error kind when fetch throws. Follows latestVersion in version.ts
- * (injected fetcher, tests stay offline).
+ * 建发送器：POST 一条 JSON，超时 10 秒；抛错、5xx、429 时等 5 秒重试一次（`retry: false` 关掉——crashed 通知不重试，
+ * 总等待仍封顶 10 秒），重试也失败（或 4xx 不重试）只 warn 一行且不带 URL、按最后一次的结果选文案，从不 reject。
+ * 写法照 version.ts 的 latestVersion（fetcher / sleep 注入，测试不连网、不真睡）。
+ * Builds the sender: POSTs one JSON message with a 10-second timeout; a throw, 5xx or 429 waits 5 s and retries once
+ * (`retry: false` turns that off — the crashed notification doesn't retry, so its total wait still caps at 10 s); when the
+ * retry also fails (or a 4xx isn't retried) it only warns one line without the URL, worded by the last attempt's result,
+ * and never rejects. Follows latestVersion in version.ts (injected fetcher / sleep; tests stay offline and don't sleep).
  */
-export function createNotifier(opts: { url?: string; language: Language; fetcher?: typeof fetch; warn?: (line: string) => void }): Notifier {
+export function createNotifier(opts: {
+  url?: string;
+  language: Language;
+  fetcher?: typeof fetch;
+  warn?: (line: string) => void;
+  sleep?: (ms: number) => Promise<void>;
+  retry?: boolean;
+}): Notifier {
   const warn = opts.warn ?? (() => {});
   const fetcher = opts.fetcher ?? fetch;
+  const sleep = opts.sleep ?? ((ms: number) => sleepFor(ms));
+  const retry = opts.retry ?? true;
   const M = messages(opts.language);
   if (!opts.url) return async () => {};
   const url = opts.url;
@@ -87,17 +100,32 @@ export function createNotifier(opts: { url?: string; language: Language; fetcher
     const payload: Record<string, string> = { text: M.notifyText(e.event, e.issue, e.url, e.reason), event: e.event, reason: e.reason };
     if (e.issue) payload.issue = e.issue;
     if (e.url) payload.url = e.url;
-    try {
-      const res = await fetcher(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(10_000),
-      });
-      if (!res.ok) warn(t(`  ⚠ 通知发送失败（HTTP ${res.status}），不影响运行`, `  ⚠ Notify webhook failed (HTTP ${res.status}); the run continues`));
-    } catch (e) {
-      const kind = failKind(e, url);
-      warn(t(`  ⚠ 通知发送失败（${kind}），不影响运行`, `  ⚠ Notify webhook failed (${kind}); the run continues`));
+    // 单次发送：成功、非 2xx（带状态码）、抛错（带错误）。 / One attempt: ok, non-2xx (with the status), or a throw (with the error).
+    const attempt = async (): Promise<{ ok: boolean; status?: number; error?: unknown }> => {
+      try {
+        const res = await fetcher(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: AbortSignal.timeout(10_000),
+        });
+        if (res.ok) return { ok: true };
+        return { ok: false, status: res.status };
+      } catch (e) {
+        return { ok: false, error: e };
+      }
+    };
+    let last = await attempt();
+    // 抛错、5xx、429 才重试（4xx 不重试）；重试也新建 signal，不占第一次的 10 秒额度。 / Only a throw, 5xx or 429
+    // retries (a 4xx doesn't); the retry builds its own signal instead of sharing the first attempt's 10-second budget.
+    const retryable = !last.ok && (last.error !== undefined || last.status === 429 || (last.status ?? 0) >= 500);
+    if (retryable && retry) {
+      await sleep(5_000);
+      last = await attempt();
     }
+    if (last.ok) return;
+    if (last.status !== undefined)
+      warn(t(`  ⚠ 通知发送失败（HTTP ${last.status}），不影响运行`, `  ⚠ Notify webhook failed (HTTP ${last.status}); the run continues`));
+    else warn(t(`  ⚠ 通知发送失败（${failKind(last.error, url)}），不影响运行`, `  ⚠ Notify webhook failed (${failKind(last.error, url)}); the run continues`));
   };
 }

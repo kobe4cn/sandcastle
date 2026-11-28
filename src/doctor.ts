@@ -356,9 +356,10 @@ export async function diagnose(opts: {
       }
     } else {
       // --notify-test（不带 --fix）用 #132 的 notifier 发一条 test 消息；notifier 从不 reject、不返回状态码，
-      // 所以包一层 fetcher 记下响应或错误，发完自己判 2xx。
+      // 所以包一层 fetcher 记下响应或错误，发完自己判 2xx。这条不重试（retry: false）：交互命令要马上出结论，不多等 5 秒。
       // --notify-test (without --fix) sends a test message via #132's notifier; the notifier never rejects and returns
-      // no status, so wrap the fetcher to record the response or the error and judge 2xx ourselves afterwards.
+      // no status, so wrap the fetcher to record the response or the error and judge 2xx ourselves afterwards. This one
+      // doesn't retry (retry: false): an interactive command should conclude right away, not wait another 5 s.
       const outcome: { status?: number; error?: unknown } = {};
       const fetcher: typeof fetch = async (input, init) => {
         try {
@@ -370,7 +371,7 @@ export async function diagnose(opts: {
           throw e;
         }
       };
-      await createNotifier({ url, language: project.language, fetcher, warn: () => {} })({ event: "test", reason: messages(project.language).notifyTest });
+      await createNotifier({ url, language: project.language, fetcher, warn: () => {}, retry: false })({ event: "test", reason: messages(project.language).notifyTest });
       if (outcome.status !== undefined && outcome.status >= 200 && outcome.status < 300)
         add(name, "ok", t(`测试消息发到了（HTTP ${outcome.status}）`, `test message delivered (HTTP ${outcome.status})`));
       else if (outcome.status !== undefined)
