@@ -32,38 +32,45 @@ const failingGlab = (stderr: string) =>
 describe("gitlabForge 发给 glab 的参数", () => {
   it("listOpenIssues 走实时列表接口：iid→number、正文取 description、updated_at 转 UTC ISO、作者恒为 bot: false", () => {
     const { forge, calls } = fakeGlab(
-      JSON.stringify([
-        { iid: 7, title: "t", description: "b", labels: ["Sandcastle", "sandcastle:stuck"], updated_at: "2026-11-27T10:00:00+08:00", author: { username: "alice" } },
-        { iid: 8, title: "t", description: null, labels: [], updated_at: "2026-11-28T00:00:00Z", author: null },
-      ]),
+      [
+        JSON.stringify({ iid: 7, title: "t", description: "b", labels: ["Sandcastle", "sandcastle:stuck"], updated_at: "2026-11-27T10:00:00+08:00", author: { username: "alice" } }),
+        JSON.stringify({ iid: 8, title: "t", description: null, labels: [], updated_at: "2026-11-28T00:00:00Z", author: null }),
+      ].join("\n"),
     );
     expect(forge.listOpenIssues(["Sandcastle", "sandcastle:prepped"])).toEqual([
       { number: 7, title: "t", body: "b", labels: ["Sandcastle", "sandcastle:stuck"], updatedAt: "2026-11-27T02:00:00.000Z", author: { login: "alice", bot: false } },
       { number: 8, title: "t", body: "", labels: [], updatedAt: "2026-11-28T00:00:00.000Z", author: { login: "ghost", bot: false } },
     ]);
     // 逗号分隔符原样保留（编码了服务器就当成一个标签名）；标签名里的 : 编码成 %3A，服务器解码回来
-    expect(calls).toEqual([["api", "projects/:id/issues?state=opened&labels=Sandcastle,sandcastle%3Aprepped&per_page=100", "--paginate"]]);
+    expect(calls).toEqual([["api", "projects/:id/issues?state=opened&labels=Sandcastle,sandcastle%3Aprepped&per_page=100", "--paginate", "--output", "ndjson"]]);
   });
 
   it("listOpenIssues 没有标签时整段省掉 labels（GitLab 的空 labels= 是「无标签的票」）", () => {
-    const { forge, calls } = fakeGlab("[]");
+    const { forge, calls } = fakeGlab();
     expect(forge.listOpenIssues([])).toEqual([]);
-    expect(calls).toEqual([["api", "projects/:id/issues?state=opened&per_page=100", "--paginate"]]);
+    expect(calls).toEqual([["api", "projects/:id/issues?state=opened&per_page=100", "--paginate", "--output", "ndjson"]]);
+  });
+
+  it("分页列表带 --output ndjson：两页的对象各占一行、跨页有空行也全部收下（glab 的 --paginate 实际把几页 JSON 首尾相接，整个 parse 会炸）", () => {
+    const page = (iid: number) => JSON.stringify({ iid, title: `t${iid}`, description: `b${iid}`, labels: [], updated_at: "2026-11-28T00:00:00Z", author: { username: `u${iid}` } });
+    const { forge, calls } = fakeGlab([page(1), page(2), "", page(3)].join("\n"));
+    expect(forge.listOpenIssues([]).map((i) => i.number)).toEqual([1, 2, 3]);
+    expect(calls).toEqual([["api", "projects/:id/issues?state=opened&per_page=100", "--paginate", "--output", "ndjson"]]);
   });
 
   it("listClosedIssueNumbers / listSplitParents（搜索是模糊的，回来本地确认正文含 ## Split into）", () => {
     const { forge, calls } = fakeGlab(
-      JSON.stringify([{ iid: 3 }, { iid: 5 }]),
-      JSON.stringify([
-        { iid: 1, description: "x\n\n## Split into\n\n- #2" },
-        { iid: 2, description: "只有 Split into 字样、不是那个小节" },
-      ]),
+      [JSON.stringify({ iid: 3 }), JSON.stringify({ iid: 5 })].join("\n"),
+      [
+        JSON.stringify({ iid: 1, description: "x\n\n## Split into\n\n- #2" }),
+        JSON.stringify({ iid: 2, description: "只有 Split into 字样、不是那个小节" }),
+      ].join("\n"),
     );
     expect(forge.listClosedIssueNumbers("sandcastle:stuck")).toEqual([3, 5]);
     expect(forge.listSplitParents("Sandcastle")).toEqual([{ number: 1, body: "x\n\n## Split into\n\n- #2" }]);
     expect(calls).toEqual([
-      ["api", "projects/:id/issues?state=closed&labels=sandcastle%3Astuck&per_page=100", "--paginate"],
-      ["api", "projects/:id/issues?state=opened&search=Split%20into&in=description&not[labels]=Sandcastle&per_page=100", "--paginate"],
+      ["api", "projects/:id/issues?state=closed&labels=sandcastle%3Astuck&per_page=100", "--paginate", "--output", "ndjson"],
+      ["api", "projects/:id/issues?state=opened&search=Split%20into&in=description&not[labels]=Sandcastle&per_page=100", "--paginate", "--output", "ndjson"],
     ]);
   });
 
@@ -114,17 +121,17 @@ describe("gitlabForge 发给 glab 的参数", () => {
 
   it("issueComments 读 notes 并去掉 system note，作者一律 bot: false", () => {
     const { forge, calls } = fakeGlab(
-      JSON.stringify([
-        { body: "普通评论", system: false, author: { username: "alice" } },
-        { body: "changed the description", system: true, author: { username: "alice" } },
-        { body: null, system: false, author: null },
-      ]),
+      [
+        JSON.stringify({ body: "普通评论", system: false, author: { username: "alice" } }),
+        JSON.stringify({ body: "changed the description", system: true, author: { username: "alice" } }),
+        JSON.stringify({ body: null, system: false, author: null }),
+      ].join("\n"),
     );
     expect(forge.issueComments("4")).toEqual([
       { body: "普通评论", author: { login: "alice", bot: false } },
       { body: "", author: { login: "ghost", bot: false } },
     ]);
-    expect(calls).toEqual([["api", "projects/:id/issues/4/notes?sort=asc&per_page=100", "--paginate"]]);
+    expect(calls).toEqual([["api", "projects/:id/issues/4/notes?sort=asc&per_page=100", "--paginate", "--output", "ndjson"]]);
   });
 
   it("issue 的增改与标签：createIssue 返回 iid、标签增删和改正文走 PUT、closeIssue 先评论再关", () => {
@@ -204,14 +211,14 @@ describe("gitlabForge 发给 glab 的参数", () => {
     const { forge, calls } = fakeGlab(
       "",
       JSON.stringify({ path_with_namespace: "acme/shop", permissions: { project_access: { access_level: 40 }, group_access: null } }),
-      JSON.stringify([{ name: "a" }, { name: "b" }]),
+      [JSON.stringify({ name: "a" }), JSON.stringify({ name: "b" })].join("\n"),
     );
     expect(forge.checkAccess()).toBe("glab 已登录，仓库 acme/shop（access level 40）");
     expect(forge.listLabels()).toEqual(["a", "b"]);
     expect(calls).toEqual([
       ["auth", "status"],
       ["api", "projects/:id"],
-      ["api", "projects/:id/labels?per_page=100", "--paginate"],
+      ["api", "projects/:id/labels?per_page=100", "--paginate", "--output", "ndjson"],
     ]);
     expect(forge.name).toBe("gitlab");
     expect(forge.tokenEnv).toBe("GITLAB_TOKEN");

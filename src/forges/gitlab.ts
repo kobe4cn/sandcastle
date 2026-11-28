@@ -1,11 +1,13 @@
 // GitLab：用宿主机上已登录的 glab CLI；REST 调用一律走 `glab api`，路径里的 `:id` 是 glab 的项目占位符
-// （按当前目录的 remote 解析项目，自建实例的 host 也由 remote 推出）。这一张（#171）只实现登录检查、
+// （按当前目录的 remote 解析项目，自建实例的 host 也由 remote 推出）；分页列表加 `--output ndjson` 按行解析
+// （glab 的 --paginate 不合并 json 输出，见下方 list 的注释）。这一张（#171）只实现登录检查、
 // 标签、issue 与评论、repoPermission、closingRef；MR / 审查 / 附件 / agentGuide 留给后面的子票，先抛 not implemented。
 // test/forge-gitlab.test.ts 锁住了每个方法的 argv。
 // GitLab: uses the glab CLI logged in on the host; every REST call goes through `glab api`, where `:id` in the path is glab's
-// project placeholder (resolved from the current directory's remote, which also gives the self-hosted host). This ticket (#171)
-// covers only the login check, labels, issues with comments, repoPermission and closingRef; MRs / reviews / attachments /
-// agentGuide are left to later sub-tickets and throw not implemented for now.
+// project placeholder (resolved from the current directory's remote, which also gives the self-hosted host); paginated lists
+// add `--output ndjson` and parse per line (glab's --paginate doesn't merge the json output — see list's comment below).
+// This ticket (#171) covers only the login check, labels, issues with comments, repoPermission and closingRef; MRs / reviews /
+// attachments / agentGuide are left to later sub-tickets and throw not implemented for now.
 // test/forge-gitlab.test.ts pins every method's argv.
 
 import type { Forge, ForgeIssue } from "../forge.ts";
@@ -75,6 +77,19 @@ export function gitlabForge(glab: GlabRunner = (args, env) => sh("glab", args, u
   // cache too, with no retry and no throw — notifying is incidental, and issueUrl must never throw into the pipeline (#135).
   const urls = new Map<string, string | undefined>();
   const getIssue = (id: string): GlabIssue => JSON.parse(glab(["api", `projects/:id/issues/${id}`])) as GlabIssue;
+  /**
+   * 带分页的列表。glab api --paginate 实测（1.133.0）不合并 json 输出：几页的数组首尾相接打印（[...][...][...]），
+   * JSON.parse 撞上第一个数组后面的字符就炸；加 --output ndjson 改成每行一个对象，按行解析、跳过空行（页与页之间
+   * 会出现空行）再收集成数组。
+   * A paginated list. glab api --paginate (observed on 1.133.0) does not merge the json output: page arrays print back
+   * to back ([...][...][...]), and JSON.parse chokes on whatever follows the first array; --output ndjson switches it to
+   * one object per line, parsed line by line, empty lines skipped (they show up between pages), then collected into an array.
+   */
+  const list = <T>(path: string): T[] =>
+    glab(["api", path, "--paginate", "--output", "ndjson"])
+      .split("\n")
+      .filter((line) => line.trim())
+      .map((line) => JSON.parse(line) as T);
   return {
     name: "gitlab",
     tokenEnv: "GITLAB_TOKEN",
@@ -148,7 +163,7 @@ export function gitlabForge(glab: GlabRunner = (args, env) => sh("glab", args, u
         `GITLAB_TOKEN can read ${path}'s issues and MRs (write access is only known when labels are actually edited)`,
       );
     },
-    listLabels: () => (JSON.parse(glab(["api", "projects/:id/labels?per_page=100", "--paginate"])) as { name: string }[]).map((l) => l.name),
+    listLabels: () => list<{ name: string }>("projects/:id/labels?per_page=100").map((l) => l.name),
 
     listOpenIssues(labels) {
       // 实时列表接口而不是搜索索引：索引有延迟，刚打上的标签要过一阵才查得到（github 版 #393 的教训）。
@@ -159,7 +174,7 @@ export function gitlabForge(glab: GlabRunner = (args, env) => sh("glab", args, u
       // commas (the server splits on commas, then decodes); with none, the whole segment is omitted — GitLab's empty
       // `labels=` means "issues without labels", not "all".
       const query = labels.length ? `&labels=${labels.map(encodeURIComponent).join(",")}` : "";
-      return (JSON.parse(glab(["api", `projects/:id/issues?state=opened${query}&per_page=100`, "--paginate"])) as GlabIssue[]).map(toIssue);
+      return list<GlabIssue>(`projects/:id/issues?state=opened${query}&per_page=100`).map(toIssue);
     },
     repoPermission(login) {
       // 两步：先按用户名在实例上拿 id（users 是实例级接口，不带 :id），再查 members/all——含继承自 group 的成员。
@@ -176,18 +191,14 @@ export function gitlabForge(glab: GlabRunner = (args, env) => sh("glab", args, u
       return permissionOf(member.access_level);
     },
     listClosedIssueNumbers(label) {
-      return (JSON.parse(glab(["api", `projects/:id/issues?state=closed&labels=${encodeURIComponent(label)}&per_page=100`, "--paginate"])) as GlabIssue[]).map((i) => i.iid);
+      return list<GlabIssue>(`projects/:id/issues?state=closed&labels=${encodeURIComponent(label)}&per_page=100`).map((i) => i.iid);
     },
     listSplitParents(withoutLabel) {
       // 搜索是模糊的：API 只用来收窄（正文提到 Split into、没带这个标签），`## Split into` 这一节回来本地确认。
       // The search is fuzzy: the API only narrows (body mentions Split into, label absent), and the `## Split into` section is confirmed locally.
-      const raw = JSON.parse(
-        glab([
-          "api",
-          `projects/:id/issues?state=opened&search=${encodeURIComponent("Split into")}&in=description&not[labels]=${encodeURIComponent(withoutLabel)}&per_page=100`,
-          "--paginate",
-        ]),
-      ) as GlabIssue[];
+      const raw = list<GlabIssue>(
+        `projects/:id/issues?state=opened&search=${encodeURIComponent("Split into")}&in=description&not[labels]=${encodeURIComponent(withoutLabel)}&per_page=100`,
+      );
       return raw
         .filter((i) => (i.description ?? "").includes("## Split into"))
         .map((i) => ({ number: i.iid, body: i.description ?? "" }));
@@ -220,11 +231,7 @@ export function gitlabForge(glab: GlabRunner = (args, env) => sh("glab", args, u
     issueComments(id) {
       // system note（改标题、打标签这些流水账）不是人写的评论，去掉；sort=asc 按创建时间升序。
       // System notes (title edits, label changes) aren't human comments and are dropped; sort=asc is oldest first.
-      const notes = JSON.parse(glab(["api", `projects/:id/issues/${id}/notes?sort=asc&per_page=100`, "--paginate"])) as {
-        body: string | null;
-        system?: boolean;
-        author?: { username?: string } | null;
-      }[];
+      const notes = list<{ body: string | null; system?: boolean; author?: { username?: string } | null }>(`projects/:id/issues/${id}/notes?sort=asc&per_page=100`);
       return notes.filter((n) => !n.system).map((n) => ({ body: n.body ?? "", author: toAuthor(n.author?.username) }));
     },
     createIssue({ title, body, labels }) {
