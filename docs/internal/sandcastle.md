@@ -42,7 +42,7 @@ reviewer 的结论有三种：`merge`、`revise`、`pr`（规则在 `prompts/rev
 
 ## 什么时候自动合并
 
-全部满足才合并（`gh pr merge --rebase`），否则留 PR 并在 PR 上评论原因：
+全部满足才合并（GitHub 上 `gh pr merge --rebase`；GitLab 上 `mergePr` 走 `glab api --method PUT projects/:id/merge_requests/<iid>/merge`，只传 `squash`，merge commit / 半线性 / fast-forward 由 GitLab 项目设置决定），否则留 PR 并在 PR 上评论原因：
 
 1. reviewer 给出 `<verdict>merge</verdict>`：验收标准都实现且有测试、没有要人判断的问题、改了页面的浏览器验收每步都通过（见「浏览器验收」）、没动权限 / 敏感字段处理、没有改已有数据或删改列的迁移、票里没要求人亲自验收、没改弱已有测试（新增 / 修改 ADR 和代拍板本身不再拦合并，2026-11-24；前提是改 ADR 是票正文或人明确要求的，agent 自己决定修订 ADR 属于「必须停下」）（规则在 `prompts/review.md`）。
 2. 门槛通过：脚本在沙箱里自己跑 `npm run typecheck` 与完整测试。
@@ -65,7 +65,7 @@ reviewer 的结论有三种：`merge`、`revise`、`pr`（规则在 `prompts/rev
 
 6. 没有开着的 `sandcastle:main-broken` 票（[ADR 0007](../adr/0007-main-broken-holds-merge.md)）：等完 PR 检查、直接合并前查一次，rebase 补救 force-push 后、重试合并前再查一次（等检查期间才开出的修复票也挡得住）。有票开着时留 PR（`sandcastle:pr-open`），评论和终端写「main 兜底测试失败，等 #n 修好」；修复票本身、它 `## Split into` 的子票、别的 main-broken 票不挡。查不到开着的修复票（`listOpenIssues` 报错）也留 PR（fail-closed）。外部 PR 和 `autoMerge: false` 本来就不自动合并，不查。被挡住（含 fail-closed）而留 PR 的票同时打 `sandcastle:waiting-main`；main-broken 票都关掉后，下次调度开头自动恢复（`resumeWaitingMain`）：打 `sandcastle:merging`、去 `pr-open`，终端写「main 修好了，#n rebase 后重跑门槛」，然后强制 rebase 到最新 main、重跑门槛、等检查再合并——被挡时的门槛是对着坏 main 跑的，必须重跑，不放宽任何关卡（rebase 解冲突照旧复审、查受保护路径）。`waiting-main` 不在恢复一开始就去（#119），留到结果出来再按结果处理：合并了、因别的原因留 PR（受保护路径、复审、浏览器验收、检查失败）、`autoMerge: false` 留 PR 时去掉（`removeWaitingMainAfterResume`）；恢复途中又开出新的 main-broken 票时，上面的同一套检查会再挡住并重新打上 waiting-main，保留到下一轮恢复；恢复中途抛错时去掉（`mergeWhenReady` 的 finally 已去掉 merging、票已离开被挡状态，start 的兜底打 stuck 后下一轮也捡不到它，保留只会让人去掉 stuck 重新实现后被 `resumeWaitingMain` 误自动合并）；被 kill（finally 没跑、merging 还在）时保留，下一轮这张票仍带 waiting-main、仍按「main 修好后的恢复」走强制 rebase 重跑门槛，不退化成普通的中断恢复。分支已包含最新 main 时（如修复票没合代码就关了）不强制 rebase，照普通流程等检查（强行走 rebase 会按 `rebaseNotBehind` 被当成合并失败）。查 main-broken 票出错时这一轮不恢复（fail-closed，和挡住时同口径）。已关闭票上残留的 waiting-main 在调度开头清掉。
 
-   以上都满足但 `gh pr merge` 被仓库的分支保护挡住（报错含 `base branch policy prohibits the merge`、`required status check`、`approving review` / `review is required`、`protected branch`，`isBranchProtectionError`）时，不走 rebase 补救（rebase 解决不了审批和必需检查，只会白跑一遍门槛），直接留 PR（`sandcastle:pr-open`），评论写明是分支保护挡住的并附 gh 报错，由人合并或调整分支保护 / `mergeRequires`；rebase 补救里的合并重试碰到这类报错也立刻停（#29）。只看报错文本，不查保护规则（那要 admin 权限）。
+   以上都满足但 `gh pr merge` 被仓库的分支保护挡住（报错含 `base branch policy prohibits the merge`、`required status check`、`approving review` / `review is required`、`protected branch`，`isBranchProtectionError`）时，不走 rebase 补救（rebase 解决不了审批和必需检查，只会白跑一遍门槛），直接留 PR（`sandcastle:pr-open`），评论写明是分支保护挡住的并附 gh 报错，由人合并或调整分支保护 / `mergeRequires`；rebase 补救里的合并重试碰到这类报错也立刻停（#29）。只看报错文本，不查保护规则（那要 admin 权限）；这些特征只按 gh 的报错文本写，GitLab 的报错还没覆盖（已知缺口）。
 
 ### 合并门槛怎么选测试（2026-11-24）
 

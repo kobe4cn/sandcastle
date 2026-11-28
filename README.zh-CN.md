@@ -15,7 +15,7 @@
 ## 需要
 
 - Node ≥ 22.18
-- 已登录的 `gh`（`gh auth login`）
+- GitHub 用已登录的 `gh`（`gh auth login`）；GitLab 用已登录的 `glab`（`glab auth login`，自建实例加 `--hostname`）。`GITLAB_TOKEN` 环境变量会盖过钥匙串里的 glab 凭据
 - podman（macOS 上还要 `podman machine start`）
 - Claude Code 的凭据：订阅用户可用 `claude setup-token` 生成
 
@@ -93,4 +93,4 @@ SANDCASTLE_ONLY=12 sandpipe    # 只做 #12；不设就处理全部带标签的�
 | `sandpipe upgrade` | 安装最新版本 |
 | `sandpipe --version` | |
 
-现在只支持 GitHub，GitLab 还没做。
+GitHub 和 GitLab 都支持。GitLab 上没有 Request changes：reviewer 打回 PR 只认 `/sandcastle` 评论；可信作者是项目成员里 Developer（30）及以上。

@@ -15,7 +15,7 @@ The pipeline runs these steps in order:
 ## Requirements
 
 - Node ≥ 22.18
-- A logged-in `gh` (`gh auth login`)
+- GitHub: a logged-in `gh` (`gh auth login`); GitLab: a logged-in `glab` (`glab auth login`, add `--hostname` on a self-hosted instance). The `GITLAB_TOKEN` environment variable overrides glab's keychain credentials
 - podman (on macOS also `podman machine start`)
 - Claude Code credentials: subscribers can generate one with `claude setup-token`
 
@@ -93,4 +93,4 @@ Auto-merge requires both the gate and the checks on the PR to pass. If your CI c
 | `sandpipe upgrade` | Install the latest version |
 | `sandpipe --version` | |
 
-Only GitHub is supported for now; GitLab isn't done yet.
+Both GitHub and GitLab are supported. On GitLab there is no Request changes: a reviewer sends a PR back with a `/sandcastle` comment. Trusted authors are project members with Developer (30) or above.
