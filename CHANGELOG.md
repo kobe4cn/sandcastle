@@ -1,6 +1,6 @@
 # 更新记录
 
-## Unreleased
+## 0.3.5
 
 - 通知发送失败时等 5 秒重试一次（fetch 抛错、5xx、429；4xx 不重试），重试也失败才打一行警告、按最后一次的结果写文案（HTTP 状态码或 #147 的错误类型），仍 fire-and-forget、从不 reject、不阻塞主流程；`run` 异常退出的 crashed 通知和 `doctor --notify-test` 不重试（总等待仍封顶 10 秒、交互命令马上出结论）（`src/notify.ts` 的 `createNotifier` 新增 `sleep` / `retry` 选项；docs/config 中英、docs/internal、DEVELOPMENT.md 同步）（closes #148）
 
