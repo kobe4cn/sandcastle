@@ -183,9 +183,14 @@ export function authRecovered(down: { fingerprint: string; since: number }, fing
 /**
  * 跑 fn，撞上会话中途的认证失效就等到凭据换过（或满 30 分钟兜底）再重跑；其他错误照抛。
  * fn 要能从头重跑：build 重跑时在原分支上接着做。onDown 在等之前调用（打印原因、置主循环的暂停标志），fn 成功后调 onUp。
+ * 凭据一直没换时最多撞 maxAuthHits 次（默认 3 次，含第一次，#142 打回后定的）：到上限不再等，调 onCap 后把错误抛出去，
+ * 由调用方按普通失败处理（打 stuck）——不然误判的认证失效会让同一张票每 30 分钟无限重跑、整条运行卡死。凭据换过后计数重新数。
  * deps 给测试注入假的 fingerprint / sleep / now。
  * Run fn; on a mid-session auth failure wait until the credentials are replaced (or the 30-minute fallback) and rerun; other errors are rethrown.
  * fn must be rerunnable from the start: a rerun of build continues on the same branch. onDown is called before waiting (print the reason, set the main loop's pause flag); onUp after fn succeeds.
+ * With the credentials never replaced, it hits at most maxAuthHits times (3 by default, the first included; decided after #142's review): at the cap it stops waiting,
+ * calls onCap and rethrows the error for the caller to treat as an ordinary failure (marked stuck) — otherwise a misdetected auth failure would rerun the same
+ * ticket every 30 minutes forever and hang the whole run. The count restarts whenever the credentials change.
  * deps lets tests inject a fake fingerprint / sleep / now.
  */
 export async function untilAuthRecovered<T>(
@@ -195,13 +200,17 @@ export async function untilAuthRecovered<T>(
     fingerprint: () => string;
     onDown: (reason: string) => void;
     onUp: () => void;
+    onCap?: () => void;
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;
     pollMs?: number;
     maxWaitMs?: number;
+    maxAuthHits?: number;
   },
 ): Promise<T> {
-  const { fingerprint, onDown, onUp, sleep: sleepFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, pollMs = 60_000, maxWaitMs } = deps;
+  const { fingerprint, onDown, onUp, onCap, sleep: sleepFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, pollMs = 60_000, maxWaitMs, maxAuthHits = 3 } = deps;
+  // 同一场失效的连续次数：撞上时的指纹和上一次不同（凭据换过了）就重新数。 / Consecutive hits of one outage: restart the count when the fingerprint at the hit differs from the previous one (the credentials changed).
+  let hits: { count: number; fingerprint: string } | undefined;
   for (;;) {
     try {
       const out = await fn();
@@ -210,9 +219,15 @@ export async function untilAuthRecovered<T>(
     } catch (e) {
       const reason = agentAuthReason(e);
       if (reason === null) throw e;
-      onDown(reason);
       // down 记在 catch 里面：放外面 TS 对 fingerprint() 的收窄过不了。 / down is recorded inside the catch: outside it, TS can't narrow fingerprint() through.
-      const down = { fingerprint: fingerprint(), since: now() };
+      const fp = fingerprint();
+      hits = hits?.fingerprint === fp ? { count: hits.count + 1, fingerprint: fp } : { count: 1, fingerprint: fp };
+      if (hits.count >= maxAuthHits) {
+        onCap?.();
+        throw e;
+      }
+      onDown(reason);
+      const down = { fingerprint: fp, since: now() };
       while (!authRecovered(down, fingerprint(), now(), maxWaitMs)) await sleepFor(pollMs);
       const how = fingerprint() !== down.fingerprint
         ? t("凭据已换过", "the credentials were replaced")

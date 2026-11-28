@@ -161,3 +161,15 @@ describe("gateEnvDown（#54）", () => {
     expect(en).toContain("`sandcastle:stuck`");
   });
 });
+
+describe("authExhausted（#142 打回后的上限）", () => {
+  it("中英文都写明 3 次、凭据未更换，并提示换凭据后去掉 stuck", () => {
+    const zh = messages("zh").authExhausted("invalid API key", "`sandcastle:stuck`");
+    expect(zh).toContain("连续 3 次撞上认证失效、凭据一直没换（`invalid API key`）");
+    expect(zh).toContain("去掉 `sandcastle:stuck`");
+    const en = messages("en").authExhausted("invalid API key", "`sandcastle:stuck`");
+    expect(en).toContain("3 times in a row");
+    expect(en).toContain("`invalid API key`");
+    expect(en).toContain("`sandcastle:stuck`");
+  });
+});

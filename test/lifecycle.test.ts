@@ -302,6 +302,83 @@ describe("会话认证失效（#62 之三）", () => {
     ).rejects.toThrow("container exited 137");
     expect(downs).toBe(0);
   });
+
+  // 上限（#142 打回后定的）：误判的认证失效每 30 分钟重跑一次会让整条运行卡死，
+  // 凭据一直没换时同一张票最多撞 3 次（含第一次），到上限按普通失败抛出去（打 stuck）。
+  // The cap (decided after #142's review): a misdetected auth failure rerunning every 30 minutes would hang the
+  // whole run, so with the credentials never replaced a ticket hits at most 3 times (the first included); at the
+  // cap the error is rethrown as an ordinary failure (marked stuck).
+  it("untilAuthRecovered：指纹一直不变，撞满 3 次（含第一次）后不再等：调 onCap、把错误抛出去", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    let now = 1_000_000;
+    let calls = 0;
+    const downs: string[] = [];
+    let caps = 0;
+    const sleeps: number[] = [];
+    const err = await untilAuthRecovered(
+      "#7",
+      async () => {
+        calls++;
+        throw new AgentAuthError("invalid API key");
+      },
+      {
+        fingerprint: () => "same",
+        onDown: (reason) => downs.push(reason),
+        onUp: () => {
+          throw new Error("onUp must not be called");
+        },
+        onCap: () => caps++,
+        sleep: async (ms) => {
+          sleeps.push(ms);
+          now += ms;
+        },
+        now: () => now,
+        maxWaitMs: 60_000,
+      },
+    ).catch((e: unknown) => e);
+    expect(calls).toBe(3);
+    expect((err as Error).name).toBe("AgentAuthError");
+    expect(downs).toEqual(["invalid API key", "invalid API key"]);
+    expect(caps).toBe(1);
+    // 头两次各等一个 maxWaitMs，第三次不再等 / the first two hits each wait one maxWaitMs, the third doesn't wait
+    expect(sleeps).toEqual([60_000, 60_000]);
+    log.mockRestore();
+  });
+
+  it("untilAuthRecovered：凭据换过后计数重新数，同样的次数不会到上限", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    let fp = "aaa";
+    let now = 0;
+    let calls = 0;
+    const downs: string[] = [];
+    let caps = 0;
+    const out = await untilAuthRecovered(
+      "#7",
+      async () => {
+        calls++;
+        if (calls <= 3) throw new AgentAuthError("OAuth token has expired");
+        return "ok";
+      },
+      {
+        fingerprint: () => fp,
+        onDown: (reason) => downs.push(reason),
+        onUp: () => {},
+        onCap: () => caps++,
+        sleep: async (ms) => {
+          now += ms;
+          if (calls === 1) fp = "bbb"; // 每次等待里都有人换凭据 / the credentials get swapped during each wait
+          else if (calls === 2) fp = "ccc";
+        },
+        now: () => now,
+        maxWaitMs: 60_000,
+      },
+    );
+    expect(out).toBe("ok");
+    expect(calls).toBe(4);
+    expect(downs.length).toBe(3);
+    expect(caps).toBe(0);
+    log.mockRestore();
+  });
 });
 
 describe("镜像不存在的报错", () => {

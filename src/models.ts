@@ -107,9 +107,21 @@ export const CLAUDE_LIMIT_PATTERN = /hit your .*?limit/i;
  * Review and prep sessions have no completionSignal, so a hit can only be spotted in the output text — matching bare 401s isn't enough.
  */
 export const AGENT_AUTH_PATTERN = /invalid api key|please run \/login|oauth token (?:has )?expired|authentication_error|API Error: 401/i;
+/**
+ * 输出那条路只认「以这些报错开头」的行（允许行首空白或 Error: 一类前缀），句子中间、反引号里引用到的不算（#142 打回后收窄）。
+ * 前缀组靠回溯也能认「API Error: 401」这一类本身就是报错开头的行。抛出来的错误不走这里，照旧整段匹配（authLine）。
+ * The output path only counts lines *starting* with one of these errors (leading whitespace or an Error:-style prefix allowed); quotes mid-sentence or inside backticks don't count (narrowed after #142's review).
+ * Via backtracking the prefix group also admits lines that themselves start with the error, like "API Error: 401". Thrown errors don't go through here; they keep the whole-text match (authLine).
+ */
+const AGENT_AUTH_LINE = new RegExp(`^\\s*(?:[\\w ]{0,24}error:\\s*)?(?:${AGENT_AUTH_PATTERN.source})`, "i");
+/** 输出那条路只查很短的输出：更长的多半是正常会话，结论里引用到关键词不算（#142 打回后收窄）。 / The output path only checks very short output: anything longer is most likely a normal session, and a keyword quoted in its conclusions doesn't count (narrowed after #142's review). */
+const AUTH_OUTPUT_MAX_CHARS = 500;
 /** 文本里第一条命中认证失效的行（截到 200 个字符），没有返回 undefined。 / The first line matching an auth failure (truncated to 200 characters); undefined when none. */
 const authLine = (text: string): string | undefined =>
   text.split("\n").map((l) => l.trim()).find((l) => AGENT_AUTH_PATTERN.test(l))?.slice(0, 200);
+/** 输出那条路的行首锚定匹配（AGENT_AUTH_LINE）：第一条以报错开头的行，没有返回 undefined。 / The output path's line-anchored match (AGENT_AUTH_LINE): the first line starting with an error; undefined when none. */
+const authStartLine = (text: string): string | undefined =>
+  text.split("\n").find((l) => AGENT_AUTH_LINE.test(l))?.trim().slice(0, 200);
 /** 认不出重置时间时跳过这个档案多久。 / How long to skip a profile when the reset time can't be read. */
 const UNKNOWN_RESET_SKIP_MS = 60 * 60_000;
 const RESET_SLACK_MS = 2 * 60_000;
@@ -550,11 +562,13 @@ const limitText = (run: AgentRun, p: Profile) =>
  * 用这个阶段第一个没在等限额的档案跑一次会话。撞上限额就记下重置时间（认不出跳过 1 小时）、换下一个；
  * 都在等时抛 AllProfilesLimited。其他错误照抛。撞限额时先调 onLimited（限额文本作为输出返回的带上那次 run，抛错的不带）。
  * 会话撞上认证失效（AGENT_AUTH_PATTERN，不管是抛出来的还是作为最后输出、不带完成信号返回的）改抛 AgentAuthError：
- * 不换档案、不记限额、不调 onLimited，由调用方（untilAuthRecovered）等凭据更换后重跑（#62 之三）。
+ * 不换档案、不记限额、不调 onLimited，由调用方（untilAuthRecovered）等凭据更换后重跑（#62 之三）。输出那条路收窄过（#142 打回后定的）：
+ * 只查整段 trim 后不超过 500 字的输出，且只认以报错开头的行——见 AGENT_AUTH_LINE 和 AUTH_OUTPUT_MAX_CHARS。
  * Run one session with this phase's first profile that isn't waiting on a limit. On a limit, record the reset time (skip 1 hour if unreadable) and try the next;
  * throw AllProfilesLimited when all are waiting. Other errors are rethrown. On a limit, onLimited is called first (with the run when the limit text came back as output, without when it was thrown).
  * A session hitting an authentication failure (AGENT_AUTH_PATTERN, whether thrown or returned as the final output without the completion signal) throws AgentAuthError instead:
- * no profile switch, no limit record, no onLimited; the caller (untilAuthRecovered) waits for new credentials and reruns (#62 part 3).
+ * no profile switch, no limit record, no onLimited; the caller (untilAuthRecovered) waits for new credentials and reruns (#62 part 3). The output path is narrowed (decided after #142's review):
+ * only output whose trimmed whole is at most 500 characters is checked, and only lines starting with an error count — see AGENT_AUTH_LINE and AUTH_OUTPUT_MAX_CHARS.
  */
 export async function runWithProfile<T extends AgentRun>(
   phase: Phase,
@@ -574,9 +588,11 @@ export async function runWithProfile<T extends AgentRun>(
     let limitedRun: T | undefined;
     try {
       const run = await fn(profile);
-      // 认证失效要赶在限额之前认：401 一类不是限额，换了档案也一样失败。
-      // An auth failure must be caught before a limit: a 401 isn't a limit, and switching profiles would fail the same way.
-      const auth = run.completionSignal === undefined ? authLine(run.stdout.slice(-2000)) : undefined;
+      // 认证失效要赶在限额之前认：401 一类不是限额，换了档案也一样失败。输出那条路收窄过（#142 打回后定的）：
+      // 没有完成信号的会话只有整段输出很短时才查，且只认以报错开头的行——review / prep 的结论里引用到关键词不算。
+      // An auth failure must be caught before a limit: a 401 isn't a limit, and switching profiles would fail the same way. The output path is narrowed (decided after #142's review):
+      // a session without the completion signal is only checked when its whole output is very short, and only lines starting with an error count — a keyword quoted in review / prep conclusions doesn't.
+      const auth = run.completionSignal === undefined && run.stdout.trim().length <= AUTH_OUTPUT_MAX_CHARS ? authStartLine(run.stdout) : undefined;
       if (auth !== undefined) throw new AgentAuthError(auth);
       message = limitText(run, profile);
       if (message === undefined) return { run, profile };

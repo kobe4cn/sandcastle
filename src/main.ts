@@ -1760,18 +1760,18 @@ async function land(issue: Issue, outcome: PromiseSettledResult<Awaited<ReturnTy
       : errorLine(outcome.reason);
     console.error(`  ✗ #${issue.id} ${t("失败：", "failed: ")}${why}${t(`（详情见 ${ERROR_LOG}）`, ` (details in ${ERROR_LOG})`)}`);
     // 门槛依赖的服务连不上（#54）：写明匹配到的那一行，不写成通用的沙箱错误。
+    // 认证失效撞满 3 次（#142 打回后定的，见 onAuthCapped）也走这个 stuck 出口：AgentAuthError 只有到上限才会从 untilAuthRecovered 抛到这里。
     // A service the gate depends on is unreachable (#54): state the matched line rather than a generic sandbox error.
+    // An auth failure that exhausted its 3 hits (decided after #142's review; see onAuthCapped) takes this stuck exit too: an AgentAuthError only reaches here from untilAuthRecovered at the cap.
     const envDown = gateEnvReason(outcome.reason);
-    markStuck(
-      issue.id,
-      isAgentIdleTimeout(outcome.reason)
-        ? M.agentIdleTimeout(AGENT_IDLE_TIMEOUT_S, LABEL.stuck)
-        : envDown !== null
-          ? M.gateEnvDown(envDown, LABEL.stuck)
-          : PODMAN_TRANSIENT.test(String(outcome.reason))
-            ? M.podmanDown(errorLine(outcome.reason))
-            : M.sandboxError(errorLine(outcome.reason)),
-    );
+    const authLine = agentAuthReason(outcome.reason);
+    let stuckMessage: string;
+    if (isAgentIdleTimeout(outcome.reason)) stuckMessage = M.agentIdleTimeout(AGENT_IDLE_TIMEOUT_S, LABEL.stuck);
+    else if (authLine !== null) stuckMessage = M.authExhausted(authLine, LABEL.stuck);
+    else if (envDown !== null) stuckMessage = M.gateEnvDown(envDown, LABEL.stuck);
+    else if (PODMAN_TRANSIENT.test(String(outcome.reason))) stuckMessage = M.podmanDown(errorLine(outcome.reason));
+    else stuckMessage = M.sandboxError(errorLine(outcome.reason));
+    markStuck(issue.id, stuckMessage);
     return;
   }
   const result = outcome.value;
@@ -2348,7 +2348,7 @@ let agentAuthDown: { reason: string; fingerprint: string; since: number } | unde
 /** 预检问题里的原因行：固定文本加那一行原因，不带时间——带了时间去重会失效，每轮都重打一遍。 / The reason line for preflight problems: fixed text plus the reason line, no timestamp — a timestamp would break dedup and reprint every pass. */
 const authReasonLine = (reason: string) => t(`会话撞上认证错误：${reason}`, `a session hit an authentication error: ${reason}`);
 const authFixLine = () =>
-  t("Claude 档案用 claude setup-token 生成新 token，填进 .sandcastle/.env；别家档案换 .env 里的 key。凭据换过或满 30 分钟后自动在原分支上重跑", "for Claude profiles, generate a new token with claude setup-token and put it in .sandcastle/.env; for other vendors, swap the key in .env. Sessions rerun on the same branch once the credentials change or after 30 minutes");
+  t("Claude 档案用 claude setup-token 生成新 token，填进 .sandcastle/.env；别家档案换 .env 里的 key。凭据换过或满 30 分钟后自动在原分支上重跑；一直没换的话撞满 3 次按失败处理（打 stuck）", "for Claude profiles, generate a new token with claude setup-token and put it in .sandcastle/.env; for other vendors, swap the key in .env. Sessions rerun on the same branch once the credentials change or after 30 minutes; with the credentials never replaced, 3 hits end in a failure (marked stuck)");
 /**
  * 会话撞上认证失效：终端写明原因和处理方法，置标志让主循环暂停开新会话。不发通知（#62 定了凭据失效只写终端）。
  * A session hit an authentication failure: print the reason and the fix to the terminal, and set the flag that pauses new sessions in the main loop. No notification (decided in #62: dead credentials only go to the terminal).
@@ -2360,6 +2360,17 @@ function onAuthDown(reason: string) {
 }
 
 /**
+ * 认证失效撞满 3 次、凭据一直没换（#142 打回后加的上限）：不再等，错误按普通失败抛出去走 stuck 出口（land 的 rejected 分支评论、发 stuck 通知）。
+ * 清掉全局暂停标志，别的票照常调度。通知走的是 stuck 那一路，不违背「凭据失效暂停期间不发通知」（#62）。
+ * An auth failure exhausted its 3 hits with the credentials never replaced (cap added after #142's review): stop waiting; the error is rethrown as an ordinary failure into the stuck exit (land's rejected branch comments and sends the stuck notification).
+ * The global pause flag is cleared so other tickets keep scheduling. The notification goes through the stuck channel, which doesn't break "no notifications while paused on dead credentials" (#62).
+ */
+function onAuthCapped() {
+  console.log(t("  ⛔ 连续 3 次撞上认证失效、凭据未更换：不再等待，按失败处理（打 stuck）", "  ⛔ 3 consecutive auth failures with the credentials unchanged: giving up the wait and treating it as a failure (marked stuck)"));
+  agentAuthDown = undefined;
+}
+
+/**
  * 一张票独立跑完 build → 落地，做完就让出空位，不等同批的其他票。
  * One ticket runs build → land on its own and frees its slot when done, without waiting for others in the same batch.
  */
@@ -2367,9 +2378,11 @@ function start(issue: Issue, resume = false) {
   running.set(issue.id, issue);
   void (async () => {
     // 撞上限额的票等重置后在原分支上重跑，不打 stuck。接着等合并的票（resume）不 build。
-    // 认证失效（#62 之三）在最外层等：凭据换过或满 30 分钟后在原分支上重跑，限额等待和临时错误重试都在它里面；不算失败、不打 stuck、不进 land 的 rejected 分支。
+    // 认证失效（#62 之三）在最外层等：凭据换过或满 30 分钟后在原分支上重跑，限额等待和临时错误重试都在它里面；不算失败、不打 stuck。
+    // 凭据一直没换时最多撞 3 次（含第一次，#142 打回后定的）：到上限不再等，按普通失败走 stuck（onAuthCapped 清掉暂停标志）。
     // Tickets that hit a usage limit rerun on the same branch after the reset, without being marked stuck. Tickets resuming a merge (resume) skip build.
-    // An auth failure (#62 part 3) waits at the outermost layer: rerun on the same branch once the credentials change or after 30 minutes, with the limit wait and transient retries inside it; not a failure, no stuck, never reaching land's rejected branch.
+    // An auth failure (#62 part 3) waits at the outermost layer: rerun on the same branch once the credentials change or after 30 minutes, with the limit wait and transient retries inside it; not a failure, no stuck.
+    // With the credentials never replaced it hits at most 3 times (the first included; decided after #142's review): at the cap the wait ends and it takes the ordinary stuck exit (onAuthCapped clears the pause flag).
     const [outcome] = resume
       ? [undefined]
       : await Promise.allSettled([
@@ -2379,6 +2392,7 @@ function start(issue: Issue, resume = false) {
             onUp: () => {
               agentAuthDown = undefined;
             },
+            onCap: onAuthCapped,
           }),
         ]);
     // 落地在宿主机上做：用宿主机的 git / 平台凭据，沙箱没有写仓库的权限。
