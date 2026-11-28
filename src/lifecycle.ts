@@ -180,6 +180,24 @@ export function authRecovered(down: { fingerprint: string; since: number }, fing
   return fingerprint !== down.fingerprint || now - down.since >= maxWaitMs;
 }
 
+/** 凭据一直没换时，同一张票因认证失效最多撞几次（含第一次，#142 打回后定的）。 / How many auth-failure hits one ticket gets with the credentials never replaced (the first included; decided after #142's review). */
+export const AUTH_MAX_HITS = 3;
+/** 同一张票连续撞上认证失效的计数。 / Consecutive auth-failure hits for one ticket. */
+export type AuthHits = { count: number; fingerprint: string };
+
+/**
+ * 又撞上一次认证失效后的计数：撞上时的凭据指纹和上一次相同就加 1，不同（凭据换过了）就从 1 重新数。build 的 untilAuthRecovered 和 prep 的 catch 共用。
+ * The count after another auth-failure hit: add 1 when the credentials fingerprint at the hit matches the previous one, restart from 1 when it differs (the credentials were replaced). Shared by build's untilAuthRecovered and prep's catch.
+ */
+export function nextAuthHits(prev: AuthHits | undefined, fingerprint: string): AuthHits {
+  return prev?.fingerprint === fingerprint ? { count: prev.count + 1, fingerprint } : { count: 1, fingerprint };
+}
+
+/** 计数到没到上限：到了就不再等，按普通失败处理。 / Whether the count reached the cap: if so, stop waiting and treat it as an ordinary failure. */
+export function authHitCapped(hits: AuthHits, max = AUTH_MAX_HITS): boolean {
+  return hits.count >= max;
+}
+
 /**
  * 跑 fn，撞上会话中途的认证失效就等到凭据换过（或满 30 分钟兜底）再重跑；其他错误照抛。
  * fn 要能从头重跑：build 重跑时在原分支上接着做。onDown 在等之前调用（打印原因、置主循环的暂停标志），fn 成功后调 onUp。
@@ -208,9 +226,9 @@ export async function untilAuthRecovered<T>(
     maxAuthHits?: number;
   },
 ): Promise<T> {
-  const { fingerprint, onDown, onUp, onCap, sleep: sleepFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, pollMs = 60_000, maxWaitMs, maxAuthHits = 3 } = deps;
+  const { fingerprint, onDown, onUp, onCap, sleep: sleepFor = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), now = Date.now, pollMs = 60_000, maxWaitMs, maxAuthHits = AUTH_MAX_HITS } = deps;
   // 同一场失效的连续次数：撞上时的指纹和上一次不同（凭据换过了）就重新数。 / Consecutive hits of one outage: restart the count when the fingerprint at the hit differs from the previous one (the credentials changed).
-  let hits: { count: number; fingerprint: string } | undefined;
+  let hits: AuthHits | undefined;
   for (;;) {
     try {
       const out = await fn();
@@ -221,8 +239,8 @@ export async function untilAuthRecovered<T>(
       if (reason === null) throw e;
       // down 记在 catch 里面：放外面 TS 对 fingerprint() 的收窄过不了。 / down is recorded inside the catch: outside it, TS can't narrow fingerprint() through.
       const fp = fingerprint();
-      hits = hits?.fingerprint === fp ? { count: hits.count + 1, fingerprint: fp } : { count: 1, fingerprint: fp };
-      if (hits.count >= maxAuthHits) {
+      hits = nextAuthHits(hits, fp);
+      if (authHitCapped(hits, maxAuthHits)) {
         onCap?.();
         throw e;
       }

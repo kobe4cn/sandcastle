@@ -93,8 +93,8 @@ import type { ForgeComment, ForgeIssue, ForgePr, IssueState } from "./forge.ts";
 import { mainBrokenBlocker, type MergeFlowDeps, type MergeResult, mergeAfterPush, mergeWhenReady } from "./merge-flow.ts";
 import { configDir, loadProject } from "./profile.ts";
 import {
-  acquireRunLock, agentAuthReason, authRecovered, errorLine, exitWhenDone, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GATE_INFRA_PREFIX, GateInfraError, imageExists, isAgentIdleTimeout, isGateInfraFailure, imageStaleWarning, logErrorDetail, missingImage, onInterrupt,
-  podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath, untilAuthRecovered, waitForPodman,
+  acquireRunLock, agentAuthReason, authHitCapped, type AuthHits, authRecovered, errorLine, exitWhenDone, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GATE_INFRA_PREFIX, GateInfraError, imageExists, isAgentIdleTimeout, isGateInfraFailure, imageStaleWarning, logErrorDetail, missingImage, onInterrupt,
+  nextAuthHits, podmanProblem, removeOrphanContainers, RUN_LOCK_FILE, runLockPath, untilAuthRecovered, waitForPodman,
 } from "./lifecycle.ts";
 import { messages } from "./i18n.ts";
 import { createNotifier, readNotifyUrl } from "./notify.ts";
@@ -2345,6 +2345,9 @@ const busy = () => running.size - ciWaiting.size;
 // 会话中途认证失效的状态（#62 之三）：置上后主循环把它并进每轮预检，暂停开新会话；build 的 untilAuthRecovered 重跑成功（onUp）或预检发现凭据换过 / 等满 30 分钟时清掉。
 // State of a mid-session auth failure (#62 part 3): while set, the main loop folds it into the pass preflight, pausing new sessions; cleared when build's untilAuthRecovered reruns successfully (onUp) or the preflight sees the credentials replaced / the 30 minutes elapsed.
 let agentAuthDown: { reason: string; fingerprint: string; since: number } | undefined;
+// prep 撞上认证失效的逐票计数（#142 打回后的上限，和 build 共用 nextAuthHits）：凭据一直没换时同一张票的 prep 最多撞 3 次，到上限按普通失败走、写 prepTried；prep 成功时删掉。
+// Per-ticket count of prep auth-failure hits (the cap added after #142's review, sharing nextAuthHits with build): with the credentials never replaced, one ticket's prep hits at most 3 times, then takes the ordinary failure path and writes prepTried; deleted when prep succeeds.
+const prepAuthHits = new Map<number, AuthHits>();
 /** 预检问题里的原因行：固定文本加那一行原因，不带时间——带了时间去重会失效，每轮都重打一遍。 / The reason line for preflight problems: fixed text plus the reason line, no timestamp — a timestamp would break dedup and reprint every pass. */
 const authReasonLine = (reason: string) => t(`会话撞上认证错误：${reason}`, `a session hit an authentication error: ${reason}`);
 const authFixLine = () =>
@@ -2522,6 +2525,7 @@ async function schedule(): Promise<ScheduleResult> {
       }));
       // 正常返回说明限额已过，下次再撞要重新通知。 / A normal return means the limit has passed; the next hit notifies again.
       prepLimitNotified = false;
+      prepAuthHits.delete(issue.number);
       // prep 会话在沙箱里打的 stuck 宿主机看不到，结束后查一次标签补发通知（#133）；prep 前这张票一定没带 stuck（toPrep 已排除）。
       // A stuck label the prep session added in the sandbox is invisible to the host; check the label once after it ends and notify (#133). Before prep the ticket never carries stuck (toPrep excludes it).
       const s = attempt(() => forge.listOpenIssues([LABEL.stuck]).some((i) => i.number === issue.number));
@@ -2541,10 +2545,18 @@ async function schedule(): Promise<ScheduleResult> {
       }
       // 认证失效（#62 之三）：环境类错误，不算失败——置标志（主循环暂停开新会话）后 break，跳过下面的 prepTried.set，凭据好了下次调度重新 prep。
       // An auth failure (#62 part 3): an environment-style error, not a failure — set the flag (the main loop pauses new sessions) and break, skipping prepTried.set below so prep reruns next pass once the credentials work.
+      // 凭据一直没换时最多撞 3 次（含第一次）：到上限清掉暂停标志、删掉计数，落到下面的普通失败出口（记错误、写 prepTried），不再每 30 分钟重跑卡住整条运行。
+      // With the credentials never replaced it hits at most 3 times (the first included): at the cap, clear the pause flag and the count and fall through to the ordinary failure exit below (log the error, write prepTried) instead of rerunning every 30 minutes and hanging the whole run.
       const auth = agentAuthReason(e);
       if (auth !== null) {
-        onAuthDown(auth);
-        break;
+        const hits = nextAuthHits(prepAuthHits.get(issue.number), credentialsFingerprint());
+        if (!authHitCapped(hits)) {
+          prepAuthHits.set(issue.number, hits);
+          onAuthDown(auth);
+          break;
+        }
+        prepAuthHits.delete(issue.number);
+        onAuthCapped();
       }
       logErrorDetail(ERROR_LOG, `prep #${issue.number}`, e, appendFileSync);
       console.error(t(`  ✗ prep #${issue.number} 出错：`, `  ✗ prep #${issue.number} error: `) + errorLine(e) + t(`（详情见 ${ERROR_LOG}）`, ` (details in ${ERROR_LOG})`));
