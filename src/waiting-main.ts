@@ -41,3 +41,37 @@ export function labelsToRemoveOnLeave(labels: Pick<Labels, "prOpen" | "merging" 
 export function shouldRemovePrOpenOnResume(mergingLabelled: boolean): boolean {
   return mergingLabelled;
 }
+
+/**
+ * afterMainFix 恢复（resumeMerging）这一轮的结果，waiting-main 按它决定去不去（#119）：
+ * merged 合并了；left 因别的原因留了 PR（受保护路径、复审、浏览器验收、检查失败等，pr-open 已先落上）；
+ * autoMergeOff 因 autoMerge 关着留了 PR——三种都离开了「其他关卡都过了、只被 main-broken 挡住」的状态，要去掉。
+ * held 是 rebase 后又被新开的 main-broken 票挡住（markWaitingMain 重新打过标签），保留给下一轮恢复（#86 行为不变）。
+ * The outcome of an afterMainFix resume (resumeMerging); waiting-main is decided by it (#119):
+ * merged (merged), left (PR left for another reason — protected paths, re-review, browser check, failed checks; pr-open
+ * is already on), and autoMergeOff (PR left because autoMerge is off) all mean the ticket has left "every other gate
+ * passed; held only by main-broken", so the label comes off. held means a new main-broken ticket appeared after the
+ * rebase (markWaitingMain re-added the label) and it stays for the next resume (unchanged #86 behaviour).
+ */
+export type ResumeOutcome = "merged" | "left" | "held" | "autoMergeOff";
+
+/**
+ * afterMainFix 恢复结束时去不去 waiting-main：只有又被 main-broken 挡住（held）时保留，其余都去掉——
+ * 残留的话之后的 resumeWaitingMain 会误恢复（ADR 0007「恢复」）。
+ * Whether waiting-main comes off at the end of an afterMainFix resume: only a fresh main-broken hold (held) keeps it;
+ * every other outcome removes it — a lingering label would let a later resumeWaitingMain resume the ticket by mistake (ADR 0007 "Resume").
+ */
+export function removeWaitingMainAfterResume(outcome: ResumeOutcome): boolean {
+  return outcome !== "held";
+}
+
+/**
+ * 这一轮的恢复是不是 afterMainFix：票上还带 waiting-main 就是。恢复改为留到结果出来再去标签后（#119），
+ * 去标签前被中断的票下一轮仍带 waiting-main，仍走 afterMainFix 的强制 rebase + 重跑门槛，不退化成普通的中断恢复。
+ * Whether this pass's resume is an afterMainFix one: the ticket still carries waiting-main. Now that the label comes
+ * off only after the outcome (#119), a resume interrupted before that still carries waiting-main next pass and still
+ * takes the afterMainFix forced rebase + gate rerun, not a plain interrupt resume.
+ */
+export function isAfterMainFix(labels: string[], waitingMain: string): boolean {
+  return labels.includes(waitingMain);
+}

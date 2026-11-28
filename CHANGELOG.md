@@ -3,6 +3,7 @@
 ## Unreleased
 
 - 验收说明里的多行命令改用代码块写，不再塞进行内代码：implement 提示词的「怎么验证」写法加一条——多行命令或多行内容（带多行参数的命令、多行输出、示例文本）一律用代码块（三个反引号围起来）写，行内代码（单个反引号）只用于不换行的短片段；行内代码跨不过空行，中间有空行时反引号失效，后面的内容被当成 Markdown 渲染（图片语法会变成破图）。review 提示词核对验收说明的格式清单同步加「行内代码里没有换行、多行内容都在代码块里」，发现多行内容放进了行内代码照旧写进 `<revise>`（`prompts/implement.md`、`prompts/review.md`，docs/internal/sandcastle.md 同步）（closes #125）
+- main-broken 修好后的恢复（`sandcastle:waiting-main`）不再在恢复一开始就去标签，留到结果出来再按结果处理（#119）：合并了、因别的原因留 PR（受保护路径、复审、浏览器验收、检查失败）、`autoMerge: false` 留 PR 时去掉；恢复途中又开出新的 main-broken 票再次被挡住时保留（#86 行为不变）；恢复中途出错 / 被 kill 时也保留，下一轮这张票仍带 waiting-main、仍按「main 修好后的恢复」走强制 rebase 重跑门槛，不退化成普通的中断恢复（之前去标签太早，中断重启后不再强制重跑门槛，坏 main 时代的门槛结果可能被沿用）。恢复出错时终端多一行 ⚠ 说明保留标签（`src/waiting-main.ts` 新增 `ResumeOutcome` / `removeWaitingMainAfterResume` / `isAfterMainFix`，`src/main.ts` 的 `resumeMerging` / `finishMerge`（返回值改为 `"merged" | "left"`）/ `markWaitingMain`（记录本轮又被挡的票）；docs/internal/sandcastle.md 同步）（closes #119）
 
 - `sandpipe doctor` 和 `sandpipe run` 启动时发现沙箱镜像与 Containerfile 不一致会报「镜像过期」，`doctor --fix` 重建：镜像构建时打的 `sandpipe.containerfile` label（Containerfile 文件字节的 sha256）与当前文件对不上——包括没打过 label 的老镜像——时，doctor 的「沙箱镜像」一项从 ✓ 变 ⚠「Containerfile 改过，镜像过期」、fix 提示 `sandpipe doctor --fix`，带 `--fix` 时按当前 Containerfile 重建（成功 ✓「重建了镜像」、失败 ✗ 给 stderr 前几行）；label 一致时照旧 ✓，镜像不存在的行为不变。`sandpipe run` 启动时（默认 podman 沙箱、podman 可用）发现过期用 `⚠` 警告一次、不挡运行，镜像不在本地时不在这里报。docs/config 中英写明哈希算法、label 名和运行前只警告不挡（`src/lifecycle.ts` 新增 `imageLabel` / `imageStaleWarning` / `findContainerfile`，`src/doctor.ts` 的镜像一项，`src/main.ts` 的启动检查）（closes #116）
 
