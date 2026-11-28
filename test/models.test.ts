@@ -627,6 +627,32 @@ describe("会话认证失效（#62 之三）", () => {
     expect(run.stdout).toContain("401");
   });
 
+  // 两条收窄（#142 打回后定的）：review / prep 会话正常结束也没有完成信号，
+  // 结论里引用到的认证关键词不能当成认证失效，否则整条运行会卡在 30 分钟一次的重跑上。
+  // Two narrowings (decided after #142's review): review / prep sessions end normally without a
+  // completion signal either, and a quoted auth keyword in their conclusions must not count as an
+  // auth failure, or the whole run would hang on the once-every-30-minutes rerun loop.
+  it("不带完成信号但输出很长（trim 后超过 500 字）、句子中间引用到关键词：不算，照常返回", async () => {
+    const stdout = `结论：本次讨论了认证报错的写法，会话里出现过 "authentication_error" 与 \`please run /login\` 两种文本。${"x".repeat(600)}综上：不构成失败。`;
+    const { profile, run } = await m.runWithProfile("implement", "#9", async () => ({ iterations: [], stdout }));
+    expect(profile.name).toBe("opus");
+    expect(run.stdout).toContain("authentication_error");
+  });
+
+  it("不带完成信号、输出很短，但关键词只在句子中间或反引号里：不算，照常返回", async () => {
+    const stdout = "结论：那个会话报的是 authentication_error 的一种，处理见 `please run /login` 一节。\n";
+    const { run } = await m.runWithProfile("implement", "#9", async () => ({ iterations: [], stdout }));
+    expect(run.stdout).toContain("authentication_error");
+  });
+
+  it("输出很短、某一行以报错开头（允许 Error: 一类前缀）：抛 AgentAuthError", async () => {
+    const err = await m
+      .runWithProfile("implement", "#7", async () => ({ iterations: [], stdout: "\n  Error: invalid API key\n" }))
+      .catch((e: unknown) => e);
+    expect((err as Error).name).toBe("AgentAuthError");
+    expect((err as Error).message).toBe("agent auth: Error: invalid API key");
+  });
+
   it("credentialsFingerprint：.env 的值改了指纹就变，键换序不变，改回去还原", () => {
     project({ profiles: { opus: claude() }, phases: phasesAll(["opus"]) }, "ANTHROPIC_API_KEY=one\n");
     m.reloadModels();
