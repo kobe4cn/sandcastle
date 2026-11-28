@@ -256,6 +256,29 @@ describe("mergeWhenReady", () => {
     expect(f.logs).toContain("  ◐ #7 main 兜底测试失败，等 #31 修好，留 PR #42");
     expect(f.logs.some((l) => l.includes("合并失败"))).toBe(false);
   });
+
+  it("main 修好后的恢复强制 rebase：rebase 后又遇到新开的 main-broken 票，照旧留 PR 等下一轮恢复（waiting-main 保留）", async () => {
+    const f = fakeDeps();
+    f.d.markMerging = (on) => void f.events.push(`markMerging ${on}`);
+    const r = await mergeWhenReady(
+      {
+        issueId: "7",
+        pr: "42",
+        // resumeMerging 的 afterMainFix：分支不等检查，强制 rebase 重跑门槛（src/main.ts 的 forceRebase）
+        chainOk: false,
+        brokenOut: M.mainFixedRebase,
+        // rebaseAndMerge 尾段（mergeAfterPush）查到新开的 blocker 后带 held 返回的样子（markWaitingMain 已在那边重新记上）
+        rebase: async () => ({ ok: false as const, reason: M.reasonMainBroken(31), held: { line: "  ◐ #7 main 兜底测试失败，等 #31 修好，留 PR #42" } }),
+      },
+      f.d,
+    );
+    expect(r).toBe("left");
+    expect(f.events).not.toContain("mergePr 42 squash");
+    expect(f.left).toEqual([M.reasonMainBroken(31)]);
+    expect(f.events.filter((e) => e.startsWith("markMerging"))).toEqual(["markMerging true", "markMerging false"]);
+    expect(f.logs).toContain("  ◐ #7 main 兜底测试失败，等 #31 修好，留 PR #42");
+    expect(f.logs.some((l) => l.includes("合并失败"))).toBe(false);
+  });
 });
 
 describe("waitChecksOffSlot", () => {
