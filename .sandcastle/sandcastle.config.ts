@@ -10,9 +10,11 @@ export default defineProject({
   // issue、PR、评论和终端输出用什么语言（"zh" / "en"）
   // Language for issues, PRs, comments and terminal output ("zh" / "en")
   language: "zh",
-  // 试跑期：只开 PR 不合并、一次一张。按 docs/onboarding-checklist.zh-CN.md 走完前几张票再打开自动合并、调高并行数。
-  // Trial period: open PRs without merging, one ticket at a time. Follow docs/onboarding-checklist.md through the first few tickets before enabling auto-merge and raising parallelism.
-  autoMerge: false,
+  // 自动合并按 ADR 0004 分阶段放开：#57、#60、#64 已完成，只开 PR 模式下连续 5 张 PR（#128 #130 #131 #136 #137）人没改就合了。
+  // 受保护路径、需要人判断、浏览器验收没过、main-broken 时仍留 PR 给人。
+  // Auto-merge enabled in stages per ADR 0004: #57, #60, #64 are done, and 5 PRs in a row (#128 #130 #131 #136 #137) were merged unchanged in PR-only mode.
+  // Protected paths, items needing a human, failed browser checks and main-broken still leave the PR for a human.
+  autoMerge: true,
   // 同时实现几张票：受测试依赖的服务（连接数）与机器负载限制
   // How many tickets to implement at once: limited by the services the tests use (connections) and machine load
   maxParallel: 1,
