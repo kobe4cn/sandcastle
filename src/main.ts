@@ -1627,7 +1627,8 @@ function markMerging(issueId: string, on: boolean): boolean {
       on
         ? t(`  ⚠ 给 #${issueId} 打 ${LABEL.merging} 失败（中断后重启会重新实现）：`, `  ⚠ Labelling #${issueId} ${LABEL.merging} failed (a restart after an interrupt would reimplement it): `) + r.out.slice(0, 200)
         : t(`  ⚠ 去掉 #${issueId} 的 ${LABEL.merging} 失败：`, `  ⚠ Removing ${LABEL.merging} from #${issueId} failed: `) + r.out.slice(0, 200),
-    );  return r.ok;
+    );
+  return r.ok;
 }
 
 let waitingMainLabelEnsured = false;
