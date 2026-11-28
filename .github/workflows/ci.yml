@@ -1,0 +1,31 @@
+# PR 和 main 上跑一遍和流水线门槛相同的检查（.sandcastle/sandcastle.config.ts 的 gate.script）。
+# 自动合并要门槛和 PR 上的 forge 检查都通过（ADR 0002，mergeRequires 默认 checks: "all"）；没有这个 workflow 时 PR 上没有检查，等于只看门槛。
+# 外部 fork 的 PR 也会跑：只给读权限，不碰 secret。
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run check:comments
+      - run: npm run build
