@@ -123,6 +123,72 @@ When the project has Playwright e2e (onboard detects a `playwright.config.{ts,js
 | `beforeSchedule()` | none | Maintenance run on the host at the start of every scheduling pass |
 | `texts` | generic | Bodies of auto-opened tickets and inline prompts |
 
+## Running as a service
+
+To run the pipeline unattended (overnight, over the weekend), put `sandpipe run` under a process supervisor on the machine that hosts the worktrees: systemd on Linux, launchd on macOS. One instance per project — the run lock makes a second copy on the same project exit with an error right away. Set `maxIdlePolls: Infinity` (see Optional) so the run never exits on its own: with the default, once enough idle polls pass it exits with code 0, `Restart=on-failure` won't bring it back, and launchd's `KeepAlive` would restart it after every idle exit.
+
+- **Paths and environment**: `WorkingDirectory` is the project root. A user unit / launchd agent doesn't inherit your shell's environment: set `HOME` (gh's and Claude's config live there) and a `PATH` that reaches `node`, `git`, `gh` and `podman`. Run a released package — a global install (`sandpipe run`), or a pinned `npx sandpipe@<version> run` / `pnpm dlx sandpipe@<version> run`.
+- **Restart policy**: systemd uses `Restart=on-failure` with `RestartSec` (the pause between restarts keeps a broken environment from spinning); `KillMode=mixed` lets a stop's SIGTERM reach the main process while leftover children are reaped. Failed starts count against systemd's start limit — raise `StartLimitBurst` for a long-lived service. launchd uses `KeepAlive`.
+- **Stopping**: `systemctl stop` (or `launchctl unload`) sends SIGTERM, which winds down like Ctrl-C — in-progress sessions are listed, the run lock is released, exit code 143 — and a stop the supervisor itself initiated doesn't count as a failure, so it stays down. After a `kill -9`, the leftover `run.lock` is taken over by the next start.
+- **Logs**: terminal output goes to journald (`journalctl --user -u sandpipe.service`) or to launchd's `StandardOutPath` / `StandardErrorPath` files, which launchd doesn't rotate — set up newsyslog for a long run. Files under `.sandcastle/logs/` are pruned by the pipeline itself: a `.log` file last touched 14 days ago is deleted, and `errors.log` rotates to `errors.log.1` at 10 MB; `usage.jsonl` and the other data files are kept.
+- **Credentials and variables**: Claude credentials stay in `.sandcastle/.env` — write no secrets into the unit / plist. Optional environment variables: `SANDPIPE_LANG` (`zh` / `en`, terminal only), `SANDPIPE_NOTIFY_WEBHOOK` (the crash notification reads it from the host environment when `.sandcastle/.env` has no value), `SANDCASTLE_ONLY` (comma-separated issue numbers; usually unset under a daemon).
+
+Example (systemd user unit, `~/.config/systemd/user/sandpipe.service`; start it with `systemctl --user enable --now sandpipe` — a user unit stops at logout unless `loginctl enable-linger` is on):
+
+```ini
+[Unit]
+Description=sandpipe run (my project)
+# Failed restarts count against systemd's start limit; leave headroom for a long-lived service
+StartLimitBurst=10
+
+[Service]
+WorkingDirectory=/path/to/project
+# A user unit doesn't inherit your shell's PATH — spell out where node, git, gh and podman live
+Environment=PATH=/home/you/.local/share/pnpm:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/you
+ExecStart=/home/you/.local/share/pnpm/sandpipe run
+Restart=on-failure
+RestartSec=30
+# The stop's SIGTERM reaches the main process, which winds down (exit 143); leftover children are reaped
+KillMode=mixed
+
+[Install]
+WantedBy=default.target
+```
+
+Example (launchd agent, `~/Library/LaunchAgents/com.example.sandpipe.plist`; on macOS podman runs in a VM that doesn't start on its own at boot — run `podman machine start` first, or give the machine its own agent):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.sandpipe</string>
+  <key>WorkingDirectory</key>
+  <string>/path/to/project</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/sandpipe</string>
+    <string>run</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key>
+    <string>/Users/you</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/Users/you/Library/Logs/sandpipe.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/you/Library/Logs/sandpipe.log</string>
+</dict>
+</plist>
+```
+
 ## Models
 
 Which profile each phase uses lives in `.sandcastle/models.json` (an ordered profile list per phase with fallback on usage limits, and each profile's model, effort and env; `sandpipe doctor` shows the current picks). Whatever the profile, every `claude` invocation in the sandbox is launched with Claude Code's built-in commit / PR attribution turned off: `--settings '{"includeCoAuthoredBy":false,"attribution":{"commit":"","pr":""}}'`, which outranks the project's own `.claude/settings.json`, so it can't be turned back on there. Commits and PRs therefore carry no model-name `Co-Authored-By` trailer; without this, a third-party profile — one routing `opus` through `ANTHROPIC_BASE_URL` to another vendor — would still be attributed to an Anthropic model, because Claude Code only sees the alias. Which profile / model each phase actually used is recorded in the PR body's Usage table.

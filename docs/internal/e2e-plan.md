@@ -125,6 +125,7 @@ e2e 实跑（sandcastle-e2e）：
 - [ ] L10 （#49）评审已过、门槛中 kill：重启后终端打「↻ 接着上次：#n 评审已过，直接跑门槛」，没有 implement / review 会话，PR 的 Review 一节和用量表照旧（用量取自 usage.jsonl）；落地后票上不再有 `sandcastle:reviewed`。另测：中断后手动在分支上加一个提交再重启，去掉标签、从 implement 重做
 - [x] L8 （✓ 12 张票 #69–#80，maxParallel 2、autoMerge，全程无人工：11 张合并（PR #81–#91），19:55 启动、20:34 最后一张合并，PR 开到合并 41 秒–9 分钟；每张只用 1 次 implement + 1 次 review，无打回、无门槛失败；改同一文件的票自动错开不并行；故意写含糊的 #80 在 prep 阶段打 stuck，评论说明缺什么、给出三个具体方向；上下文峰值 36K（#78 implement）；之后空闲 12 轮自己退出、退出码 0）连续运行：一次排 10 张以上互相独立 / 有依赖的小票，autoMerge、maxParallel 2，不人工干预跑完；统计成功率、每张耗时、失败 / stuck 原因、上下文峰值
 - [x] L9 （✓ 本项目无容器（剩下 3 个属于 duckdb_crm-trial）、只剩主 worktree、远端只剩 main、关掉的票只有 Sandcastle/decided 标签，#80 跑完时是 stuck + ready-for-human；检查后 #69–#80 标签已清、#80 以 not planned 关闭、配置已恢复）跑完后环境干净：无容器、无多余 worktree、远端只剩 main、标签都对
+- [ ] L11 （#156）守护进程 + `maxIdlePolls: Infinity` 连续运行 24 小时：每小时记录主进程 RSS、`.sandcastle/logs` 总大小（含 `usage.jsonl`）、`podman ps -a` 里本仓库的容器、`git worktree list` 和 `.sandcastle/worktrees`、`run.lock` 的状态；结束前各做一次 `systemctl stop`（SIGTERM）后再启动、一次重启机器后自动恢复
 
 ## M. 复杂票、代码准确性与上下文
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 进程守护文档（#65 之三）：用户手册中英新增「进程守护 / Running as a service」一节（docs/config.md、docs/config.zh-CN.md，放在「可选」表之后）：systemd 用户 unit 和 launchd plist 各一份示例（`WorkingDirectory` 设项目根、`PATH` 含 node / git / gh / podman、`HOME`、`Restart=on-failure` + `RestartSec` + `KillMode=mixed` 并提醒 `StartLimitBurst`、`KeepAlive` + `StandardOutPath` / `StandardErrorPath`），说明要配 `maxIdlePolls: Infinity`（否则空闲退出码 0 后 `Restart=on-failure` 不会拉起）、停服务发的 SIGTERM 按中断收尾（退出码 143）、日志位置（journald / StandardOutPath，后者不自动轮转、提示 newsyslog；`.sandcastle/logs/` 按既有规则自己清）、可选环境变量（`SANDPIPE_LANG`、`SANDPIPE_NOTIFY_WEBHOOK`、`SANDCASTLE_ONLY`）、凭据照旧放 `.sandcastle/.env` 不进 unit / plist；onboarding-checklist 中英「放开」一节各加一条链接过去；docs/internal/e2e-plan.md 新增 L11（守护进程连续运行 24 小时）（closes #156）
+
 - 浏览器 e2e 沉淀（四）：开了浏览器验收但没接浏览器 e2e 的项目（「浏览器验收」一节没写 e2e 目录和单跑命令、仓库里也没有已有的 e2e 测试），implement 跳过把 Browser check 沉淀成 Playwright 测试——不装依赖、不建 e2e 配置、不写测试，浏览器验收照旧做，`RESULT.md` 末尾单独写一行普通文字「本项目没接浏览器 e2e，未沉淀测试」；review 按同样条件跳过核对、不因缺测试打回（摘要的「浏览器验收」一行写明「项目没接 e2e，未沉淀」），判断依据是渲染进 review 提示词的「本项目的浏览器验收」一节（`prompts/implement.md`、`prompts/review.md`；docs/config 中英、docs/internal 同步）（closes #164）
 
 - 花费上限之三：`sandpipe doctor` 多一项「花费上限」（Spend limits），只展示不检查（状态总是 ok，doctor 是否通过不随当天用量变）：列出单票上限 `spendLimit.ticketTokens`、当天上限 `spendLimit.dayTokens`（没配写「不限」/ unlimited），以及今日已用 token（按本地日期算 `usage.jsonl` 里当天全部票的记录，没有文件时是 0），配上限之前先在这里看一眼现在的用量；配置加载失败时没有这一项（`src/doctor.ts` 复用 `daySpend` / `readAllUsage` / `formatK` 新增这一项；docs/config 中英的 `spendLimit.*` 两行同步）（closes #153）
