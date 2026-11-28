@@ -666,7 +666,9 @@ describe("diagnose：通知", () => {
     const root = readyRepo();
     withWebhook(root);
     const { calls, fetch } = fakeFetch(new Response(null, { status: 200 }));
-    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), notifyFetch: fetch, notifyTest: true, fix: true });
+    // fix: true 而 readyRepo 的镜像 label 对不上哈希，会走重建：注入假 build，别碰宿主机的 podman（CI 上有 podman 会真建）
+    // fix: true with readyRepo's image label not matching the hash triggers a rebuild: inject a fake build so the host's podman is untouched (CI has podman and would really build)
+    const checks = await diagnose({ cwd: root, env: {}, run: runner({ image: true }), forge: fakeGh(allLabels, []), notifyFetch: fetch, notifyTest: true, fix: true, build: () => ({ ok: true, out: "" }) });
     expect(check(checks, "通知")).toMatchObject({ level: "ok" });
     expect(calls).toHaveLength(1);
     expect(calls[0].init?.method).toBe("HEAD");
