@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { messages } from "../src/i18n.ts";
 import {
-  acquireRunLock, AGENT_AUTH_PREFIX, AgentAuthError, agentAuthReason, authRecovered, buildImageArgs, containerfileHash, errorLine, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GateInfraError, IMAGE_LABEL, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, imageLabel, imageStaleWarning, missingImage, orphanContainers,
+  acquireRunLock, AGENT_AUTH_PREFIX, AgentAuthError, agentAuthReason, AUTH_MAX_HITS, authHitCapped, authRecovered, buildImageArgs, nextAuthHits, containerfileHash, errorLine, findContainerfile, GATE_ENV_PREFIX, GateEnvError, gateEnvError, gateEnvReason, GateInfraError, IMAGE_LABEL, imageExists, interruptNotice, isAgentIdleTimeout, isGateInfraFailure, imageLabel, imageStaleWarning, missingImage, orphanContainers,
   parseContainers, podmanProblem, removeOrphanContainers, untilAuthRecovered, waitForPodman,
 } from "../src/lifecycle.ts";
 import type { TryResult } from "../src/shell.ts";
@@ -378,6 +378,27 @@ describe("会话认证失效（#62 之三）", () => {
     expect(downs.length).toBe(3);
     expect(caps).toBe(0);
     log.mockRestore();
+  });
+
+  it("nextAuthHits：指纹不变连续撞 3 次到上限（build 和 prep 共用）", () => {
+    expect(AUTH_MAX_HITS).toBe(3);
+    const h1 = nextAuthHits(undefined, "fp-a");
+    expect(h1).toEqual({ count: 1, fingerprint: "fp-a" });
+    expect(authHitCapped(h1)).toBe(false);
+    const h2 = nextAuthHits(h1, "fp-a");
+    expect(h2.count).toBe(2);
+    expect(authHitCapped(h2)).toBe(false);
+    const h3 = nextAuthHits(h2, "fp-a");
+    expect(h3.count).toBe(3);
+    expect(authHitCapped(h3)).toBe(true);
+  });
+
+  it("nextAuthHits：指纹变了计数从 1 重新数", () => {
+    const h2 = nextAuthHits(nextAuthHits(undefined, "fp-a"), "fp-a");
+    const h = nextAuthHits(h2, "fp-b");
+    expect(h).toEqual({ count: 1, fingerprint: "fp-b" });
+    expect(authHitCapped(nextAuthHits(h, "fp-b"))).toBe(false);
+    expect(authHitCapped(h2, 2)).toBe(true);
   });
 });
 
