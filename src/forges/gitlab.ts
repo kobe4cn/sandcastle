@@ -48,7 +48,7 @@ type GlabMr = {
   /** MR 当前的头提交。 / The MR's current head commit. */
   sha?: string;
   /** 头 pipeline；刚 push 完新提交时可能还是上一个提交的，要和 sha 核对。 / The head pipeline; right after a push it may still be the previous commit's, so check it against sha. */
-  head_pipeline?: { id: number; sha: string } | null;
+  head_pipeline?: { id: number; sha: string; status: string } | null;
 };
 
 /**
@@ -96,6 +96,21 @@ const jobState = (job: GlabJob): PrCheck["state"] => {
   if (job.status === "success" || job.status === "skipped") return "pass";
   if (job.status === "failed" || job.status === "canceled") return "fail";
   if (job.status === "manual") return job.allow_failure ? "pass" : "pending";
+  return "pending";
+};
+
+/**
+ * pipeline 状态 → 占位检查的状态：jobs 和 bridges 合起来为空时（最典型是 .gitlab-ci.yml 写错，GitLab 建出一条
+ * 没有 job 的 pipeline）拿 pipeline 自己的状态顶上。success 算过，failed / canceled 算没过，其余在跑；
+ * skipped 不会出现在这里——pipeline 的 skipped 由 job 推出来，有 job 就不走这个分支。
+ * pipeline status → a placeholder check's state: used when jobs and bridges combined are empty (most typically a
+ * broken .gitlab-ci.yml making GitLab create a pipeline with no jobs), the pipeline's own status stands in. Success
+ * passes, failed / canceled fail, the rest still running; skipped can't occur here — a pipeline's skipped is derived
+ * from jobs, and with jobs this branch isn't taken.
+ */
+const pipelineState = (status: string): PrCheck["state"] => {
+  if (status === "success") return "pass";
+  if (status === "failed" || status === "canceled") return "fail";
   return "pending";
 };
 
@@ -413,10 +428,18 @@ export function gitlabForge(glab: GlabRunner = (args, env) => sh("glab", args, u
       if (!mr.sha || pipeline.sha !== mr.sha) return [{ name: "pipeline", state: "pending" }];
       // jobs 接口不返回 bridge（trigger）job，要另读 bridges：下游 / 子 pipeline 失败时只有 bridge 是 failed，漏读会判通过
       // The jobs endpoint omits bridge (trigger) jobs, so read bridges too: when a downstream / child pipeline fails only the bridge shows failed
-      return [
+      const jobs = [
         ...list<GlabJob>(`projects/:id/pipelines/${pipeline.id}/jobs`),
         ...list<GlabJob>(`projects/:id/pipelines/${pipeline.id}/bridges`),
-      ]
+      ];
+      // jobs 和 bridges 合起来为空（在 requiredOnly 过滤之前判断）说明 CI 坏得连 job 都没建出来——不能返回 []：
+      // merge-checks 对空列表只等 60 秒宽限期就当没有 CI 放行，会合并 CI 配置坏掉、根本没跑过测试的提交，
+      // 按 pipeline 自己的状态返回占位检查（fail-closed）
+      // Empty jobs plus bridges (judged before the requiredOnly filter) means CI is too broken to have created a single
+      // job — not []: merge-checks treats an empty list as "no CI" after a 60 s grace period and would merge a commit
+      // whose CI config is broken and never ran a test. Return a placeholder from the pipeline's own status (fail-closed)
+      if (jobs.length === 0) return [{ name: "pipeline", state: pipelineState(pipeline.status) }];
+      return jobs
         .filter((job) => !(requiredOnly && job.allow_failure))
         .map((job): PrCheck => ({ name: job.name, state: jobState(job), ...(job.web_url ? { link: job.web_url } : {}) }));
     },

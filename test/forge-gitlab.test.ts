@@ -459,6 +459,25 @@ describe("gitlabForge 发给 glab 的参数", () => {
     expect(calls).toEqual([["api", "projects/:id/merge_requests/12"]]);
   });
 
+  it("prChecks：pipeline 的 sha 对得上、但 jobs 和 bridges 合起来一个都没有（最典型：.gitlab-ci.yml 写错，GitLab 建出一条没有 job 的 pipeline）时按 pipeline 自己的状态返回占位检查，failed / canceled 算没过，success 算过，其余在跑——不能返回 []（会被当没有 CI 放行，fail-closed）", () => {
+    const checks = (status: string) =>
+      fakeGlab(
+        JSON.stringify({ iid: 12, state: "opened", source_branch: "b", sha: "abc", head_pipeline: { id: 77, sha: "abc", status } }),
+        "",
+        "",
+      );
+    const failed = checks("failed");
+    expect(failed.forge.prChecks!("12", false)).toEqual([{ name: "pipeline", state: "fail" }]);
+    expect(checks("canceled").forge.prChecks!("12", false)).toEqual([{ name: "pipeline", state: "fail" }]);
+    expect(checks("success").forge.prChecks!("12", false)).toEqual([{ name: "pipeline", state: "pass" }]);
+    expect(checks("running").forge.prChecks!("12", false)).toEqual([{ name: "pipeline", state: "pending" }]);
+    expect(failed.calls).toEqual([
+      ["api", "projects/:id/merge_requests/12"],
+      ["api", "projects/:id/pipelines/77/jobs", "--paginate", "--output", "ndjson"],
+      ["api", "projects/:id/pipelines/77/bridges", "--paginate", "--output", "ndjson"],
+    ]);
+  });
+
   it.each([
     ["conflicting", { has_conflicts: true, detailed_merge_status: "ci_still_running" }],
     ["conflicting", { has_conflicts: false, detailed_merge_status: "conflict" }],
