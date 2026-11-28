@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- 浏览器 e2e 沉淀（四）：开了浏览器验收但没接浏览器 e2e 的项目（「浏览器验收」一节没写 e2e 目录和单跑命令、仓库里也没有已有的 e2e 测试），implement 跳过把 Browser check 沉淀成 Playwright 测试——不装依赖、不建 e2e 配置、不写测试，浏览器验收照旧做，`RESULT.md` 末尾单独写一行普通文字「本项目没接浏览器 e2e，未沉淀测试」；review 按同样条件跳过核对、不因缺测试打回（摘要的「浏览器验收」一行写明「项目没接 e2e，未沉淀」），判断依据是渲染进 review 提示词的「本项目的浏览器验收」一节（`prompts/implement.md`、`prompts/review.md`；docs/config 中英、docs/internal 同步）（closes #164）
+
 - 花费上限之三：`sandpipe doctor` 多一项「花费上限」（Spend limits），只展示不检查（状态总是 ok，doctor 是否通过不随当天用量变）：列出单票上限 `spendLimit.ticketTokens`、当天上限 `spendLimit.dayTokens`（没配写「不限」/ unlimited），以及今日已用 token（按本地日期算 `usage.jsonl` 里当天全部票的记录，没有文件时是 0），配上限之前先在这里看一眼现在的用量；配置加载失败时没有这一项（`src/doctor.ts` 复用 `daySpend` / `readAllUsage` / `formatK` 新增这一项；docs/config 中英的 `spendLimit.*` 两行同步）（closes #153）
 
 - 花费上限之二：新配置 `spendLimit.dayTokens`（可选，不配不限）给一天（运行机器的本地日期）全部票的合计 token 设上限，口径同 `ticketTokens`（输入 / 缓存写 / 缓存读 / 输出四项相加，全部记录、`limited` 和第三方档案都算）。已用 ≥ 上限时不再开新会话：主循环每轮预检加一条（固定文本，不打 stuck、不算空转，过本地 0 点自然恢复）；`runAgent` 开会话之前查到超限就在终端写明当天已用、上限和恢复时间，睡到下一个本地 0 点醒来重查再开（等的时候票占着空位）；prep 持宿主机锁、不睡——超限时本轮剩余 prep 跳过。正在跑的会话做完为止（`src/budget.ts` 新增 `daySpend` / `nextLocalMidnight`，`src/models.ts` 抽出 `readAllUsage`；docs/config 中英、docs/internal、DEVELOPMENT.md 同步）（closes #152）

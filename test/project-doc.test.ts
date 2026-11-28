@@ -162,6 +162,19 @@ describe("用 duckdb_crm 的 PROJECT.md 渲染", () => {
     expect(out.review).toContain("`waitForTimeout`");
   });
 
+  it("项目没接浏览器 e2e 时 implement 不硬写测试、review 不因此打回（#164）", () => {
+    // implement：跳过沉淀的条件和 RESULT.md 末尾的那一行；review：摘要里写明
+    expect(out.implement).toContain("本项目没接浏览器 e2e，未沉淀测试");
+    expect(out.review).toContain("项目没接 e2e，未沉淀");
+    // review：注入了「本项目的浏览器验收」一节（crm 的一句原文），reviewer 据此判断接没接 e2e
+    expect(out.review).toContain("本项目的浏览器验收");
+    expect(out.review).toContain("建租户 `crmlab-smoke`");
+    // 无浏览器验收的项目（ELSE 分支）不含这两句
+    const plain = render(minimal());
+    expect(plain.review).not.toContain("本项目没接浏览器 e2e，未沉淀测试");
+    expect(plain.review).not.toContain("项目没接 e2e，未沉淀");
+  });
+
   it("prep 的 Browser check 一项说明会被沉淀成 e2e 测试、要写成可断言结果，模板注释提示写 e2e 目录和单跑命令（#159）", () => {
     expect(out.prep).toContain("沉淀成 e2e 测试");
     expect(out.prep).toContain("可断言的结果");

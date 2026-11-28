@@ -76,7 +76,7 @@
 
 - 每条验收标准都实现了、都有测试覆盖。
 - 「需要人判断」一栏是「无」，PR 上有写权限的人的 review 意见都处理了。
-{{IF_BROWSER}}- 改了页面的：评审自己看过 `.browser-check/` 的截图（做法见下面「浏览器验收结论」），给了 `<browser-check>done</browser-check>`（条件见下面「浏览器验收结论」第 3 步）；`.browser-check/RESULT.md` 存在、每一步都是 ✅（有 ❌、⚠️ 或没验证到的步骤就写 `pr`），引用的截图文件都在。改了页面的票还把 Browser check 的关键步骤沉淀成了 Playwright 测试（等待页面稳定、不用固定延时），没提交测试或测试里用固定延时代替等待的，写 `revise` 交回 implementer（见下面「浏览器验收结论」第 4 步）。改了页面本身不是留 PR 的理由。
+{{IF_BROWSER}}- 改了页面的：评审自己看过 `.browser-check/` 的截图（做法见下面「浏览器验收结论」），给了 `<browser-check>done</browser-check>`（条件见下面「浏览器验收结论」第 3 步）；`.browser-check/RESULT.md` 存在、每一步都是 ✅（有 ❌、⚠️ 或没验证到的步骤就写 `pr`），引用的截图文件都在。改了页面的票还把 Browser check 的关键步骤沉淀成了 Playwright 测试（等待页面稳定、不用固定延时），没提交测试或测试里用固定延时代替等待的，写 `revise` 交回 implementer（见下面「浏览器验收结论」第 4 步；项目没接浏览器 e2e 的不算缺测试，按第 4 步跳过）。改了页面本身不是留 PR 的理由。
 {{ELSE_BROWSER}}- 没有改页面（本项目不在沙箱里做浏览器验收，改了页面的一律留 PR 给人看）。
 {{END_BROWSER}}- 按「设计决定」代拍板的，本身不是留 PR 的理由；只要不在「必须停下」里、和代码一致就行。
 - 改动不碰「必须停下」里列的任何一项（权限、敏感数据、改动已有数据的迁移等）。
@@ -98,7 +98,7 @@
 **已修**：…
 **代拍板**：…（这张票里 agent 自己定的设计决定，各一句：选了什么；没有就写「无」）
 **需要人判断**：…（没有就写「无」）
-**浏览器验收**：不需要 / 已做（写你自己看截图的结论，有 ❌ 或 ❓ 的写出来；和 `.browser-check/RESULT.md` 不一致的也写出来{{IF_BROWSER}}；Playwright 测试缺了或用了固定延时的也写出来{{ELSE_BROWSER}}{{END_BROWSER}}）/ 需要但没做（写检查什么）
+**浏览器验收**：不需要 / 已做（写你自己看截图的结论，有 ❌ 或 ❓ 的写出来；和 `.browser-check/RESULT.md` 不一致的也写出来{{IF_BROWSER}}；Playwright 测试缺了或用了固定延时的也写出来，项目没接 e2e 的写明「项目没接 e2e，未沉淀」{{ELSE_BROWSER}}{{END_BROWSER}}）/ 需要但没做（写检查什么）
 **验收说明**：合格 / 问题（缺失、步骤对不上代码、「做了什么」和 diff 对不上、漏验收标准、无用户可见变化没写明、多行内容在行内代码里，写出来）
 </review-summary>
 
@@ -109,6 +109,10 @@
 - 需要但没做：<browser-check>missing</browser-check>
 
 {{IF_BROWSER}}`done` 只能基于你自己看截图得到的结论，不能只照抄 RESULT.md。
+
+本项目的浏览器验收（判断项目接没接浏览器 e2e 的依据）：
+
+{{P_BROWSER}}
 
 浏览器验收结论（有 `.browser-check/` 时必须给）：
 
@@ -121,6 +125,6 @@
 </browser-verdict>
 
 3. **和 RESULT.md 对照**：你逐条全是 ✅、且与 RESULT.md 一致，才给 `<browser-check>done</browser-check>`。RESULT.md 说 ✅、你看到的是 ❌ 或 ❓ 时：能靠改代码修的，给 `<verdict>revise</verdict>`，在 `<revise>` 里写出哪一步不对、截图里看到的是什么（revise 改了页面后截图会过期、留 PR，这是预期）；改不了或截图缺失的，给 `<browser-check>missing</browser-check>`。
-4. **核对 Playwright 测试**：改了页面的票，看 Browser check 的关键步骤有没有沉淀成 Playwright 测试提交（放哪、怎么单跑按项目「浏览器验收」一节写的来），测试是不是等待页面稳定——等元素可见或可交互、等网络空闲或等具体响应、用 web-first 断言，而不是 `waitForTimeout` / sleep 这类固定延时（动画要用断言等它结束，或在测试里关掉）。改了页面却没提交对应的测试、或测试里用固定延时代替等待的，都是要修的问题：给 `<verdict>revise</verdict>`，在 `<revise>` 里写清缺哪一步的测试、固定延时在哪一行、怎么改成等待。
+4. **核对 Playwright 测试**：先按上面「本项目的浏览器验收」一节判断项目接没接浏览器 e2e——那一节写了 e2e 目录和单跑命令、或仓库里已有 e2e 测试，才算接了。项目没接浏览器 e2e 时跳过这一步，不因缺测试给 revise，只核对本票 `.browser-check/RESULT.md` 末尾有「本项目没接浏览器 e2e，未沉淀测试」这一行，缺了写进 `<revise>` 让 implementer 补上。接了时：改了页面的票，看 Browser check 的关键步骤有没有沉淀成 Playwright 测试提交（放哪、怎么单跑按项目「浏览器验收」一节写的来），测试是不是等待页面稳定——等元素可见或可交互、等网络空闲或等具体响应、用 web-first 断言，而不是 `waitForTimeout` / sleep 这类固定延时（动画要用断言等它结束，或在测试里关掉）。改了页面却没提交对应的测试、或测试里用固定延时代替等待的，都是要修的问题：给 `<verdict>revise</verdict>`，在 `<revise>` 里写清缺哪一步的测试、固定延时在哪一行、怎么改成等待。
 
 {{ELSE_BROWSER}}{{END_BROWSER}}然后输出 <promise>COMPLETE</promise>。
